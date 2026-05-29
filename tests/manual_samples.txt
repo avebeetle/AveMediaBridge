@@ -1,0 +1,13 @@
+# Manual Samples
+
+Use this file to record local media files used for manual AveMediaBridge tests.
+
+Suggested workflow:
+
+1. Build Release with `build_release.bat`.
+2. Run `build\Release\AveMediaBridge.exe`.
+3. Choose `1` to import a single file.
+4. Choose `2` to scan a folder of common media files.
+5. Choose `3` to run AudioBufferF32 processor tests on one file.
+
+No sample media is committed here.

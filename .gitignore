@@ -1,0 +1,100 @@
+# Build outputs
+build/
+out/
+.vs/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Visual Studio / CMake generated files
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.recipe
+*.tlog
+*.lastbuildstate
+
+# Binaries / objects
+*.exe
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+*.ilk
+
+# Generated outputs
+test_output/
+output/
+Output/
+Temp/
+
+# Local FFmpeg dependency package
+ffmpeg/
+external/ffmpeg/
+FFmpeg-master/
+
+# Media fixtures - do not commit binary samples through normal Git
+tests/*.wav
+tests/*.mp3
+tests/*.mp4
+tests/*.m4a
+tests/*.aac
+tests/*.flac
+tests/*.ogg
+tests/*.opus
+tests/*.oga
+tests/*.mka
+tests/*.weba
+tests/*.mov
+tests/*.mkv
+tests/*.webm
+tests/*.avi
+tests/*.aiff
+tests/*.aif
+tests/*.aifc
+tests/*.au
+tests/*.w64
+tests/*.caf
+tests/*.nut
+tests/*.ts
+tests/*.m2ts
+tests/*.mts
+tests/*.mpg
+tests/*.vob
+tests/*.ac3
+tests/*.eac3
+tests/*.ec3
+tests/*.asf
+tests/*.wma
+tests/*.wmv
+tests/*.flv
+tests/*.f4v
+tests/*.ogv
+tests/*.3gp
+tests/*.3g2
+tests/*.raw
+tests/*.pcm
+tests/*.s16le
+tests/*.s24le
+tests/*.s32le
+tests/*.f32le
+tests/*.f64le
+
+# Allow text notes in tests if present
+!tests/manual_samples.txt
+
+# Logs/temp/local
+*.log
+*.tmp
+.env
+*.local
+
+# Secrets
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+credentials/
