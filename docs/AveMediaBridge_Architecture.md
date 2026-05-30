@@ -290,6 +290,60 @@ Return code:
 - `0`: artifacts were written successfully.
 - non-zero: invalid path, failed decode/import, failed artifact write, or unexpected internal failure.
 
+Compatibility:
+
+- `AveMediaBridge_ImportAudioToSession` remains the stable AveVoice v1 entrypoint.
+- Internally it calls `AveMediaBridge_ImportAudioToSessionEx` with no progress or cancel callbacks.
+
+### AveMediaBridge_ImportAudioToSessionEx
+
+```cpp
+struct AveMediaBridgeImportProgress
+{
+    uint32_t structSize;
+    uint64_t framesWritten;
+    uint64_t bytesWritten;
+    uint64_t estimatedTotalFrames;
+    uint64_t estimatedTotalBytes;
+    double availableEndSec;
+    double progress01;
+    int sampleRate;
+    int channels;
+    uint32_t flags;
+};
+
+typedef void (__stdcall *AveMediaBridgeProgressCallback)(
+    const AveMediaBridgeImportProgress* progress,
+    void* userData);
+
+typedef int (__stdcall *AveMediaBridgeCancelCallback)(
+    void* userData);
+
+struct AveMediaBridgeImportOptions
+{
+    uint32_t structSize;
+    const wchar_t* inputPath;
+    const wchar_t* sessionMediaDir;
+    AveMediaBridgeProgressCallback onProgress;
+    AveMediaBridgeCancelCallback shouldCancel;
+    void* userData;
+};
+
+extern "C" __declspec(dllexport)
+int AveMediaBridge_ImportAudioToSessionEx(
+    const AveMediaBridgeImportOptions* options);
+```
+
+Purpose:
+
+- stream import audio to the existing session artifact contract while optionally reporting progress and accepting cancellation.
+
+Return code:
+
+- `0`: artifacts were written successfully.
+- `4`: import was canceled by `shouldCancel`.
+- other non-zero: invalid options, failed decode/import, failed artifact write, or unexpected internal failure.
+
 ## Current Import Memory Behavior
 
 There are now two import/decode paths:
@@ -321,6 +375,23 @@ The final artifact names and schemas remain compatible with the existing AveVoic
 Before streaming decode starts, session import estimates decoded float32 bytes from available duration, sample rate, and channel metadata. If the estimate is known and free space in `sessionMediaDir` is clearly below the estimated decoded byte count plus a small headroom, import fails before decode.
 
 If the decoded-size estimate is unknown, import continues and records a warning in `metadata.json` because exact bytes will be known only while streaming samples to disk.
+
+## Import Progress And Cancellation API
+
+`AveMediaBridge_ImportAudioToSessionEx` is a C ABI, callback-based extension for streaming session import. It does not change artifact names, artifact schemas, or the old `AveMediaBridge_ImportAudioToSession` ABI.
+
+Progress and cancellation rules:
+
+- callbacks are invoked synchronously on the same caller/import thread;
+- the DLL does not create hidden worker threads;
+- `onProgress` receives `AveMediaBridgeImportProgress` snapshots with monotonic `framesWritten`;
+- `progress01` is in the `0..1` range when an estimate is known, otherwise `-1.0`;
+- `availableEndSec` is `framesWritten / sampleRate` when sample rate is known;
+- progress callbacks are throttled and also emitted at final completion;
+- `shouldCancel` is polled during the decode loop;
+- cancellation stops decode cleanly, closes files, deletes temporary artifacts, returns cancel code `4`, and sets last error text to a clear canceled message.
+
+The API keeps RAM bounded because progress is driven from the streaming import counters rather than from a full decoded `AudioBufferF32`. It is also the foundation for future AveVoice progressive waveform UX, while progressive waveform chunks are intentionally not implemented yet.
 
 ### AveMediaBridge_TransformToWav
 
@@ -481,6 +552,8 @@ It also supports CLI smoke commands:
 AveMediaBridgeLabApp.exe smoke-dll-transform "<input-file>" "<output-wav>"
 AveMediaBridgeLabApp.exe smoke-dll-probe "<input-file>" "<output-json>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session "<input-file>" "<session-media-dir>"
+AveMediaBridgeLabApp.exe smoke-dll-import-session-progress "<input-file>" "<session-media-dir>"
+AveMediaBridgeLabApp.exe smoke-dll-import-session-cancel "<input-file>" "<session-media-dir>"
 ```
 
 The smoke commands dynamically load `AveMediaBridge.dll`, add `build\Release\Lib\ffmpeg\` to the DLL search path, resolve the target function with `GetProcAddress`, run the API call, and print DLL last-error text on failure.
@@ -502,6 +575,7 @@ Implemented:
 - `AveMediaBridge_ProbeToJson`;
 - Fast Probe v2 no-decode metadata probing;
 - streaming `AveMediaBridge_ImportAudioToSession`;
+- `AveMediaBridge_ImportAudioToSessionEx` progress/cancel callbacks;
 - disk preflight for session import;
 - LabApp smoke commands for transform, probe, and session import.
 

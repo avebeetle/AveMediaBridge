@@ -3,6 +3,7 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 
+#include "AveMediaBridge/AveMediaBridgeApi.hpp"
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "AveMediaBridge/Core/AudioStats.hpp"
 #include "AveMediaBridge/Process/AudioBufferProcessor.hpp"
@@ -214,6 +215,27 @@ using GetLastErrorTextFn = int(__cdecl*)(wchar_t*, int);
 using TransformToWavFn = int(__cdecl*)(const wchar_t*, const wchar_t*, float);
 using ProbeToJsonFn = int(__cdecl*)(const wchar_t*, const wchar_t*);
 using ImportAudioToSessionFn = int(__cdecl*)(const wchar_t*, const wchar_t*);
+using ImportAudioToSessionExFn = int(__cdecl*)(const AveMediaBridgeImportOptions*);
+
+struct SessionArtifactSummary {
+    bool metadataExists = false;
+    bool audioInfoExists = false;
+    bool audioDataExists = false;
+    std::int64_t sampleRate = 0;
+    std::int64_t channels = 0;
+    std::int64_t frames = 0;
+    std::int64_t expectedBytes = 0;
+    std::uintmax_t actualBytes = 0;
+    bool sizeMatch = false;
+};
+
+struct ProgressSmokeState {
+    int callbackCount = 0;
+    std::uint64_t lastFramesWritten = 0;
+    bool monotonic = true;
+    bool cancelAfterFirstProgress = false;
+    bool cancelRequested = false;
+};
 
 void configureDllSearchPath(const std::filesystem::path& exeDir, const std::filesystem::path& ffmpegDir) {
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
@@ -226,20 +248,28 @@ HMODULE loadBridgeDll(const std::filesystem::path& exeDir, const std::filesystem
     return LoadLibraryW(L"AveMediaBridge.dll");
 }
 
-void printDllLastErrorText(HMODULE module) {
+std::wstring getDllLastErrorText(HMODULE module) {
     if (!module) {
-        return;
+        return {};
     }
 
     auto getLastErrorText = reinterpret_cast<GetLastErrorTextFn>(GetProcAddress(module, "AveMediaBridge_GetLastErrorText"));
     if (!getLastErrorText) {
-        return;
+        return {};
     }
 
     wchar_t buffer[2048] = {};
     const int result = getLastErrorText(buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
     if ((result == 0 || result == 2) && buffer[0] != L'\0') {
-        std::wcerr << L"DLL last error: " << buffer << L"\n";
+        return buffer;
+    }
+    return {};
+}
+
+void printDllLastErrorText(HMODULE module) {
+    const std::wstring text = getDllLastErrorText(module);
+    if (!text.empty()) {
+        std::wcerr << L"DLL last error: " << text << L"\n";
     }
 }
 
@@ -287,6 +317,100 @@ bool extractJsonInt64(const std::string& json, const std::string& key, std::int6
         return false;
     }
     return true;
+}
+
+bool readSessionArtifactSummary(const std::filesystem::path& sessionPath, SessionArtifactSummary& summary, std::string& error) {
+    const std::filesystem::path metadataPath = sessionPath / "metadata.json";
+    const std::filesystem::path audioInfoPath = sessionPath / "audio_info.json";
+    const std::filesystem::path audioDataPath = sessionPath / "original_f32.bin";
+
+    std::error_code fsError;
+    summary.metadataExists = std::filesystem::exists(metadataPath, fsError);
+    if (fsError) {
+        error = "unable to inspect metadata.json: " + fsError.message();
+        return false;
+    }
+    summary.audioInfoExists = std::filesystem::exists(audioInfoPath, fsError);
+    if (fsError) {
+        error = "unable to inspect audio_info.json: " + fsError.message();
+        return false;
+    }
+    summary.audioDataExists = std::filesystem::exists(audioDataPath, fsError);
+    if (fsError) {
+        error = "unable to inspect original_f32.bin: " + fsError.message();
+        return false;
+    }
+
+    if (!summary.audioInfoExists || !summary.audioDataExists) {
+        summary.sizeMatch = false;
+        return true;
+    }
+
+    std::string audioInfoText;
+    if (!readTextFile(audioInfoPath, audioInfoText) ||
+        !extractJsonInt64(audioInfoText, "sampleRate", summary.sampleRate) ||
+        !extractJsonInt64(audioInfoText, "channels", summary.channels) ||
+        !extractJsonInt64(audioInfoText, "frames", summary.frames)) {
+        error = "unable to read generated audio_info.json summary";
+        return false;
+    }
+
+    summary.actualBytes = std::filesystem::file_size(audioDataPath, fsError);
+    if (fsError) {
+        error = "unable to inspect original_f32.bin size: " + fsError.message();
+        return false;
+    }
+
+    summary.expectedBytes = summary.frames * summary.channels * static_cast<std::int64_t>(sizeof(float));
+    summary.sizeMatch = summary.actualBytes == static_cast<std::uintmax_t>(summary.expectedBytes);
+    return true;
+}
+
+void printSessionArtifactSummary(const std::string& sessionMediaDirText, const SessionArtifactSummary& summary) {
+    std::cout << "Session media dir: " << sessionMediaDirText << "\n";
+    std::cout << "Streaming import: yes\n";
+    std::cout << "Sample rate: " << summary.sampleRate << "\n";
+    std::cout << "Channels: " << summary.channels << "\n";
+    std::cout << "Frames: " << summary.frames << "\n";
+    std::cout << "Expected bytes: " << summary.expectedBytes << "\n";
+    std::cout << "Actual original_f32.bin bytes: " << summary.actualBytes << "\n";
+    std::cout << "Size match: " << (summary.sizeMatch ? "yes" : "no") << "\n";
+    std::cout << "Generated:\n";
+    std::cout << "  metadata.json " << (summary.metadataExists ? "yes" : "missing") << "\n";
+    std::cout << "  audio_info.json " << (summary.audioInfoExists ? "yes" : "missing") << "\n";
+    std::cout << "  original_f32.bin " << (summary.audioDataExists ? "yes" : "missing") << "\n";
+}
+
+void AVEMEDIABRIDGE_CALL printProgressSmokeCallback(
+    const AveMediaBridgeImportProgress* progress,
+    void* userData) {
+    auto* state = static_cast<ProgressSmokeState*>(userData);
+    if (!progress || !state) {
+        return;
+    }
+
+    if (state->callbackCount > 0 && progress->framesWritten < state->lastFramesWritten) {
+        state->monotonic = false;
+    }
+    state->lastFramesWritten = progress->framesWritten;
+    ++state->callbackCount;
+
+    std::cout << "Progress sample "
+              << state->callbackCount
+              << ": framesWritten=" << progress->framesWritten
+              << " bytesWritten=" << progress->bytesWritten
+              << " availableEndSec=" << std::fixed << std::setprecision(6) << progress->availableEndSec
+              << " progress01=" << progress->progress01
+              << "\n";
+
+    if (state->cancelAfterFirstProgress && progress->framesWritten > 0 && (progress->flags & 1u) == 0u) {
+        state->cancelRequested = true;
+    }
+}
+
+int AVEMEDIABRIDGE_CALL cancelSmokeCallback(void* userData) {
+    auto* state = static_cast<ProgressSmokeState*>(userData);
+    return state && state->cancelRequested ? 1 : 0;
 }
 
 int runSmokeDllTransform(const std::string& inputPathText, const std::string& outputPathText) {
@@ -444,49 +568,166 @@ int runSmokeDllImportSession(const std::string& inputPathText, const std::string
 
     FreeLibrary(module);
     const std::filesystem::path sessionPath(sessionMediaDirText);
-    const std::filesystem::path metadataPath = sessionPath / "metadata.json";
-    const std::filesystem::path audioInfoPath = sessionPath / "audio_info.json";
-    const std::filesystem::path audioDataPath = sessionPath / "original_f32.bin";
-
-    std::string audioInfoText;
-    std::int64_t sampleRate = 0;
-    std::int64_t channels = 0;
-    std::int64_t frames = 0;
-    if (!readTextFile(audioInfoPath, audioInfoText) ||
-        !extractJsonInt64(audioInfoText, "sampleRate", sampleRate) ||
-        !extractJsonInt64(audioInfoText, "channels", channels) ||
-        !extractJsonInt64(audioInfoText, "frames", frames)) {
-        std::cerr << "ERROR: unable to read generated audio_info.json summary.\n";
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionPath, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
         return 1;
     }
-
-    std::error_code fsError;
-    const bool metadataExists = std::filesystem::exists(metadataPath, fsError);
-    const bool audioInfoExists = std::filesystem::exists(audioInfoPath, fsError);
-    const bool audioDataExists = std::filesystem::exists(audioDataPath, fsError);
-    const auto actualBytes = audioDataExists ? std::filesystem::file_size(audioDataPath, fsError) : 0;
-    if (fsError) {
-        std::cerr << "ERROR: unable to inspect generated artifacts: " << fsError.message() << "\n";
-        return 1;
-    }
-
-    const std::int64_t expectedBytes = frames * channels * static_cast<std::int64_t>(sizeof(float));
-    const bool sizeMatch = audioDataExists && actualBytes == static_cast<std::uintmax_t>(expectedBytes);
 
     std::cout << "Result: OK\n";
-    std::cout << "Session media dir: " << sessionMediaDirText << "\n";
-    std::cout << "Streaming import: yes\n";
-    std::cout << "Sample rate: " << sampleRate << "\n";
-    std::cout << "Channels: " << channels << "\n";
-    std::cout << "Frames: " << frames << "\n";
-    std::cout << "Expected bytes: " << expectedBytes << "\n";
-    std::cout << "Actual original_f32.bin bytes: " << actualBytes << "\n";
-    std::cout << "Size match: " << (sizeMatch ? "yes" : "no") << "\n";
-    std::cout << "Generated:\n";
-    std::cout << "  metadata.json " << (metadataExists ? "yes" : "missing") << "\n";
-    std::cout << "  audio_info.json " << (audioInfoExists ? "yes" : "missing") << "\n";
-    std::cout << "  original_f32.bin " << (audioDataExists ? "yes" : "missing") << "\n";
-    return metadataExists && audioInfoExists && audioDataExists && sizeMatch ? 0 : 1;
+    printSessionArtifactSummary(sessionMediaDirText, summary);
+    return summary.metadataExists && summary.audioInfoExists && summary.audioDataExists && summary.sizeMatch ? 0 : 1;
+}
+
+int runSmokeDllImportSessionProgress(const std::string& inputPathText, const std::string& sessionMediaDirText) {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+    const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
+    const std::filesystem::path dllPath = exeDir / "AveMediaBridge.dll";
+
+    std::wcout << L"Smoke DLL import session progress\n";
+    std::wcout << L"  DLL: " << dllPath.wstring() << L"\n";
+    std::wcout << L"  FFmpeg DLL dir: " << ffmpegDir.wstring() << L"\n";
+
+    HMODULE module = loadBridgeDll(exeDir, ffmpegDir);
+    if (!module) {
+        std::wcerr << L"ERROR: LoadLibraryW(AveMediaBridge.dll) failed. Win32 error: " << GetLastError() << L"\n";
+        return 1;
+    }
+
+    auto importSessionEx =
+        reinterpret_cast<ImportAudioToSessionExFn>(GetProcAddress(module, "AveMediaBridge_ImportAudioToSessionEx"));
+    if (!importSessionEx) {
+        std::cerr << "ERROR: GetProcAddress(AveMediaBridge_ImportAudioToSessionEx) failed. Win32 error: " << GetLastError() << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    const std::wstring inputPath = stringToWide(inputPathText);
+    const std::wstring sessionMediaDir = stringToWide(sessionMediaDirText);
+    if (inputPath.empty() || sessionMediaDir.empty()) {
+        std::cerr << "ERROR: unable to convert input or session path to UTF-16.\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    ProgressSmokeState progressState;
+    AveMediaBridgeImportOptions options{};
+    options.structSize = sizeof(options);
+    options.inputPath = inputPath.c_str();
+    options.sessionMediaDir = sessionMediaDir.c_str();
+    options.onProgress = printProgressSmokeCallback;
+    options.shouldCancel = nullptr;
+    options.userData = &progressState;
+
+    const int result = importSessionEx(&options);
+    if (result != 0) {
+        std::cerr << "Result: FAIL\n";
+        std::cerr << "AveMediaBridge_ImportAudioToSessionEx returned " << result << "\n";
+        printDllLastErrorText(module);
+        FreeLibrary(module);
+        return result;
+    }
+
+    FreeLibrary(module);
+    const std::filesystem::path sessionPath(sessionMediaDirText);
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionPath, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
+        return 1;
+    }
+
+    std::cout << "Result: OK\n";
+    std::cout << "Progress callbacks observed: " << progressState.callbackCount << "\n";
+    std::cout << "Progress frames monotonic: " << (progressState.monotonic ? "yes" : "no") << "\n";
+    printSessionArtifactSummary(sessionMediaDirText, summary);
+
+    const bool finalProgressMatches =
+        progressState.callbackCount > 0 &&
+        progressState.lastFramesWritten == static_cast<std::uint64_t>(summary.frames);
+    std::cout << "Final progress frames match audio_info.json: " << (finalProgressMatches ? "yes" : "no") << "\n";
+    return progressState.callbackCount > 0 &&
+            progressState.monotonic &&
+            summary.metadataExists &&
+            summary.audioInfoExists &&
+            summary.audioDataExists &&
+            summary.sizeMatch &&
+            finalProgressMatches
+        ? 0
+        : 1;
+}
+
+int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::string& sessionMediaDirText) {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+    const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
+    const std::filesystem::path dllPath = exeDir / "AveMediaBridge.dll";
+
+    std::wcout << L"Smoke DLL import session cancel\n";
+    std::wcout << L"  DLL: " << dllPath.wstring() << L"\n";
+    std::wcout << L"  FFmpeg DLL dir: " << ffmpegDir.wstring() << L"\n";
+
+    HMODULE module = loadBridgeDll(exeDir, ffmpegDir);
+    if (!module) {
+        std::wcerr << L"ERROR: LoadLibraryW(AveMediaBridge.dll) failed. Win32 error: " << GetLastError() << L"\n";
+        return 1;
+    }
+
+    auto importSessionEx =
+        reinterpret_cast<ImportAudioToSessionExFn>(GetProcAddress(module, "AveMediaBridge_ImportAudioToSessionEx"));
+    if (!importSessionEx) {
+        std::cerr << "ERROR: GetProcAddress(AveMediaBridge_ImportAudioToSessionEx) failed. Win32 error: " << GetLastError() << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    const std::wstring inputPath = stringToWide(inputPathText);
+    const std::wstring sessionMediaDir = stringToWide(sessionMediaDirText);
+    if (inputPath.empty() || sessionMediaDir.empty()) {
+        std::cerr << "ERROR: unable to convert input or session path to UTF-16.\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    ProgressSmokeState progressState;
+    progressState.cancelAfterFirstProgress = true;
+
+    AveMediaBridgeImportOptions options{};
+    options.structSize = sizeof(options);
+    options.inputPath = inputPath.c_str();
+    options.sessionMediaDir = sessionMediaDir.c_str();
+    options.onProgress = printProgressSmokeCallback;
+    options.shouldCancel = cancelSmokeCallback;
+    options.userData = &progressState;
+
+    const int result = importSessionEx(&options);
+    const std::wstring lastError = getDllLastErrorText(module);
+    FreeLibrary(module);
+
+    const std::filesystem::path sessionPath(sessionMediaDirText);
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionPath, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
+        return 1;
+    }
+
+    const bool noFinalPair = !(summary.audioInfoExists && summary.audioDataExists);
+    const bool canceledText = lastError.find(L"canceled") != std::wstring::npos;
+
+    std::cout << "Import return code: " << result << "\n";
+    std::wcout << L"DLL last error: " << lastError << L"\n";
+    std::cout << "Progress callbacks observed: " << progressState.callbackCount << "\n";
+    std::cout << "Progress frames monotonic: " << (progressState.monotonic ? "yes" : "no") << "\n";
+    std::cout << "No final audio_info/original_f32 pair remains: " << (noFinalPair ? "yes" : "no") << "\n";
+
+    if (result == AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED && canceledText && noFinalPair) {
+        std::cout << "Result: OK\n";
+        return 0;
+    }
+
+    std::cout << "Result: FAIL\n";
+    return 1;
 }
 
 std::vector<std::filesystem::path> collectMediaFiles(const std::filesystem::path& folder, bool recursive) {
@@ -720,6 +961,24 @@ int main(int argc, char** argv) {
         const std::string inputPath = stripMatchingQuotes(argv[2]);
         const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
         return runSmokeDllImportSession(inputPath, sessionMediaDir);
+    }
+    if (firstArg == "smoke-dll-import-session-progress") {
+        if (argc < 4) {
+            std::cout << "Usage: AveMediaBridgeLabApp.exe smoke-dll-import-session-progress <input-file> <session-media-dir>\n";
+            return 1;
+        }
+        const std::string inputPath = stripMatchingQuotes(argv[2]);
+        const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
+        return runSmokeDllImportSessionProgress(inputPath, sessionMediaDir);
+    }
+    if (firstArg == "smoke-dll-import-session-cancel") {
+        if (argc < 4) {
+            std::cout << "Usage: AveMediaBridgeLabApp.exe smoke-dll-import-session-cancel <input-file> <session-media-dir>\n";
+            return 1;
+        }
+        const std::string inputPath = stripMatchingQuotes(argv[2]);
+        const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
+        return runSmokeDllImportSessionCancel(inputPath, sessionMediaDir);
     }
 
     const std::string inputPath = joinArgs(argc, argv, 1);

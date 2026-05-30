@@ -31,6 +31,7 @@ namespace {
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
 constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
+constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
 thread_local std::wstring g_lastError;
 
 struct FastProbeResult {
@@ -72,11 +73,13 @@ struct StreamingImportResult {
     std::int64_t interleavedFloatSamplesWritten = 0;
     std::int64_t bytesWritten = 0;
     std::int64_t expectedBytes = 0;
+    std::int64_t preflightEstimatedFrames = 0;
     std::int64_t preflightEstimatedBytes = 0;
     std::string preflightEstimateKind = "unknown";
     bool diskPreflightChecked = false;
     bool diskPreflightEstimateKnown = false;
     std::uintmax_t diskPreflightAvailableBytes = 0;
+    bool canceled = false;
 };
 
 struct StreamingStatsAccumulator {
@@ -128,6 +131,14 @@ struct StreamingSwrState {
     int channels = 0;
     bool initialized = false;
     std::vector<float> outputBuffer;
+};
+
+struct StreamingImportCallbacks {
+    AveMediaBridgeProgressCallback onProgress = nullptr;
+    AveMediaBridgeCancelCallback shouldCancel = nullptr;
+    void* userData = nullptr;
+    std::int64_t lastProgressFrames = -1;
+    bool progressEmitted = false;
 };
 
 std::string wideToUtf8(const wchar_t* value) {
@@ -599,13 +610,104 @@ void fillStreamingSelectedAudioInfo(
 bool estimateDecodedBytesForPreflight(
     const AVFormatContext* formatContext,
     const AVStream* audioStream,
+    std::int64_t& estimatedFrames,
     std::int64_t& estimatedBytes,
     std::string& estimateKind) {
     FastProbeResult estimate;
     estimateFastDurationAndFrames(estimate, formatContext, audioStream);
+    estimatedFrames = estimate.decodedSampleFrames;
     estimatedBytes = estimate.estimatedDecodedBytes;
     estimateKind = estimate.estimatedDecodedBytesKind;
     return estimatedBytes > 0 && estimateKind != "unknown";
+}
+
+std::uint64_t nonNegativeToUint64(std::int64_t value) {
+    return value > 0 ? static_cast<std::uint64_t>(value) : 0;
+}
+
+double progressRatio01(const StreamingImportResult& result) {
+    if (result.preflightEstimatedFrames > 0) {
+        const double ratio =
+            static_cast<double>(result.framesWritten) /
+            static_cast<double>(result.preflightEstimatedFrames);
+        return (std::min)(1.0, (std::max)(0.0, ratio));
+    }
+    if (result.preflightEstimatedBytes > 0) {
+        const double ratio =
+            static_cast<double>(result.bytesWritten) /
+            static_cast<double>(result.preflightEstimatedBytes);
+        return (std::min)(1.0, (std::max)(0.0, ratio));
+    }
+    return -1.0;
+}
+
+bool emitImportProgress(
+    StreamingImportCallbacks* callbacks,
+    const StreamingImportResult& result,
+    bool forceFinal,
+    std::string& error) {
+    if (!callbacks || !callbacks->onProgress) {
+        return true;
+    }
+    if (!forceFinal &&
+        callbacks->lastProgressFrames >= 0 &&
+        result.framesWritten - callbacks->lastProgressFrames < kImportProgressFrameInterval) {
+        return true;
+    }
+    if (callbacks->lastProgressFrames > result.framesWritten) {
+        return true;
+    }
+    AveMediaBridgeImportProgress progress{};
+    progress.structSize = sizeof(progress);
+    progress.framesWritten = nonNegativeToUint64(result.framesWritten);
+    progress.bytesWritten = nonNegativeToUint64(result.bytesWritten);
+    progress.estimatedTotalFrames = nonNegativeToUint64(result.preflightEstimatedFrames);
+    progress.estimatedTotalBytes = nonNegativeToUint64(result.preflightEstimatedBytes);
+    progress.availableEndSec =
+        result.sampleRate > 0
+            ? static_cast<double>(result.framesWritten) / static_cast<double>(result.sampleRate)
+            : 0.0;
+    progress.progress01 =
+        forceFinal && (result.preflightEstimatedFrames > 0 || result.preflightEstimatedBytes > 0)
+            ? 1.0
+            : progressRatio01(result);
+    progress.sampleRate = result.sampleRate;
+    progress.channels = result.channels;
+    progress.flags = forceFinal ? 1u : 0u;
+
+    try {
+        callbacks->onProgress(&progress, callbacks->userData);
+    } catch (...) {
+        error = "progress callback threw an exception";
+        return false;
+    }
+
+    callbacks->lastProgressFrames = result.framesWritten;
+    callbacks->progressEmitted = true;
+    return true;
+}
+
+bool pollImportCancel(
+    StreamingImportCallbacks* callbacks,
+    StreamingImportResult& result) {
+    if (!callbacks || !callbacks->shouldCancel) {
+        return true;
+    }
+
+    int cancel = 0;
+    try {
+        cancel = callbacks->shouldCancel(callbacks->userData);
+    } catch (...) {
+        result.error = "cancel callback threw an exception";
+        return false;
+    }
+
+    if (cancel != 0) {
+        result.canceled = true;
+        result.error = "streaming session import canceled";
+        return false;
+    }
+    return true;
 }
 
 bool checkDiskPreflight(
@@ -775,7 +877,8 @@ int writeConvertedStreamingSamples(
     const AVCodecContext* decoder,
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
-    StreamingImportResult& result) {
+    StreamingImportResult& result,
+    StreamingImportCallbacks* callbacks) {
     int ret = ensureStreamingSwr(swr, frame, decoder, result);
     if (ret < 0) {
         return ret;
@@ -822,6 +925,12 @@ int writeConvertedStreamingSamples(
         result.error = countError;
         return AVERROR(EOVERFLOW);
     }
+    if (!emitImportProgress(callbacks, result, false, result.error)) {
+        return AVERROR_EXIT;
+    }
+    if (!pollImportCancel(callbacks, result)) {
+        return AVERROR_EXIT;
+    }
     return 0;
 }
 
@@ -829,7 +938,8 @@ int flushStreamingSwr(
     StreamingSwrState& swr,
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
-    StreamingImportResult& result) {
+    StreamingImportResult& result,
+    StreamingImportCallbacks* callbacks) {
     if (!swr.initialized) {
         return 0;
     }
@@ -874,6 +984,12 @@ int flushStreamingSwr(
             result.error = countError;
             return AVERROR(EOVERFLOW);
         }
+        if (!emitImportProgress(callbacks, result, false, result.error)) {
+            return AVERROR_EXIT;
+        }
+        if (!pollImportCancel(callbacks, result)) {
+            return AVERROR_EXIT;
+        }
     }
 
     return 0;
@@ -885,7 +1001,8 @@ int receiveStreamingFrames(
     StreamingSwrState& swr,
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
-    StreamingImportResult& result) {
+    StreamingImportResult& result,
+    StreamingImportCallbacks* callbacks) {
     while (true) {
         const int ret = avcodec_receive_frame(decoder, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -897,7 +1014,7 @@ int receiveStreamingFrames(
         }
 
         ++result.decode.decodedFrames;
-        const int convertRet = writeConvertedStreamingSamples(swr, frame, decoder, output, stats, result);
+        const int convertRet = writeConvertedStreamingSamples(swr, frame, decoder, output, stats, result, callbacks);
         av_frame_unref(frame);
         if (convertRet < 0) {
             return convertRet;
@@ -912,10 +1029,11 @@ int sendStreamingPacketAndReceive(
     StreamingSwrState& swr,
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
-    StreamingImportResult& result) {
+    StreamingImportResult& result,
+    StreamingImportCallbacks* callbacks) {
     int ret = avcodec_send_packet(decoder, packet);
     if (ret == AVERROR(EAGAIN)) {
-        ret = receiveStreamingFrames(decoder, frame, swr, output, stats, result);
+        ret = receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks);
         if (ret < 0) {
             return ret;
         }
@@ -928,13 +1046,14 @@ int sendStreamingPacketAndReceive(
         return 0;
     }
 
-    return receiveStreamingFrames(decoder, frame, swr, output, stats, result);
+    return receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks);
 }
 
 StreamingImportResult runStreamingSessionImportToTempFile(
     const std::string& path,
     const std::filesystem::path& sessionDir,
-    const std::filesystem::path& audioTmpPath) {
+    const std::filesystem::path& audioTmpPath,
+    StreamingImportCallbacks* callbacks) {
     StreamingImportResult result;
     result.source.inputPath = path;
 
@@ -1003,6 +1122,7 @@ StreamingImportResult runStreamingSessionImportToTempFile(
         estimateDecodedBytesForPreflight(
             formatContext,
             audioStream,
+            result.preflightEstimatedFrames,
             result.preflightEstimatedBytes,
             result.preflightEstimateKind);
 
@@ -1061,12 +1181,23 @@ StreamingImportResult runStreamingSessionImportToTempFile(
         return result;
     }
 
+    if (!pollImportCancel(callbacks, result)) {
+        cleanup();
+        return result;
+    }
+
     while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+        if (!pollImportCancel(callbacks, result)) {
+            av_packet_unref(packet);
+            cleanup();
+            return result;
+        }
+
         ++result.decode.packetsRead;
         if (packet->stream_index == audioStreamIndex) {
             ++result.decode.audioPackets;
             const int decodeRet =
-                sendStreamingPacketAndReceive(decoderContext, packet, frame, swr, output, stats, result);
+                sendStreamingPacketAndReceive(decoderContext, packet, frame, swr, output, stats, result, callbacks);
             av_packet_unref(packet);
             if (decodeRet < 0) {
                 cleanup();
@@ -1090,13 +1221,13 @@ StreamingImportResult runStreamingSessionImportToTempFile(
         return result;
     }
 
-    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result);
+    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result, callbacks);
     if (ret < 0) {
         cleanup();
         return result;
     }
 
-    ret = flushStreamingSwr(swr, output, stats, result);
+    ret = flushStreamingSwr(swr, output, stats, result, callbacks);
     if (ret < 0) {
         cleanup();
         return result;
@@ -1145,6 +1276,10 @@ StreamingImportResult runStreamingSessionImportToTempFile(
     }
 
     result.stats = stats.finish();
+    if (!emitImportProgress(callbacks, result, true, result.error)) {
+        cleanup();
+        return result;
+    }
     result.ok = true;
     cleanup();
     return result;
@@ -1647,8 +1782,15 @@ int AveMediaBridge_ProbeToJson(const wchar_t* inputPath, const wchar_t* outputJs
     }
 }
 
-int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t* sessionMediaDir) {
+int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* options) {
     try {
+        if (!options || options->structSize < sizeof(AveMediaBridgeImportOptions)) {
+            setLastErrorText(L"import options are invalid or too small");
+            return 1;
+        }
+
+        const wchar_t* inputPath = options->inputPath;
+        const wchar_t* sessionMediaDir = options->sessionMediaDir;
         std::filesystem::path inputFsPath;
         std::string input;
         std::string error;
@@ -1676,9 +1818,18 @@ int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t*
 
         cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
 
-        StreamingImportResult imported = runStreamingSessionImportToTempFile(input, sessionDir, audioDataTmpPath);
+        StreamingImportCallbacks callbacks;
+        callbacks.onProgress = options->onProgress;
+        callbacks.shouldCancel = options->shouldCancel;
+        callbacks.userData = options->userData;
+
+        StreamingImportResult imported = runStreamingSessionImportToTempFile(input, sessionDir, audioDataTmpPath, &callbacks);
         if (!imported.ok) {
             cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+            if (imported.canceled) {
+                setLastErrorText(imported.error.empty() ? "streaming session import canceled" : imported.error);
+                return AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED;
+            }
             setLastErrorText(imported.error.empty() ? "streaming audio import failed" : imported.error);
             return 2;
         }
@@ -1702,9 +1853,17 @@ int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t*
         clearLastError();
         return 0;
     } catch (...) {
-        setLastErrorText(L"unexpected exception in AveMediaBridge_ImportAudioToSession");
+        setLastErrorText(L"unexpected exception in AveMediaBridge_ImportAudioToSessionEx");
         return 99;
     }
+}
+
+int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t* sessionMediaDir) {
+    AveMediaBridgeImportOptions options{};
+    options.structSize = sizeof(options);
+    options.inputPath = inputPath;
+    options.sessionMediaDir = sessionMediaDir;
+    return AveMediaBridge_ImportAudioToSessionEx(&options);
 }
 
 const wchar_t* AveMediaBridge_GetVersion() {
