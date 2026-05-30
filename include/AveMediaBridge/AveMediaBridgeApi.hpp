@@ -36,6 +36,21 @@ typedef void (AVEMEDIABRIDGE_CALL *AveMediaBridgeProgressCallback)(
 typedef int (AVEMEDIABRIDGE_CALL *AveMediaBridgeCancelCallback)(
     void* userData);
 
+struct AveMediaBridgeWaveformChunk {
+    uint32_t structSize;
+    uint64_t firstFrame;
+    uint32_t framesPerBin;
+    uint32_t binCount;
+    uint32_t valuesPerBin;
+    int sampleRate;
+    int channels;
+    const float* minMaxPairs;
+};
+
+typedef void (AVEMEDIABRIDGE_CALL *AveMediaBridgeWaveformChunkCallback)(
+    const AveMediaBridgeWaveformChunk* chunk,
+    void* userData);
+
 struct AveMediaBridgeImportOptions {
     uint32_t structSize;
     const wchar_t* inputPath;
@@ -43,6 +58,7 @@ struct AveMediaBridgeImportOptions {
     AveMediaBridgeProgressCallback onProgress;
     AveMediaBridgeCancelCallback shouldCancel;
     void* userData;
+    AveMediaBridgeWaveformChunkCallback onWaveformChunk;
 };
 
 AVEMEDIABRIDGE_C_API int AveMediaBridge_TransformToWav(

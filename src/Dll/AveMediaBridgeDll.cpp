@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,8 @@ constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
 constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
+constexpr std::uint32_t kDraftWaveformFramesPerBin = 512;
+constexpr std::uint32_t kDraftWaveformMaxBinsPerChunk = 64;
 thread_local std::wstring g_lastError;
 
 struct FastProbeResult {
@@ -133,12 +136,24 @@ struct StreamingSwrState {
     std::vector<float> outputBuffer;
 };
 
+struct DraftWaveformState {
+    std::uint64_t nextFrame = 0;
+    std::uint64_t pendingChunkFirstFrame = 0;
+    std::uint32_t currentBinFrames = 0;
+    float currentMin = 0.0f;
+    float currentMax = 0.0f;
+    bool currentBinHasSamples = false;
+    std::vector<float> pendingMinMaxPairs;
+};
+
 struct StreamingImportCallbacks {
     AveMediaBridgeProgressCallback onProgress = nullptr;
     AveMediaBridgeCancelCallback shouldCancel = nullptr;
+    AveMediaBridgeWaveformChunkCallback onWaveformChunk = nullptr;
     void* userData = nullptr;
     std::int64_t lastProgressFrames = -1;
     bool progressEmitted = false;
+    DraftWaveformState waveform;
 };
 
 std::string wideToUtf8(const wchar_t* value) {
@@ -641,6 +656,132 @@ double progressRatio01(const StreamingImportResult& result) {
     return -1.0;
 }
 
+float sanitizeWaveformSample(float sample) {
+    return std::isfinite(sample) ? sample : 0.0f;
+}
+
+float downmixFrameToMono(const float* frameSamples, int channels) {
+    double sum = 0.0;
+    for (int channel = 0; channel < channels; ++channel) {
+        sum += static_cast<double>(sanitizeWaveformSample(frameSamples[channel]));
+    }
+    return static_cast<float>(sum / static_cast<double>(channels));
+}
+
+bool emitPendingDraftWaveformChunk(
+    StreamingImportCallbacks* callbacks,
+    int sampleRate,
+    int channels,
+    std::string& error) {
+    if (!callbacks || !callbacks->onWaveformChunk || callbacks->waveform.pendingMinMaxPairs.empty()) {
+        return true;
+    }
+
+    const std::size_t pairCount = callbacks->waveform.pendingMinMaxPairs.size() / 2;
+    if (pairCount == 0 || pairCount > (std::numeric_limits<std::uint32_t>::max)()) {
+        error = "draft waveform bin count overflow";
+        return false;
+    }
+
+    AveMediaBridgeWaveformChunk chunk{};
+    chunk.structSize = sizeof(chunk);
+    chunk.firstFrame = callbacks->waveform.pendingChunkFirstFrame;
+    chunk.framesPerBin = kDraftWaveformFramesPerBin;
+    chunk.binCount = static_cast<std::uint32_t>(pairCount);
+    chunk.valuesPerBin = 2;
+    chunk.sampleRate = sampleRate;
+    chunk.channels = channels;
+    chunk.minMaxPairs = callbacks->waveform.pendingMinMaxPairs.data();
+
+    try {
+        callbacks->onWaveformChunk(&chunk, callbacks->userData);
+    } catch (...) {
+        error = "waveform chunk callback threw an exception";
+        return false;
+    }
+
+    callbacks->waveform.pendingMinMaxPairs.clear();
+    return true;
+}
+
+void finishCurrentDraftWaveformBin(DraftWaveformState& waveform) {
+    if (!waveform.currentBinHasSamples) {
+        return;
+    }
+
+    if (waveform.pendingMinMaxPairs.empty()) {
+        waveform.pendingChunkFirstFrame =
+            waveform.nextFrame - static_cast<std::uint64_t>(waveform.currentBinFrames);
+    }
+    waveform.pendingMinMaxPairs.push_back(waveform.currentMin);
+    waveform.pendingMinMaxPairs.push_back(waveform.currentMax);
+    waveform.currentBinFrames = 0;
+    waveform.currentMin = 0.0f;
+    waveform.currentMax = 0.0f;
+    waveform.currentBinHasSamples = false;
+}
+
+bool emitDraftWaveformSamples(
+    StreamingImportCallbacks* callbacks,
+    const float* interleavedSamples,
+    int frameCount,
+    int channels,
+    int sampleRate,
+    std::uint64_t firstFrame,
+    std::string& error) {
+    if (!callbacks || !callbacks->onWaveformChunk || frameCount <= 0) {
+        return true;
+    }
+    if (!interleavedSamples || channels <= 0 || sampleRate <= 0) {
+        error = "draft waveform callback received invalid audio shape";
+        return false;
+    }
+    if (callbacks->waveform.nextFrame != firstFrame) {
+        error = "draft waveform frame counter mismatch";
+        return false;
+    }
+
+    DraftWaveformState& waveform = callbacks->waveform;
+    for (int frame = 0; frame < frameCount; ++frame) {
+        const float mono = downmixFrameToMono(
+            interleavedSamples + static_cast<std::size_t>(frame) * static_cast<std::size_t>(channels),
+            channels);
+
+        if (!waveform.currentBinHasSamples) {
+            waveform.currentMin = mono;
+            waveform.currentMax = mono;
+            waveform.currentBinHasSamples = true;
+        } else {
+            waveform.currentMin = (std::min)(waveform.currentMin, mono);
+            waveform.currentMax = (std::max)(waveform.currentMax, mono);
+        }
+
+        ++waveform.currentBinFrames;
+        ++waveform.nextFrame;
+        if (waveform.currentBinFrames == kDraftWaveformFramesPerBin) {
+            finishCurrentDraftWaveformBin(waveform);
+            if (waveform.pendingMinMaxPairs.size() / 2 >= kDraftWaveformMaxBinsPerChunk &&
+                !emitPendingDraftWaveformChunk(callbacks, sampleRate, channels, error)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool flushDraftWaveform(
+    StreamingImportCallbacks* callbacks,
+    const StreamingImportResult& result,
+    std::string& error) {
+    if (!callbacks || !callbacks->onWaveformChunk) {
+        return true;
+    }
+
+    finishCurrentDraftWaveformBin(callbacks->waveform);
+    return emitPendingDraftWaveformChunk(callbacks, result.sampleRate, result.channels, error);
+}
+
 bool emitImportProgress(
     StreamingImportCallbacks* callbacks,
     const StreamingImportResult& result,
@@ -920,10 +1061,21 @@ int writeConvertedStreamingSamples(
     }
 
     stats.addSamples(swr.outputBuffer.data(), writtenSamples);
+    const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
     std::string countError;
     if (!addWrittenFrames(result, ret, countError)) {
         result.error = countError;
         return AVERROR(EOVERFLOW);
+    }
+    if (!emitDraftWaveformSamples(
+            callbacks,
+            swr.outputBuffer.data(),
+            ret,
+            swr.channels,
+            swr.sampleRate,
+            firstOutputFrame,
+            result.error)) {
+        return AVERROR_EXIT;
     }
     if (!emitImportProgress(callbacks, result, false, result.error)) {
         return AVERROR_EXIT;
@@ -979,10 +1131,21 @@ int flushStreamingSwr(
         }
 
         stats.addSamples(swr.outputBuffer.data(), writtenSamples);
+        const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
         std::string countError;
         if (!addWrittenFrames(result, ret, countError)) {
             result.error = countError;
             return AVERROR(EOVERFLOW);
+        }
+        if (!emitDraftWaveformSamples(
+                callbacks,
+                swr.outputBuffer.data(),
+                ret,
+                swr.channels,
+                swr.sampleRate,
+                firstOutputFrame,
+                result.error)) {
+            return AVERROR_EXIT;
         }
         if (!emitImportProgress(callbacks, result, false, result.error)) {
             return AVERROR_EXIT;
@@ -1229,6 +1392,15 @@ StreamingImportResult runStreamingSessionImportToTempFile(
 
     ret = flushStreamingSwr(swr, output, stats, result, callbacks);
     if (ret < 0) {
+        cleanup();
+        return result;
+    }
+
+    if (!flushDraftWaveform(callbacks, result, result.error)) {
+        cleanup();
+        return result;
+    }
+    if (!pollImportCancel(callbacks, result)) {
         cleanup();
         return result;
     }
@@ -1784,7 +1956,13 @@ int AveMediaBridge_ProbeToJson(const wchar_t* inputPath, const wchar_t* outputJs
 
 int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* options) {
     try {
-        if (!options || options->structSize < sizeof(AveMediaBridgeImportOptions)) {
+        constexpr std::size_t kImportOptionsBaseSize =
+            offsetof(AveMediaBridgeImportOptions, onWaveformChunk);
+        constexpr std::size_t kImportOptionsWaveformSize =
+            offsetof(AveMediaBridgeImportOptions, onWaveformChunk) +
+            sizeof(AveMediaBridgeWaveformChunkCallback);
+
+        if (!options || options->structSize < kImportOptionsBaseSize) {
             setLastErrorText(L"import options are invalid or too small");
             return 1;
         }
@@ -1821,6 +1999,8 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
         StreamingImportCallbacks callbacks;
         callbacks.onProgress = options->onProgress;
         callbacks.shouldCancel = options->shouldCancel;
+        callbacks.onWaveformChunk =
+            options->structSize >= kImportOptionsWaveformSize ? options->onWaveformChunk : nullptr;
         callbacks.userData = options->userData;
 
         StreamingImportResult imported = runStreamingSessionImportToTempFile(input, sessionDir, audioDataTmpPath, &callbacks);

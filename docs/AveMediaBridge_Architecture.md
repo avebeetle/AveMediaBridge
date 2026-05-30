@@ -319,6 +319,22 @@ typedef void (__stdcall *AveMediaBridgeProgressCallback)(
 typedef int (__stdcall *AveMediaBridgeCancelCallback)(
     void* userData);
 
+struct AveMediaBridgeWaveformChunk
+{
+    uint32_t structSize;
+    uint64_t firstFrame;
+    uint32_t framesPerBin;
+    uint32_t binCount;
+    uint32_t valuesPerBin;
+    int sampleRate;
+    int channels;
+    const float* minMaxPairs;
+};
+
+typedef void (__stdcall *AveMediaBridgeWaveformChunkCallback)(
+    const AveMediaBridgeWaveformChunk* chunk,
+    void* userData);
+
 struct AveMediaBridgeImportOptions
 {
     uint32_t structSize;
@@ -327,6 +343,7 @@ struct AveMediaBridgeImportOptions
     AveMediaBridgeProgressCallback onProgress;
     AveMediaBridgeCancelCallback shouldCancel;
     void* userData;
+    AveMediaBridgeWaveformChunkCallback onWaveformChunk;
 };
 
 extern "C" __declspec(dllexport)
@@ -391,7 +408,35 @@ Progress and cancellation rules:
 - `shouldCancel` is polled during the decode loop;
 - cancellation stops decode cleanly, closes files, deletes temporary artifacts, returns cancel code `4`, and sets last error text to a clear canceled message.
 
-The API keeps RAM bounded because progress is driven from the streaming import counters rather than from a full decoded `AudioBufferF32`. It is also the foundation for future AveVoice progressive waveform UX, while progressive waveform chunks are intentionally not implemented yet.
+The API keeps RAM bounded because progress is driven from the streaming import counters rather than from a full decoded `AudioBufferF32`. It is also the foundation for future AveVoice progressive waveform UX.
+
+## Draft Waveform Chunk Callback
+
+`AveMediaBridge_ImportAudioToSessionEx` can optionally emit draft waveform chunks during streaming import through `AveMediaBridgeImportOptions::onWaveformChunk`.
+
+The callback is additive and optional:
+
+- callers compiled against the older progress/cancel options layout continue to work because `structSize` is respected;
+- if `onWaveformChunk` is null or the caller passed the older struct size, import behavior is unchanged;
+- the old `AveMediaBridge_ImportAudioToSession` entrypoint remains compatible.
+
+Draft waveform chunk rules:
+
+- callbacks are invoked synchronously on the same import thread;
+- the DLL does not create hidden worker threads;
+- chunks are generated from the already decoded and converted interleaved float32 samples used for `original_f32.bin`;
+- samples are downmixed to mono by averaging channels;
+- NaN and Inf samples are treated as zero for waveform purposes;
+- each bin stores min/max as two float values, so `valuesPerBin == 2`;
+- `framesPerBin` is fixed for the draft stream and currently uses 512 source frames per bin;
+- `firstFrame` is monotonic across chunks;
+- `minMaxPairs` is valid only for the duration of the callback and must not be stored by the caller;
+- memory remains bounded by the decoder/resampler buffers plus a small pending waveform chunk buffer;
+- cancellation is still polled during import, and canceled imports still clean temporary artifacts.
+
+These chunks are temporary UI-oriented data for future progressive waveform UX. They are not the canonical final waveform format, are not written to final waveform files inside AveMediaBridge, and do not replace AveVoice's separate final `WaveformPeaksBuilder` stage.
+
+No C++ ownership crosses the DLL boundary: the callback receives a POD struct and a borrowed `const float*` valid only during the call. FFmpeg types remain private to the implementation.
 
 ### AveMediaBridge_TransformToWav
 
@@ -553,6 +598,7 @@ AveMediaBridgeLabApp.exe smoke-dll-transform "<input-file>" "<output-wav>"
 AveMediaBridgeLabApp.exe smoke-dll-probe "<input-file>" "<output-json>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session "<input-file>" "<session-media-dir>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session-progress "<input-file>" "<session-media-dir>"
+AveMediaBridgeLabApp.exe smoke-dll-import-session-waveform "<input-file>" "<session-media-dir>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session-cancel "<input-file>" "<session-media-dir>"
 ```
 
@@ -576,6 +622,7 @@ Implemented:
 - Fast Probe v2 no-decode metadata probing;
 - streaming `AveMediaBridge_ImportAudioToSession`;
 - `AveMediaBridge_ImportAudioToSessionEx` progress/cancel callbacks;
+- draft waveform chunk callbacks during streaming import;
 - disk preflight for session import;
 - LabApp smoke commands for transform, probe, and session import.
 

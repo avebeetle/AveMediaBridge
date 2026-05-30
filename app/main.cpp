@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -237,6 +239,23 @@ struct ProgressSmokeState {
     bool cancelRequested = false;
 };
 
+struct WaveformChunkSmokeState {
+    int progressCallbackCount = 0;
+    int waveformChunkCount = 0;
+    std::uint64_t firstFrameFirst = 0;
+    std::uint64_t firstFrameLast = 0;
+    std::uint64_t lastFirstFrame = 0;
+    std::uint64_t totalBinsReceived = 0;
+    bool firstFrameMonotonic = true;
+    bool binCountValid = true;
+    bool valuesPerBinValid = true;
+    bool minMaxPairsValid = true;
+};
+
+std::uint32_t importOptionsSizeBeforeWaveformCallback() {
+    return static_cast<std::uint32_t>(offsetof(AveMediaBridgeImportOptions, onWaveformChunk));
+}
+
 void configureDllSearchPath(const std::filesystem::path& exeDir, const std::filesystem::path& ffmpegDir) {
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
     AddDllDirectory(exeDir.c_str());
@@ -411,6 +430,55 @@ void AVEMEDIABRIDGE_CALL printProgressSmokeCallback(
 int AVEMEDIABRIDGE_CALL cancelSmokeCallback(void* userData) {
     auto* state = static_cast<ProgressSmokeState*>(userData);
     return state && state->cancelRequested ? 1 : 0;
+}
+
+void AVEMEDIABRIDGE_CALL waveformProgressSmokeCallback(
+    const AveMediaBridgeImportProgress* progress,
+    void* userData) {
+    auto* state = static_cast<WaveformChunkSmokeState*>(userData);
+    if (!progress || !state) {
+        return;
+    }
+
+    ++state->progressCallbackCount;
+}
+
+void AVEMEDIABRIDGE_CALL waveformChunkSmokeCallback(
+    const AveMediaBridgeWaveformChunk* chunk,
+    void* userData) {
+    auto* state = static_cast<WaveformChunkSmokeState*>(userData);
+    if (!chunk || !state) {
+        return;
+    }
+
+    if (state->waveformChunkCount == 0) {
+        state->firstFrameFirst = chunk->firstFrame;
+    } else if (chunk->firstFrame < state->lastFirstFrame) {
+        state->firstFrameMonotonic = false;
+    }
+    state->lastFirstFrame = chunk->firstFrame;
+    state->firstFrameLast = chunk->firstFrame;
+    ++state->waveformChunkCount;
+
+    if (chunk->binCount == 0) {
+        state->binCountValid = false;
+    }
+    if (chunk->valuesPerBin != 2) {
+        state->valuesPerBinValid = false;
+    }
+    if (!chunk->minMaxPairs) {
+        state->minMaxPairsValid = false;
+    } else {
+        const std::size_t valueCount =
+            static_cast<std::size_t>(chunk->binCount) * static_cast<std::size_t>(chunk->valuesPerBin);
+        for (std::size_t i = 0; i < valueCount; ++i) {
+            if (!std::isfinite(chunk->minMaxPairs[i])) {
+                state->minMaxPairsValid = false;
+                break;
+            }
+        }
+    }
+    state->totalBinsReceived += chunk->binCount;
 }
 
 int runSmokeDllTransform(const std::string& inputPathText, const std::string& outputPathText) {
@@ -613,7 +681,7 @@ int runSmokeDllImportSessionProgress(const std::string& inputPathText, const std
 
     ProgressSmokeState progressState;
     AveMediaBridgeImportOptions options{};
-    options.structSize = sizeof(options);
+    options.structSize = importOptionsSizeBeforeWaveformCallback();
     options.inputPath = inputPath.c_str();
     options.sessionMediaDir = sessionMediaDir.c_str();
     options.onProgress = printProgressSmokeCallback;
@@ -658,6 +726,93 @@ int runSmokeDllImportSessionProgress(const std::string& inputPathText, const std
         : 1;
 }
 
+int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std::string& sessionMediaDirText) {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+    const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
+    const std::filesystem::path dllPath = exeDir / "AveMediaBridge.dll";
+
+    std::wcout << L"Smoke DLL import session waveform\n";
+    std::wcout << L"  DLL: " << dllPath.wstring() << L"\n";
+    std::wcout << L"  FFmpeg DLL dir: " << ffmpegDir.wstring() << L"\n";
+
+    HMODULE module = loadBridgeDll(exeDir, ffmpegDir);
+    if (!module) {
+        std::wcerr << L"ERROR: LoadLibraryW(AveMediaBridge.dll) failed. Win32 error: " << GetLastError() << L"\n";
+        return 1;
+    }
+
+    auto importSessionEx =
+        reinterpret_cast<ImportAudioToSessionExFn>(GetProcAddress(module, "AveMediaBridge_ImportAudioToSessionEx"));
+    if (!importSessionEx) {
+        std::cerr << "ERROR: GetProcAddress(AveMediaBridge_ImportAudioToSessionEx) failed. Win32 error: " << GetLastError() << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    const std::wstring inputPath = stringToWide(inputPathText);
+    const std::wstring sessionMediaDir = stringToWide(sessionMediaDirText);
+    if (inputPath.empty() || sessionMediaDir.empty()) {
+        std::cerr << "ERROR: unable to convert input or session path to UTF-16.\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    WaveformChunkSmokeState waveformState;
+    AveMediaBridgeImportOptions options{};
+    options.structSize = sizeof(options);
+    options.inputPath = inputPath.c_str();
+    options.sessionMediaDir = sessionMediaDir.c_str();
+    options.onProgress = waveformProgressSmokeCallback;
+    options.shouldCancel = nullptr;
+    options.userData = &waveformState;
+    options.onWaveformChunk = waveformChunkSmokeCallback;
+
+    const int result = importSessionEx(&options);
+    if (result != 0) {
+        std::cerr << "Result: FAIL\n";
+        std::cerr << "AveMediaBridge_ImportAudioToSessionEx returned " << result << "\n";
+        printDllLastErrorText(module);
+        FreeLibrary(module);
+        return result;
+    }
+
+    FreeLibrary(module);
+    const std::filesystem::path sessionPath(sessionMediaDirText);
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionPath, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
+        return 1;
+    }
+
+    std::cout << "Result: OK\n";
+    std::cout << "Waveform chunk count: " << waveformState.waveformChunkCount << "\n";
+    std::cout << "Waveform firstFrame first: " << waveformState.firstFrameFirst << "\n";
+    std::cout << "Waveform firstFrame last: " << waveformState.firstFrameLast << "\n";
+    std::cout << "Waveform total bins received: " << waveformState.totalBinsReceived << "\n";
+    std::cout << "Waveform firstFrame monotonic: " << (waveformState.firstFrameMonotonic ? "yes" : "no") << "\n";
+    std::cout << "Waveform binCount valid: " << (waveformState.binCountValid ? "yes" : "no") << "\n";
+    std::cout << "Waveform valuesPerBin valid: " << (waveformState.valuesPerBinValid ? "yes" : "no") << "\n";
+    std::cout << "Waveform min/max values finite: " << (waveformState.minMaxPairsValid ? "yes" : "no") << "\n";
+    std::cout << "Progress callbacks observed: " << waveformState.progressCallbackCount << "\n";
+    printSessionArtifactSummary(sessionMediaDirText, summary);
+    std::cout << "Final import byte match: " << (summary.sizeMatch ? "yes" : "no") << "\n";
+
+    return waveformState.waveformChunkCount > 0 &&
+            waveformState.firstFrameMonotonic &&
+            waveformState.binCountValid &&
+            waveformState.valuesPerBinValid &&
+            waveformState.minMaxPairsValid &&
+            waveformState.totalBinsReceived > 0 &&
+            waveformState.progressCallbackCount > 0 &&
+            summary.metadataExists &&
+            summary.audioInfoExists &&
+            summary.audioDataExists &&
+            summary.sizeMatch
+        ? 0
+        : 1;
+}
+
 int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::string& sessionMediaDirText) {
     const std::filesystem::path exeDir = getExecutableDirectory();
     const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
@@ -693,7 +848,7 @@ int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::
     progressState.cancelAfterFirstProgress = true;
 
     AveMediaBridgeImportOptions options{};
-    options.structSize = sizeof(options);
+    options.structSize = importOptionsSizeBeforeWaveformCallback();
     options.inputPath = inputPath.c_str();
     options.sessionMediaDir = sessionMediaDir.c_str();
     options.onProgress = printProgressSmokeCallback;
@@ -970,6 +1125,15 @@ int main(int argc, char** argv) {
         const std::string inputPath = stripMatchingQuotes(argv[2]);
         const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
         return runSmokeDllImportSessionProgress(inputPath, sessionMediaDir);
+    }
+    if (firstArg == "smoke-dll-import-session-waveform") {
+        if (argc < 4) {
+            std::cout << "Usage: AveMediaBridgeLabApp.exe smoke-dll-import-session-waveform <input-file> <session-media-dir>\n";
+            return 1;
+        }
+        const std::string inputPath = stripMatchingQuotes(argv[2]);
+        const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
+        return runSmokeDllImportSessionWaveform(inputPath, sessionMediaDir);
     }
     if (firstArg == "smoke-dll-import-session-cancel") {
         if (argc < 4) {
