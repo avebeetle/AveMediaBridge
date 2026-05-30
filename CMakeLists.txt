@@ -64,6 +64,7 @@ add_library(AveMediaBridge SHARED
 )
 
 target_link_libraries(AveMediaBridge PRIVATE AveMediaBridgeCore)
+target_include_directories(AveMediaBridge PRIVATE "${FFMPEG_INCLUDE_DIR}")
 target_compile_definitions(AveMediaBridge PRIVATE AVEMEDIABRIDGE_BUILD_DLL)
 set_target_properties(AveMediaBridge PROPERTIES OUTPUT_NAME "AveMediaBridge")
 

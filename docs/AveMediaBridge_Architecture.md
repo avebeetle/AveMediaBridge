@@ -212,22 +212,51 @@ Inputs:
 
 Outputs:
 
-- JSON file containing source path, audio availability, selected audio stream index, sample rate, channel count, decoded frame count if known, duration, container/format fields, codec fields, stream summaries, warnings, and errors.
+- JSON file containing source path, audio availability, selected audio stream index, sample rate, channel count, decoded frame count if known or estimated, duration, container/format fields, codec fields, stream summaries, warnings, and errors.
 
 Return code:
 
 - `0`: JSON was written successfully.
 - non-zero: invalid input/output path, failed write, unavailable probe data for invalid media, or unexpected internal failure.
 
-Current v1 behavior:
+Current behavior:
 
-- Probe uses the existing FFmpeg-backed import/decode path. This means it can decode audio to learn frame count and output audio shape. A future fast probe can avoid full decode while preserving the JSON contract.
+- Probe uses Fast Probe v2, a bounded FFmpeg metadata path that does not full-decode audio.
 
 Generated file:
 
 ```text
 <outputJsonPath>
 ```
+
+## Fast Probe v2
+
+`AveMediaBridge_ProbeToJson` now uses `avformat_open_input`, bounded probe/analyze settings, `avformat_find_stream_info`, and `av_find_best_stream` to collect metadata quickly.
+
+Fast Probe v2 rules:
+
+- it does not run a full decode loop for basic metadata;
+- it does not allocate `AudioBufferF32`;
+- it does not create `original_f32.bin`;
+- `decodedSampleFrames` can be `exact`, `estimated`, or `unknown`;
+- `exact` is used only when decoded sample frames can be derived reliably without decode, such as PCM audio with stream duration in the sample-rate time base;
+- compressed or container-estimated durations normally produce `estimated` or `unknown` frame counts;
+- exact decoded frame counts are written by `AveMediaBridge_ImportAudioToSession` after the real import/decode path completes.
+
+The v2 JSON keeps the v1 fields additively and adds:
+
+- `schemaVersion`;
+- `probeMode`;
+- `bestAudioStreamIndex`;
+- `containerFormat`;
+- `channelLayout`;
+- `durationKind`;
+- `durationEstimationMethod`;
+- `decodedSampleFrames`;
+- `decodedSampleFramesKind`;
+- `estimatedDecodedBytes`;
+- `estimatedDecodedBytesKind`;
+- `probeScore`.
 
 ### AveMediaBridge_ImportAudioToSession
 
@@ -439,6 +468,7 @@ Implemented:
 - `AveMediaBridge_GetVersionString`;
 - thread-local `AveMediaBridge_GetLastErrorText`;
 - `AveMediaBridge_ProbeToJson`;
+- Fast Probe v2 no-decode metadata probing;
 - `AveMediaBridge_ImportAudioToSession`;
 - LabApp smoke commands for transform, probe, and session import.
 
@@ -451,7 +481,6 @@ Not implemented:
 - video remux;
 - compressed audio export;
 - `AveMediaBridge_ExportF32ToWav`;
-- fast no-decode probe;
 - selected-stream import API;
 - direct AveVoice integration.
 

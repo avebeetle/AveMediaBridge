@@ -6,6 +6,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -14,10 +15,45 @@
 #include <string>
 #include <vector>
 
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
+}
+
 namespace {
 
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
+constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
+constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
 thread_local std::wstring g_lastError;
+
+struct FastProbeResult {
+    std::string sourcePath;
+    std::string formatName;
+    std::string formatLongName;
+    std::string containerFormat;
+    int streamCount = 0;
+    int audioStreamCount = 0;
+    bool streamInfoFound = false;
+    bool hasAudio = false;
+    int bestAudioStreamIndex = -1;
+    AveMediaBridge::SelectedAudioStreamInfo selectedAudio;
+    std::string channelLayout;
+    double durationSec = 0.0;
+    std::string durationKind = "unknown";
+    std::string durationEstimationMethod = "unknown";
+    std::int64_t decodedSampleFrames = 0;
+    std::string decodedSampleFramesKind = "unknown";
+    std::int64_t estimatedDecodedBytes = 0;
+    std::string estimatedDecodedBytesKind = "unknown";
+    int probeScore = -1;
+    std::vector<AveMediaBridge::StreamSummary> streams;
+    std::vector<std::string> warnings;
+    std::vector<std::string> errors;
+};
 
 std::string wideToUtf8(const wchar_t* value) {
     if (!value || value[0] == L'\0') {
@@ -127,8 +163,302 @@ std::string jsonString(const std::string& value) {
     return out.str();
 }
 
-std::int64_t decodedFrames(const AveMediaBridge::AudioImportResult& result) {
-    return result.audio.isConsistent() ? result.audio.frameCount() : 0;
+std::string ffErrorString(int err) {
+    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(err, buffer, sizeof(buffer));
+    return std::string(buffer);
+}
+
+std::string rationalToString(AVRational value) {
+    std::ostringstream out;
+    out << value.num << "/" << value.den;
+    return out.str();
+}
+
+std::string mediaTypeName(AVMediaType type) {
+    const char* name = av_get_media_type_string(type);
+    return name ? std::string(name) : std::string("unknown");
+}
+
+std::string describeChannelLayout(const AVChannelLayout& layout) {
+    if (layout.nb_channels <= 0 || !av_channel_layout_check(&layout)) {
+        return {};
+    }
+
+    char buffer[128] = {};
+    if (av_channel_layout_describe(&layout, buffer, sizeof(buffer)) <= 0) {
+        return {};
+    }
+    return std::string(buffer);
+}
+
+bool isPcmCodec(AVCodecID codecId) {
+    switch (codecId) {
+        case AV_CODEC_ID_PCM_S16LE:
+        case AV_CODEC_ID_PCM_S16BE:
+        case AV_CODEC_ID_PCM_U16LE:
+        case AV_CODEC_ID_PCM_U16BE:
+        case AV_CODEC_ID_PCM_S8:
+        case AV_CODEC_ID_PCM_U8:
+        case AV_CODEC_ID_PCM_MULAW:
+        case AV_CODEC_ID_PCM_ALAW:
+        case AV_CODEC_ID_PCM_S32LE:
+        case AV_CODEC_ID_PCM_S32BE:
+        case AV_CODEC_ID_PCM_U32LE:
+        case AV_CODEC_ID_PCM_U32BE:
+        case AV_CODEC_ID_PCM_S24LE:
+        case AV_CODEC_ID_PCM_S24BE:
+        case AV_CODEC_ID_PCM_U24LE:
+        case AV_CODEC_ID_PCM_U24BE:
+        case AV_CODEC_ID_PCM_S24DAUD:
+        case AV_CODEC_ID_PCM_ZORK:
+        case AV_CODEC_ID_PCM_S16LE_PLANAR:
+        case AV_CODEC_ID_PCM_DVD:
+        case AV_CODEC_ID_PCM_F32BE:
+        case AV_CODEC_ID_PCM_F32LE:
+        case AV_CODEC_ID_PCM_F64BE:
+        case AV_CODEC_ID_PCM_F64LE:
+        case AV_CODEC_ID_PCM_BLURAY:
+        case AV_CODEC_ID_PCM_LXF:
+        case AV_CODEC_ID_PCM_S8_PLANAR:
+        case AV_CODEC_ID_PCM_S24LE_PLANAR:
+        case AV_CODEC_ID_PCM_S32LE_PLANAR:
+        case AV_CODEC_ID_PCM_S16BE_PLANAR:
+        case AV_CODEC_ID_PCM_S64LE:
+        case AV_CODEC_ID_PCM_S64BE:
+        case AV_CODEC_ID_PCM_F16LE:
+        case AV_CODEC_ID_PCM_F24LE:
+        case AV_CODEC_ID_PCM_VIDC:
+        case AV_CODEC_ID_PCM_SGA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+AveMediaBridge::StreamSummary makeFastStreamSummary(int index, const AVStream* stream) {
+    AveMediaBridge::StreamSummary summary;
+    summary.index = index;
+    if (!stream || !stream->codecpar) {
+        return summary;
+    }
+
+    const AVCodecParameters* codecpar = stream->codecpar;
+    summary.mediaType = mediaTypeName(codecpar->codec_type);
+    summary.codecName = avcodec_get_name(codecpar->codec_id);
+    summary.codecId = static_cast<int>(codecpar->codec_id);
+    summary.sampleRate = codecpar->sample_rate;
+    summary.channels = codecpar->ch_layout.nb_channels;
+    summary.bitRate = codecpar->bit_rate;
+    summary.timeBase = rationalToString(stream->time_base);
+    return summary;
+}
+
+int findFirstAudioStream(const AVFormatContext* formatContext) {
+    if (!formatContext) {
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < formatContext->nb_streams; ++i) {
+        const AVStream* stream = formatContext->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+double secondsFromStreamDuration(const AVStream* stream) {
+    if (!stream || stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
+        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(stream->duration) * av_q2d(stream->time_base);
+}
+
+std::int64_t exactPcmFramesFromStreamDuration(const AVStream* stream, const AVCodecParameters* codecpar) {
+    if (!stream || !codecpar || !isPcmCodec(codecpar->codec_id) || codecpar->sample_rate <= 0 ||
+        stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
+        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+        return 0;
+    }
+
+    if (stream->time_base.num == 1 && stream->time_base.den == codecpar->sample_rate) {
+        return stream->duration;
+    }
+
+    const long double frames =
+        static_cast<long double>(stream->duration) *
+        static_cast<long double>(stream->time_base.num) *
+        static_cast<long double>(codecpar->sample_rate) /
+        static_cast<long double>(stream->time_base.den);
+    const auto rounded = static_cast<std::int64_t>(std::llround(frames));
+    if (rounded > 0 && std::fabs(frames - static_cast<long double>(rounded)) < 0.000001L) {
+        return rounded;
+    }
+    return 0;
+}
+
+void fillFastSourceInfo(FastProbeResult& result, const AVFormatContext* formatContext) {
+    if (!formatContext) {
+        return;
+    }
+
+    result.streamCount = static_cast<int>(formatContext->nb_streams);
+    result.probeScore = formatContext->probe_score;
+    if (formatContext->iformat) {
+        result.formatName = formatContext->iformat->name ? formatContext->iformat->name : "";
+        result.formatLongName = formatContext->iformat->long_name ? formatContext->iformat->long_name : "";
+        result.containerFormat = !result.formatLongName.empty() ? result.formatLongName : result.formatName;
+    }
+}
+
+void fillFastStreamDetails(FastProbeResult& result, const AVFormatContext* formatContext) {
+    if (!formatContext) {
+        return;
+    }
+
+    result.streams.reserve(formatContext->nb_streams);
+    for (unsigned int i = 0; i < formatContext->nb_streams; ++i) {
+        const AVStream* stream = formatContext->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++result.audioStreamCount;
+        }
+        result.streams.push_back(makeFastStreamSummary(static_cast<int>(i), stream));
+    }
+}
+
+void fillFastSelectedAudio(
+    FastProbeResult& result,
+    const AVStream* stream,
+    const AVCodec* decoder) {
+    if (!stream || !stream->codecpar) {
+        return;
+    }
+
+    const AVCodecParameters* codecpar = stream->codecpar;
+    result.hasAudio = true;
+    result.selectedAudio.index = static_cast<int>(stream->index);
+    result.selectedAudio.codecName = avcodec_get_name(codecpar->codec_id);
+    result.selectedAudio.codecId = static_cast<int>(codecpar->codec_id);
+    result.selectedAudio.decoderName = decoder && decoder->name ? decoder->name : "";
+    result.selectedAudio.sampleRate = codecpar->sample_rate;
+    result.selectedAudio.channels = codecpar->ch_layout.nb_channels;
+    result.selectedAudio.bitRate = codecpar->bit_rate;
+    result.selectedAudio.timeBase = rationalToString(stream->time_base);
+    result.channelLayout = describeChannelLayout(codecpar->ch_layout);
+}
+
+void estimateFastDurationAndFrames(
+    FastProbeResult& result,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
+    const double streamSeconds = secondsFromStreamDuration(audioStream);
+    const std::int64_t exactPcmFrames = exactPcmFramesFromStreamDuration(audioStream, codecpar);
+
+    if (streamSeconds > 0.0) {
+        result.durationSec = streamSeconds;
+        result.durationEstimationMethod = "from_stream";
+        result.durationKind = exactPcmFrames > 0 ? "exact" : "estimated";
+    } else if (formatContext && formatContext->duration != AV_NOPTS_VALUE && formatContext->duration > 0) {
+        result.durationSec = static_cast<double>(formatContext->duration) / static_cast<double>(AV_TIME_BASE);
+        result.durationEstimationMethod = "from_pts";
+        result.durationKind = "estimated";
+    } else if (formatContext) {
+        const std::int64_t bitRate =
+            codecpar && codecpar->bit_rate > 0 ? codecpar->bit_rate : formatContext->bit_rate;
+        const std::int64_t byteSize = formatContext->pb ? avio_size(formatContext->pb) : -1;
+        if (bitRate > 0 && byteSize > 0) {
+            result.durationSec = (static_cast<double>(byteSize) * 8.0) / static_cast<double>(bitRate);
+            result.durationEstimationMethod = "from_bitrate";
+            result.durationKind = "estimated";
+        }
+    }
+
+    const int sampleRate = codecpar ? codecpar->sample_rate : 0;
+    const int channels = codecpar ? codecpar->ch_layout.nb_channels : 0;
+    if (exactPcmFrames > 0) {
+        result.decodedSampleFrames = exactPcmFrames;
+        result.decodedSampleFramesKind = "exact";
+    } else if (result.durationSec > 0.0 && sampleRate > 0 && std::isfinite(result.durationSec)) {
+        result.decodedSampleFrames =
+            static_cast<std::int64_t>(std::llround(result.durationSec * static_cast<double>(sampleRate)));
+        result.decodedSampleFramesKind = result.decodedSampleFrames > 0 ? "estimated" : "unknown";
+    }
+
+    if (result.decodedSampleFrames > 0 && channels > 0) {
+        result.estimatedDecodedBytes =
+            result.decodedSampleFrames *
+            static_cast<std::int64_t>(channels) *
+            static_cast<std::int64_t>(sizeof(float));
+        result.estimatedDecodedBytesKind = result.decodedSampleFramesKind;
+    }
+}
+
+FastProbeResult runFastProbe(const std::string& path) {
+    FastProbeResult result;
+    result.sourcePath = path;
+
+    AVFormatContext* formatContext = avformat_alloc_context();
+    if (!formatContext) {
+        result.errors.push_back("avformat_alloc_context failed");
+        return result;
+    }
+
+    formatContext->probesize = kFastProbeSizeBytes;
+    formatContext->max_analyze_duration = kFastProbeAnalyzeDurationUs;
+
+    AVDictionary* options = nullptr;
+    av_dict_set(&options, "probesize", "4194304", 0);
+    av_dict_set(&options, "analyzeduration", "3000000", 0);
+
+    int ret = avformat_open_input(&formatContext, path.c_str(), nullptr, &options);
+    av_dict_free(&options);
+    if (ret < 0) {
+        result.errors.push_back("avformat_open_input failed: " + ffErrorString(ret));
+        if (formatContext) {
+            avformat_close_input(&formatContext);
+        }
+        return result;
+    }
+
+    ret = avformat_find_stream_info(formatContext, nullptr);
+    fillFastSourceInfo(result, formatContext);
+    if (ret < 0) {
+        result.errors.push_back("avformat_find_stream_info failed: " + ffErrorString(ret));
+        avformat_close_input(&formatContext);
+        return result;
+    }
+
+    result.streamInfoFound = true;
+    fillFastStreamDetails(result, formatContext);
+
+    const AVCodec* decoder = nullptr;
+    int audioStreamIndex = av_find_best_stream(formatContext, AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
+    if (audioStreamIndex < 0) {
+        const int fallbackAudioStreamIndex = findFirstAudioStream(formatContext);
+        if (fallbackAudioStreamIndex >= 0) {
+            result.warnings.push_back("av_find_best_stream(audio) failed, using first audio stream: " + ffErrorString(audioStreamIndex));
+            audioStreamIndex = fallbackAudioStreamIndex;
+        } else {
+            result.errors.push_back("no audio stream found: " + ffErrorString(audioStreamIndex));
+            avformat_close_input(&formatContext);
+            return result;
+        }
+    }
+
+    result.bestAudioStreamIndex = audioStreamIndex;
+    AVStream* audioStream = formatContext->streams[audioStreamIndex];
+    if (!decoder && audioStream && audioStream->codecpar) {
+        decoder = avcodec_find_decoder(audioStream->codecpar->codec_id);
+    }
+    fillFastSelectedAudio(result, audioStream, decoder);
+    estimateFastDurationAndFrames(result, formatContext, audioStream);
+
+    avformat_close_input(&formatContext);
+    return result;
 }
 
 double durationSeconds(const AveMediaBridge::AudioImportResult& result) {
@@ -136,26 +466,6 @@ double durationSeconds(const AveMediaBridge::AudioImportResult& result) {
         return result.source.durationSeconds;
     }
     return result.audio.durationSeconds();
-}
-
-int effectiveSampleRate(const AveMediaBridge::AudioImportResult& result) {
-    if (result.audio.sampleRate > 0) {
-        return result.audio.sampleRate;
-    }
-    if (result.decode.outputSampleRate > 0) {
-        return result.decode.outputSampleRate;
-    }
-    return result.selectedAudio.sampleRate;
-}
-
-int effectiveChannels(const AveMediaBridge::AudioImportResult& result) {
-    if (result.audio.channels > 0) {
-        return result.audio.channels;
-    }
-    if (result.decode.outputChannels > 0) {
-        return result.decode.outputChannels;
-    }
-    return result.selectedAudio.channels;
 }
 
 bool hasAudio(const AveMediaBridge::AudioImportResult& result) {
@@ -306,10 +616,9 @@ bool validateOutputPath(const wchar_t* outputPath, std::filesystem::path& output
     return createParentDirectory(outputFsPath, error);
 }
 
-bool writeProbeJson(
+bool writeFastProbeJson(
     const std::filesystem::path& outputPath,
-    const std::string& sourcePathUtf8,
-    const AveMediaBridge::AudioImportResult& result,
+    const FastProbeResult& result,
     std::string& error) {
     if (!createParentDirectory(outputPath, error)) {
         return false;
@@ -324,31 +633,42 @@ bool writeProbeJson(
     json << std::fixed << std::setprecision(9);
     json << "{\n";
     json << "  \"apiVersion\": 1,\n";
-    json << "  \"sourcePath\": " << jsonString(sourcePathUtf8) << ",\n";
-    json << "  \"hasAudio\": " << (hasAudio(result) ? "true" : "false") << ",\n";
+    json << "  \"schemaVersion\": 2,\n";
+    json << "  \"sourcePath\": " << jsonString(result.sourcePath) << ",\n";
+    json << "  \"probeMode\": \"fast_v2\",\n";
+    json << "  \"hasAudio\": " << (result.hasAudio ? "true" : "false") << ",\n";
+    json << "  \"bestAudioStreamIndex\": " << result.bestAudioStreamIndex << ",\n";
     json << "  \"selectedAudioStreamIndex\": " << result.selectedAudio.index << ",\n";
-    json << "  \"sampleRate\": " << effectiveSampleRate(result) << ",\n";
-    json << "  \"channels\": " << effectiveChannels(result) << ",\n";
-    json << "  \"frames\": " << decodedFrames(result) << ",\n";
-    json << "  \"durationSec\": " << durationSeconds(result) << ",\n";
-    json << "  \"formatName\": " << jsonString(result.source.formatName) << ",\n";
-    json << "  \"formatLongName\": " << jsonString(result.source.formatLongName) << ",\n";
+    json << "  \"containerFormat\": " << jsonString(result.containerFormat) << ",\n";
+    json << "  \"formatName\": " << jsonString(result.formatName) << ",\n";
+    json << "  \"formatLongName\": " << jsonString(result.formatLongName) << ",\n";
     json << "  \"codecName\": " << jsonString(result.selectedAudio.codecName) << ",\n";
     json << "  \"codecId\": " << result.selectedAudio.codecId << ",\n";
-    json << "  \"streamCount\": " << result.source.streamCount << ",\n";
-    json << "  \"audioStreamCount\": " << result.probe.audioStreamCount << ",\n";
-    json << "  \"probeMode\": \"decode_v1\",\n";
+    json << "  \"sampleRate\": " << result.selectedAudio.sampleRate << ",\n";
+    json << "  \"channels\": " << result.selectedAudio.channels << ",\n";
+    json << "  \"channelLayout\": " << jsonString(result.channelLayout) << ",\n";
+    json << "  \"frames\": " << result.decodedSampleFrames << ",\n";
+    json << "  \"durationSec\": " << result.durationSec << ",\n";
+    json << "  \"durationKind\": " << jsonString(result.durationKind) << ",\n";
+    json << "  \"durationEstimationMethod\": " << jsonString(result.durationEstimationMethod) << ",\n";
+    json << "  \"decodedSampleFrames\": " << result.decodedSampleFrames << ",\n";
+    json << "  \"decodedSampleFramesKind\": " << jsonString(result.decodedSampleFramesKind) << ",\n";
+    json << "  \"estimatedDecodedBytes\": " << result.estimatedDecodedBytes << ",\n";
+    json << "  \"estimatedDecodedBytesKind\": " << jsonString(result.estimatedDecodedBytesKind) << ",\n";
+    json << "  \"probeScore\": " << result.probeScore << ",\n";
+    json << "  \"streamCount\": " << result.streamCount << ",\n";
+    json << "  \"audioStreamCount\": " << result.audioStreamCount << ",\n";
     json << "  \"selectedAudioStream\": ";
     writeSelectedAudioJson(json, result.selectedAudio, "  ");
     json << ",\n";
     json << "  \"streams\": ";
-    writeStreamSummariesJson(json, result.probe.streams, "  ");
+    writeStreamSummariesJson(json, result.streams, "  ");
     json << ",\n";
     json << "  \"warnings\": ";
-    writeStringArray(json, result.decode.warnings);
+    writeStringArray(json, result.warnings);
     json << ",\n";
     json << "  \"errors\": ";
-    writeErrorArray(json, result.error);
+    writeStringArray(json, result.errors);
     json << "\n";
     json << "}\n";
 
@@ -540,15 +860,14 @@ int AveMediaBridge_ProbeToJson(const wchar_t* inputPath, const wchar_t* outputJs
             return 1;
         }
 
-        AveMediaBridge::AveMediaBridge bridge;
-        AveMediaBridge::AudioImportResult imported = bridge.importAudio(input);
-        if (!writeProbeJson(outputFsPath, input, imported, error)) {
+        FastProbeResult probe = runFastProbe(input);
+        if (!writeFastProbeJson(outputFsPath, probe, error)) {
             setLastErrorText(error);
             return 3;
         }
 
-        if (!imported.error.empty() && !imported.probe.streamInfoFound) {
-            setLastErrorText(imported.error);
+        if (!probe.errors.empty() && !probe.streamInfoFound) {
+            setLastErrorText(probe.errors.front());
             return 2;
         }
 
