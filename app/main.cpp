@@ -11,6 +11,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -231,17 +233,36 @@ struct SessionArtifactSummary {
     bool sizeMatch = false;
 };
 
+struct ConsoleProgressThrottle {
+    bool initialized = false;
+    std::chrono::steady_clock::time_point startedAt{};
+    std::chrono::steady_clock::time_point lastPrintAt{};
+    double lastPrintedPercent = -1.0;
+};
+
 struct ProgressSmokeState {
     int callbackCount = 0;
     std::uint64_t lastFramesWritten = 0;
+    std::uint64_t lastBytesWritten = 0;
     bool monotonic = true;
     bool cancelAfterFirstProgress = false;
     bool cancelRequested = false;
+    bool liveReadableCheck = false;
+    bool firstPositiveProgressChecked = false;
+    bool firstPositiveAudioExists = false;
+    bool firstPositiveSizeOk = false;
+    bool firstPositiveTempJsonExists = false;
+    bool liveFileSizeNeverBehind = true;
+    std::filesystem::path sessionMediaDir;
+    ConsoleProgressThrottle console;
 };
 
 struct WaveformChunkSmokeState {
     int progressCallbackCount = 0;
     int waveformChunkCount = 0;
+    std::uint64_t lastFramesWritten = 0;
+    std::uint64_t lastBytesWritten = 0;
+    bool progressMonotonic = true;
     std::uint64_t firstFrameFirst = 0;
     std::uint64_t firstFrameLast = 0;
     std::uint64_t lastFirstFrame = 0;
@@ -250,6 +271,7 @@ struct WaveformChunkSmokeState {
     bool binCountValid = true;
     bool valuesPerBinValid = true;
     bool minMaxPairsValid = true;
+    ConsoleProgressThrottle console;
 };
 
 std::uint32_t importOptionsSizeBeforeWaveformCallback() {
@@ -400,6 +422,99 @@ void printSessionArtifactSummary(const std::string& sessionMediaDirText, const S
     std::cout << "  original_f32.bin " << (summary.audioDataExists ? "yes" : "missing") << "\n";
 }
 
+std::string progressPercentText(double progress01) {
+    if (progress01 < 0.0 || !std::isfinite(progress01)) {
+        return "unknown";
+    }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << (std::clamp(progress01, 0.0, 1.0) * 100.0) << "%";
+    return out.str();
+}
+
+std::string secondsProgressText(double seconds) {
+    if (seconds < 0.0 || !std::isfinite(seconds)) {
+        return "unknown";
+    }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << seconds << "s";
+    return out.str();
+}
+
+std::string megabytesText(std::uint64_t bytes) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2)
+        << (static_cast<double>(bytes) / (1024.0 * 1024.0))
+        << " MB";
+    return out.str();
+}
+
+void printThrottledConsoleProgress(
+    ConsoleProgressThrottle& throttle,
+    const AveMediaBridgeImportProgress& progress,
+    int waveformChunkCount,
+    bool force) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!throttle.initialized) {
+        throttle.initialized = true;
+        throttle.startedAt = now;
+        throttle.lastPrintAt = now - std::chrono::seconds(1);
+    }
+
+    const double percent = progress.progress01 >= 0.0 && std::isfinite(progress.progress01)
+        ? std::clamp(progress.progress01 * 100.0, 0.0, 100.0)
+        : -1.0;
+    const bool percentChanged =
+        percent >= 0.0 &&
+        (throttle.lastPrintedPercent < 0.0 || percent - throttle.lastPrintedPercent >= 1.0);
+    const bool timeElapsed = now - throttle.lastPrintAt >= std::chrono::milliseconds(350);
+    if (!force && !percentChanged && !timeElapsed) {
+        return;
+    }
+
+    const double elapsedSec =
+        std::chrono::duration<double>(now - throttle.startedAt).count();
+    const double mbWritten = static_cast<double>(progress.bytesWritten) / (1024.0 * 1024.0);
+    const double mbPerSec = elapsedSec > 0.0 ? mbWritten / elapsedSec : 0.0;
+    const double estimatedDurationSec =
+        progress.sampleRate > 0 && progress.estimatedTotalFrames > 0
+            ? static_cast<double>(progress.estimatedTotalFrames) / static_cast<double>(progress.sampleRate)
+            : -1.0;
+
+    std::cout << "Progress: " << progressPercentText(progress.progress01)
+              << " time " << secondsProgressText(progress.availableEndSec)
+              << " / " << secondsProgressText(estimatedDurationSec)
+              << " frames=" << progress.framesWritten
+              << " written=" << megabytesText(progress.bytesWritten)
+              << " waveformChunks=" << waveformChunkCount
+              << " speed=" << std::fixed << std::setprecision(2) << mbPerSec << " MB/s";
+    if ((progress.flags & 1u) != 0u) {
+        std::cout << " final";
+    }
+    std::cout << "\n";
+
+    throttle.lastPrintAt = now;
+    if (percent >= 0.0) {
+        throttle.lastPrintedPercent = percent;
+    }
+}
+
+bool fileExistsNoThrow(const std::filesystem::path& path) {
+    std::error_code fsError;
+    const bool exists = std::filesystem::exists(path, fsError);
+    return exists && !fsError;
+}
+
+bool fileSizeAtLeast(const std::filesystem::path& path, std::uint64_t bytes) {
+    std::error_code fsError;
+    const auto size = std::filesystem::file_size(path, fsError);
+    return !fsError && size >= static_cast<std::uintmax_t>(bytes);
+}
+
+bool sessionTempJsonFilesExist(const std::filesystem::path& sessionPath) {
+    return fileExistsNoThrow(sessionPath / "audio_info.json.tmp") ||
+        fileExistsNoThrow(sessionPath / "metadata.json.tmp");
+}
+
 void AVEMEDIABRIDGE_CALL printProgressSmokeCallback(
     const AveMediaBridgeImportProgress* progress,
     void* userData) {
@@ -412,15 +527,37 @@ void AVEMEDIABRIDGE_CALL printProgressSmokeCallback(
         state->monotonic = false;
     }
     state->lastFramesWritten = progress->framesWritten;
+    state->lastBytesWritten = progress->bytesWritten;
     ++state->callbackCount;
 
-    std::cout << "Progress sample "
-              << state->callbackCount
-              << ": framesWritten=" << progress->framesWritten
-              << " bytesWritten=" << progress->bytesWritten
-              << " availableEndSec=" << std::fixed << std::setprecision(6) << progress->availableEndSec
-              << " progress01=" << progress->progress01
-              << "\n";
+    if (state->liveReadableCheck && progress->framesWritten > 0) {
+        const std::filesystem::path audioPath = state->sessionMediaDir / "original_f32.bin";
+        const bool exists = fileExistsNoThrow(audioPath);
+        const bool sizeOk = exists && fileSizeAtLeast(audioPath, progress->bytesWritten);
+        const bool tempJsonExists =
+            fileExistsNoThrow(state->sessionMediaDir / "audio_info.json.tmp") &&
+            fileExistsNoThrow(state->sessionMediaDir / "metadata.json.tmp");
+        if (!state->firstPositiveProgressChecked) {
+            state->firstPositiveProgressChecked = true;
+            state->firstPositiveAudioExists = exists;
+            state->firstPositiveSizeOk = sizeOk;
+            state->firstPositiveTempJsonExists = tempJsonExists;
+            std::cout << "Live-readable first progress: original_f32.bin exists="
+                      << (exists ? "yes" : "no")
+                      << " size>=bytesWritten=" << (sizeOk ? "yes" : "no")
+                      << " tmpJsonsExist=" << (tempJsonExists ? "yes" : "no")
+                      << "\n";
+        }
+        if (!sizeOk) {
+            state->liveFileSizeNeverBehind = false;
+        }
+    }
+
+    printThrottledConsoleProgress(
+        state->console,
+        *progress,
+        0,
+        (progress->flags & 1u) != 0u);
 
     if (state->cancelAfterFirstProgress && progress->framesWritten > 0 && (progress->flags & 1u) == 0u) {
         state->cancelRequested = true;
@@ -441,6 +578,16 @@ void AVEMEDIABRIDGE_CALL waveformProgressSmokeCallback(
     }
 
     ++state->progressCallbackCount;
+    if (state->progressCallbackCount > 1 && progress->framesWritten < state->lastFramesWritten) {
+        state->progressMonotonic = false;
+    }
+    state->lastFramesWritten = progress->framesWritten;
+    state->lastBytesWritten = progress->bytesWritten;
+    printThrottledConsoleProgress(
+        state->console,
+        *progress,
+        state->waveformChunkCount,
+        (progress->flags & 1u) != 0u);
 }
 
 void AVEMEDIABRIDGE_CALL waveformChunkSmokeCallback(
@@ -680,6 +827,7 @@ int runSmokeDllImportSessionProgress(const std::string& inputPathText, const std
     }
 
     ProgressSmokeState progressState;
+    progressState.sessionMediaDir = std::filesystem::path(sessionMediaDirText);
     AveMediaBridgeImportOptions options{};
     options.structSize = importOptionsSizeBeforeWaveformCallback();
     options.inputPath = inputPath.c_str();
@@ -717,6 +865,102 @@ int runSmokeDllImportSessionProgress(const std::string& inputPathText, const std
     std::cout << "Final progress frames match audio_info.json: " << (finalProgressMatches ? "yes" : "no") << "\n";
     return progressState.callbackCount > 0 &&
             progressState.monotonic &&
+            summary.metadataExists &&
+            summary.audioInfoExists &&
+            summary.audioDataExists &&
+            summary.sizeMatch &&
+            finalProgressMatches
+        ? 0
+        : 1;
+}
+
+int runSmokeDllImportSessionLiveReadable(const std::string& inputPathText, const std::string& sessionMediaDirText) {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+    const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
+    const std::filesystem::path dllPath = exeDir / "AveMediaBridge.dll";
+
+    std::wcout << L"Smoke DLL import session live-readable\n";
+    std::wcout << L"  DLL: " << dllPath.wstring() << L"\n";
+    std::wcout << L"  FFmpeg DLL dir: " << ffmpegDir.wstring() << L"\n";
+
+    HMODULE module = loadBridgeDll(exeDir, ffmpegDir);
+    if (!module) {
+        std::wcerr << L"ERROR: LoadLibraryW(AveMediaBridge.dll) failed. Win32 error: " << GetLastError() << L"\n";
+        return 1;
+    }
+
+    auto importSessionEx =
+        reinterpret_cast<ImportAudioToSessionExFn>(GetProcAddress(module, "AveMediaBridge_ImportAudioToSessionEx"));
+    if (!importSessionEx) {
+        std::cerr << "ERROR: GetProcAddress(AveMediaBridge_ImportAudioToSessionEx) failed. Win32 error: " << GetLastError() << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    const std::wstring inputPath = stringToWide(inputPathText);
+    const std::wstring sessionMediaDir = stringToWide(sessionMediaDirText);
+    if (inputPath.empty() || sessionMediaDir.empty()) {
+        std::cerr << "ERROR: unable to convert input or session path to UTF-16.\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    ProgressSmokeState progressState;
+    progressState.liveReadableCheck = true;
+    progressState.sessionMediaDir = std::filesystem::path(sessionMediaDirText);
+
+    AveMediaBridgeImportOptions options{};
+    options.structSize = importOptionsSizeBeforeWaveformCallback();
+    options.inputPath = inputPath.c_str();
+    options.sessionMediaDir = sessionMediaDir.c_str();
+    options.onProgress = printProgressSmokeCallback;
+    options.shouldCancel = nullptr;
+    options.userData = &progressState;
+
+    const int result = importSessionEx(&options);
+    if (result != 0) {
+        std::cerr << "Result: FAIL\n";
+        std::cerr << "AveMediaBridge_ImportAudioToSessionEx returned " << result << "\n";
+        printDllLastErrorText(module);
+        FreeLibrary(module);
+        return result;
+    }
+
+    FreeLibrary(module);
+    const std::filesystem::path sessionPath(sessionMediaDirText);
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionPath, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
+        return 1;
+    }
+
+    const bool finalProgressMatches =
+        progressState.callbackCount > 0 &&
+        progressState.lastFramesWritten == static_cast<std::uint64_t>(summary.frames);
+
+    std::cout << "Result: OK\n";
+    std::cout << "Progress callbacks observed: " << progressState.callbackCount << "\n";
+    std::cout << "Progress frames monotonic: " << (progressState.monotonic ? "yes" : "no") << "\n";
+    std::cout << "First positive progress checked: " << (progressState.firstPositiveProgressChecked ? "yes" : "no") << "\n";
+    std::cout << "original_f32.bin existed at first positive progress: "
+              << (progressState.firstPositiveAudioExists ? "yes" : "no") << "\n";
+    std::cout << "File size covered first committed bytes: "
+              << (progressState.firstPositiveSizeOk ? "yes" : "no") << "\n";
+    std::cout << "Temporary json files existed at first positive progress: "
+              << (progressState.firstPositiveTempJsonExists ? "yes" : "no") << "\n";
+    std::cout << "File size never behind committed bytes: "
+              << (progressState.liveFileSizeNeverBehind ? "yes" : "no") << "\n";
+    printSessionArtifactSummary(sessionMediaDirText, summary);
+    std::cout << "Final progress frames match audio_info.json: " << (finalProgressMatches ? "yes" : "no") << "\n";
+
+    return progressState.callbackCount > 0 &&
+            progressState.monotonic &&
+            progressState.firstPositiveProgressChecked &&
+            progressState.firstPositiveAudioExists &&
+            progressState.firstPositiveSizeOk &&
+            progressState.firstPositiveTempJsonExists &&
+            progressState.liveFileSizeNeverBehind &&
             summary.metadataExists &&
             summary.audioInfoExists &&
             summary.audioDataExists &&
@@ -795,6 +1039,7 @@ int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std
     std::cout << "Waveform valuesPerBin valid: " << (waveformState.valuesPerBinValid ? "yes" : "no") << "\n";
     std::cout << "Waveform min/max values finite: " << (waveformState.minMaxPairsValid ? "yes" : "no") << "\n";
     std::cout << "Progress callbacks observed: " << waveformState.progressCallbackCount << "\n";
+    std::cout << "Progress frames monotonic: " << (waveformState.progressMonotonic ? "yes" : "no") << "\n";
     printSessionArtifactSummary(sessionMediaDirText, summary);
     std::cout << "Final import byte match: " << (summary.sizeMatch ? "yes" : "no") << "\n";
 
@@ -805,6 +1050,7 @@ int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std
             waveformState.minMaxPairsValid &&
             waveformState.totalBinsReceived > 0 &&
             waveformState.progressCallbackCount > 0 &&
+            waveformState.progressMonotonic &&
             summary.metadataExists &&
             summary.audioInfoExists &&
             summary.audioDataExists &&
@@ -846,6 +1092,7 @@ int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::
 
     ProgressSmokeState progressState;
     progressState.cancelAfterFirstProgress = true;
+    progressState.sessionMediaDir = std::filesystem::path(sessionMediaDirText);
 
     AveMediaBridgeImportOptions options{};
     options.structSize = importOptionsSizeBeforeWaveformCallback();
@@ -868,6 +1115,8 @@ int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::
     }
 
     const bool noFinalPair = !(summary.audioInfoExists && summary.audioDataExists);
+    const bool audioDataRemoved = !summary.audioDataExists;
+    const bool noTempJsonFiles = !sessionTempJsonFilesExist(sessionPath);
     const bool canceledText = lastError.find(L"canceled") != std::wstring::npos;
 
     std::cout << "Import return code: " << result << "\n";
@@ -875,8 +1124,14 @@ int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::
     std::cout << "Progress callbacks observed: " << progressState.callbackCount << "\n";
     std::cout << "Progress frames monotonic: " << (progressState.monotonic ? "yes" : "no") << "\n";
     std::cout << "No final audio_info/original_f32 pair remains: " << (noFinalPair ? "yes" : "no") << "\n";
+    std::cout << "original_f32.bin removed: " << (audioDataRemoved ? "yes" : "no") << "\n";
+    std::cout << "Temporary json files removed: " << (noTempJsonFiles ? "yes" : "no") << "\n";
 
-    if (result == AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED && canceledText && noFinalPair) {
+    if (result == AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED &&
+        canceledText &&
+        noFinalPair &&
+        audioDataRemoved &&
+        noTempJsonFiles) {
         std::cout << "Result: OK\n";
         return 0;
     }
@@ -1125,6 +1380,15 @@ int main(int argc, char** argv) {
         const std::string inputPath = stripMatchingQuotes(argv[2]);
         const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
         return runSmokeDllImportSessionProgress(inputPath, sessionMediaDir);
+    }
+    if (firstArg == "smoke-dll-import-session-live-readable") {
+        if (argc < 4) {
+            std::cout << "Usage: AveMediaBridgeLabApp.exe smoke-dll-import-session-live-readable <input-file> <session-media-dir>\n";
+            return 1;
+        }
+        const std::string inputPath = stripMatchingQuotes(argv[2]);
+        const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
+        return runSmokeDllImportSessionLiveReadable(inputPath, sessionMediaDir);
     }
     if (firstArg == "smoke-dll-import-session-waveform") {
         if (argc < 4) {

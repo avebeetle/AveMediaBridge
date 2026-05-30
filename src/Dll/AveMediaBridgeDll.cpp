@@ -1055,8 +1055,9 @@ int writeConvertedStreamingSamples(
     const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
     const std::size_t writtenBytes = writtenSamples * sizeof(float);
     output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
+    output.flush();
     if (!output) {
-        result.error = "failed to write original_f32.bin.tmp";
+        result.error = "failed to write original_f32.bin";
         return AVERROR(EIO);
     }
 
@@ -1125,8 +1126,9 @@ int flushStreamingSwr(
         const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
         const std::size_t writtenBytes = writtenSamples * sizeof(float);
         output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
+        output.flush();
         if (!output) {
-            result.error = "failed to write original_f32.bin.tmp";
+            result.error = "failed to write original_f32.bin";
             return AVERROR(EIO);
         }
 
@@ -1212,10 +1214,10 @@ int sendStreamingPacketAndReceive(
     return receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks);
 }
 
-StreamingImportResult runStreamingSessionImportToTempFile(
+StreamingImportResult runStreamingSessionImportToLiveFile(
     const std::string& path,
     const std::filesystem::path& sessionDir,
-    const std::filesystem::path& audioTmpPath,
+    const std::filesystem::path& audioDataPath,
     StreamingImportCallbacks* callbacks) {
     StreamingImportResult result;
     result.source.inputPath = path;
@@ -1337,9 +1339,9 @@ StreamingImportResult runStreamingSessionImportToTempFile(
         return result;
     }
 
-    output.open(audioTmpPath, std::ios::binary | std::ios::trunc);
+    output.open(audioDataPath, std::ios::binary | std::ios::trunc);
     if (!output) {
-        result.error = "failed to open original_f32.bin.tmp";
+        result.error = "failed to open original_f32.bin";
         cleanup();
         return result;
     }
@@ -1407,7 +1409,7 @@ StreamingImportResult runStreamingSessionImportToTempFile(
 
     output.close();
     if (!output) {
-        result.error = "failed to finalize original_f32.bin.tmp";
+        result.error = "failed to finalize original_f32.bin";
         cleanup();
         return result;
     }
@@ -1775,13 +1777,65 @@ void removeFileIfExists(const std::filesystem::path& path) {
     std::filesystem::remove(path, ignored);
 }
 
-void cleanupStreamingTempFiles(
-    const std::filesystem::path& audioTmpPath,
+bool removeFileIfExistsChecked(
+    const std::filesystem::path& path,
+    const char* label,
+    std::string& error) {
+    std::error_code fsError;
+    std::filesystem::remove(path, fsError);
+    if (fsError) {
+        error = std::string("failed to remove old ") + label + ": " + fsError.message();
+        return false;
+    }
+    return true;
+}
+
+void cleanupStreamingTempJsonFiles(
     const std::filesystem::path& audioInfoTmpPath,
     const std::filesystem::path& metadataTmpPath) {
-    removeFileIfExists(audioTmpPath);
     removeFileIfExists(audioInfoTmpPath);
     removeFileIfExists(metadataTmpPath);
+}
+
+void cleanupStreamingFailedImportArtifacts(
+    const std::filesystem::path& audioDataPath,
+    const std::filesystem::path& audioInfoTmpPath,
+    const std::filesystem::path& metadataTmpPath) {
+    removeFileIfExists(audioDataPath);
+    cleanupStreamingTempJsonFiles(audioInfoTmpPath, metadataTmpPath);
+}
+
+bool prepareStreamingLiveImportArtifacts(
+    const std::filesystem::path& audioDataPath,
+    const std::filesystem::path& audioInfoPath,
+    const std::filesystem::path& metadataPath,
+    const std::filesystem::path& audioInfoTmpPath,
+    const std::filesystem::path& metadataTmpPath,
+    std::string& error) {
+    return removeFileIfExistsChecked(audioInfoTmpPath, "audio_info.json.tmp", error) &&
+        removeFileIfExistsChecked(metadataTmpPath, "metadata.json.tmp", error) &&
+        removeFileIfExistsChecked(audioInfoPath, "audio_info.json", error) &&
+        removeFileIfExistsChecked(metadataPath, "metadata.json", error) &&
+        removeFileIfExistsChecked(audioDataPath, "original_f32.bin", error);
+}
+
+bool writeStreamingImportPlaceholderJson(
+    const std::filesystem::path& path,
+    const char* label,
+    std::string& error) {
+    std::ofstream json(path, std::ios::binary | std::ios::trunc);
+    if (!json.is_open()) {
+        error = std::string("failed to open ") + label;
+        return false;
+    }
+    json << "{\n"
+         << "  \"status\": \"importing\"\n"
+         << "}\n";
+    if (!json) {
+        error = std::string("failed to write ") + label;
+        return false;
+    }
+    return true;
 }
 
 bool moveFileReplace(const std::filesystem::path& source, const std::filesystem::path& destination, std::string& error) {
@@ -1802,13 +1856,13 @@ bool moveFileReplace(const std::filesystem::path& source, const std::filesystem:
 }
 
 bool verifyStreamingDataFileSize(
-    const std::filesystem::path& audioTmpPath,
+    const std::filesystem::path& audioDataPath,
     const StreamingImportResult& result,
     std::string& error) {
     std::error_code fsError;
-    const auto actualBytes = std::filesystem::file_size(audioTmpPath, fsError);
+    const auto actualBytes = std::filesystem::file_size(audioDataPath, fsError);
     if (fsError) {
-        error = "failed to inspect original_f32.bin.tmp: " + fsError.message();
+        error = "failed to inspect original_f32.bin: " + fsError.message();
         return false;
     }
     if (actualBytes != static_cast<std::uintmax_t>(result.expectedBytes)) {
@@ -1824,24 +1878,24 @@ bool verifyStreamingDataFileSize(
 }
 
 bool commitStreamingSessionArtifacts(
-    const std::filesystem::path& audioTmpPath,
+    const std::filesystem::path& audioDataPath,
     const std::filesystem::path& audioInfoTmpPath,
     const std::filesystem::path& metadataTmpPath,
-    const std::filesystem::path& audioDataPath,
     const std::filesystem::path& audioInfoPath,
     const std::filesystem::path& metadataPath,
     std::string& error) {
-    bool dataCommitted = false;
     bool infoCommitted = false;
+    bool metadataCommitted = false;
 
     auto rollback = [&]() {
         if (infoCommitted) {
             removeFileIfExists(audioInfoPath);
         }
-        if (dataCommitted) {
-            removeFileIfExists(audioDataPath);
+        if (metadataCommitted) {
+            removeFileIfExists(metadataPath);
         }
-        cleanupStreamingTempFiles(audioTmpPath, audioInfoTmpPath, metadataTmpPath);
+        removeFileIfExists(audioDataPath);
+        cleanupStreamingTempJsonFiles(audioInfoTmpPath, metadataTmpPath);
     };
 
     std::error_code fsError;
@@ -1852,22 +1906,17 @@ bool commitStreamingSessionArtifacts(
         return false;
     }
 
-    if (!moveFileReplace(audioTmpPath, audioDataPath, error)) {
+    if (!moveFileReplace(metadataTmpPath, metadataPath, error)) {
         rollback();
         return false;
     }
-    dataCommitted = true;
+    metadataCommitted = true;
 
     if (!moveFileReplace(audioInfoTmpPath, audioInfoPath, error)) {
         rollback();
         return false;
     }
     infoCommitted = true;
-
-    if (!moveFileReplace(metadataTmpPath, metadataPath, error)) {
-        rollback();
-        return false;
-    }
 
     return true;
 }
@@ -1992,9 +2041,23 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
         const std::filesystem::path audioDataPath = sessionDir / L"original_f32.bin";
         const std::filesystem::path metadataTmpPath = sessionDir / L"metadata.json.tmp";
         const std::filesystem::path audioInfoTmpPath = sessionDir / L"audio_info.json.tmp";
-        const std::filesystem::path audioDataTmpPath = sessionDir / L"original_f32.bin.tmp";
 
-        cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+        if (!prepareStreamingLiveImportArtifacts(
+                audioDataPath,
+                audioInfoPath,
+                metadataPath,
+                audioInfoTmpPath,
+                metadataTmpPath,
+                error)) {
+            setLastErrorText(error);
+            return 3;
+        }
+        if (!writeStreamingImportPlaceholderJson(audioInfoTmpPath, "audio_info.json.tmp", error) ||
+            !writeStreamingImportPlaceholderJson(metadataTmpPath, "metadata.json.tmp", error)) {
+            cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
+            setLastErrorText(error);
+            return 3;
+        }
 
         StreamingImportCallbacks callbacks;
         callbacks.onProgress = options->onProgress;
@@ -2003,9 +2066,9 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
             options->structSize >= kImportOptionsWaveformSize ? options->onWaveformChunk : nullptr;
         callbacks.userData = options->userData;
 
-        StreamingImportResult imported = runStreamingSessionImportToTempFile(input, sessionDir, audioDataTmpPath, &callbacks);
+        StreamingImportResult imported = runStreamingSessionImportToLiveFile(input, sessionDir, audioDataPath, &callbacks);
         if (!imported.ok) {
-            cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+            cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
             if (imported.canceled) {
                 setLastErrorText(imported.error.empty() ? "streaming session import canceled" : imported.error);
                 return AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED;
@@ -2014,18 +2077,17 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
             return 2;
         }
 
-        if (!verifyStreamingDataFileSize(audioDataTmpPath, imported, error) ||
+        if (!verifyStreamingDataFileSize(audioDataPath, imported, error) ||
             !writeStreamingAudioInfoJson(audioInfoTmpPath, imported, error) ||
             !writeStreamingMetadataJson(metadataTmpPath, input, imported, error) ||
             !commitStreamingSessionArtifacts(
-                audioDataTmpPath,
+                audioDataPath,
                 audioInfoTmpPath,
                 metadataTmpPath,
-                audioDataPath,
                 audioInfoPath,
                 metadataPath,
                 error)) {
-            cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+            cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
             setLastErrorText(error);
             return 3;
         }

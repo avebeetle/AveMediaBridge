@@ -370,22 +370,32 @@ There are now two import/decode paths:
 
 ## Streaming Import To Session
 
-`AveMediaBridge_ImportAudioToSession` decodes the selected best audio stream incrementally and writes converted samples directly to `original_f32.bin.tmp`.
+`AveMediaBridge_ImportAudioToSession` decodes the selected best audio stream incrementally and writes converted samples directly to the live `original_f32.bin` artifact.
 
 Streaming session import rules:
 
 - open the source with FFmpeg and select the best audio stream;
 - decode packets/frames progressively;
 - convert decoded chunks to interleaved little-endian float32 with a bounded resampler/output buffer;
-- append each converted chunk directly to `original_f32.bin.tmp`;
+- append each converted chunk directly to `original_f32.bin`;
 - keep RAM usage bounded so it does not scale with media duration;
-- count exact `framesWritten` and bytes while writing;
+- flush successful chunk writes before publishing exact `framesWritten` and byte progress;
 - verify `bytesWritten == framesWritten * channels * sizeof(float)`;
 - write `audio_info.json.tmp` and `metadata.json.tmp`;
-- commit `original_f32.bin`, `audio_info.json`, and `metadata.json` only after successful decode and validation;
-- delete tmp files on failure so a failed import does not leave valid-looking partial artifacts.
+- commit `metadata.json` and then `audio_info.json` only after successful decode and validation;
+- delete the partial `original_f32.bin` plus tmp json files on cancel/failure so a failed import does not leave valid-looking partial artifacts.
 
 The final artifact names and schemas remain compatible with the existing AveVoice contract. Exact decoded frames are written in `audio_info.json` after import completes.
+
+## Live Readable PCM During Streaming Import
+
+During streaming session import, `original_f32.bin` is the growing readable PCM artifact. It is created before any progress callback with `framesWritten > 0`, and `framesWritten`/`bytesWritten` are published only after the corresponding float32 bytes have been written and flushed to that file.
+
+`audio_info.json` and `metadata.json` remain the final commit gate. While import is running, their `.tmp` forms may exist, but the final `audio_info.json` is not committed until the decoded byte count has been validated. This prevents AveVoice from seeing a valid-looking final artifact pair before import succeeds.
+
+On cancel or failure, AveMediaBridge closes the writer, deletes the partial `original_f32.bin`, deletes `audio_info.json.tmp` and `metadata.json.tmp`, and returns the appropriate error or cancel code. This supports AveVoice partial playback during progressive import: the committed range from progress callbacks never intentionally advances beyond bytes that are physically available in `original_f32.bin`.
+
+The LabApp long-file smoke tools print throttled console progress instead of logging every callback. Progress lines include percent when known, current/estimated time, frames written, MB written, waveform chunk count where applicable, simple MB/s speed, and a final summary.
 
 ## Disk Preflight
 
@@ -406,7 +416,7 @@ Progress and cancellation rules:
 - `availableEndSec` is `framesWritten / sampleRate` when sample rate is known;
 - progress callbacks are throttled and also emitted at final completion;
 - `shouldCancel` is polled during the decode loop;
-- cancellation stops decode cleanly, closes files, deletes temporary artifacts, returns cancel code `4`, and sets last error text to a clear canceled message.
+- cancellation stops decode cleanly, closes files, deletes the partial `original_f32.bin` and temporary json artifacts, returns cancel code `4`, and sets last error text to a clear canceled message.
 
 The API keeps RAM bounded because progress is driven from the streaming import counters rather than from a full decoded `AudioBufferF32`. It is also the foundation for future AveVoice progressive waveform UX.
 
@@ -598,6 +608,7 @@ AveMediaBridgeLabApp.exe smoke-dll-transform "<input-file>" "<output-wav>"
 AveMediaBridgeLabApp.exe smoke-dll-probe "<input-file>" "<output-json>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session "<input-file>" "<session-media-dir>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session-progress "<input-file>" "<session-media-dir>"
+AveMediaBridgeLabApp.exe smoke-dll-import-session-live-readable "<input-file>" "<session-media-dir>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session-waveform "<input-file>" "<session-media-dir>"
 AveMediaBridgeLabApp.exe smoke-dll-import-session-cancel "<input-file>" "<session-media-dir>"
 ```
