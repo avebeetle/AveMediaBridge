@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
 }
 
 namespace {
@@ -53,6 +56,78 @@ struct FastProbeResult {
     std::vector<AveMediaBridge::StreamSummary> streams;
     std::vector<std::string> warnings;
     std::vector<std::string> errors;
+};
+
+struct StreamingImportResult {
+    bool ok = false;
+    std::string error;
+    AveMediaBridge::SourceMediaInfo source;
+    AveMediaBridge::MediaProbeDetails probe;
+    AveMediaBridge::SelectedAudioStreamInfo selectedAudio;
+    AveMediaBridge::DecodeReport decode;
+    AveMediaBridge::AudioStats stats;
+    int sampleRate = 0;
+    int channels = 0;
+    std::int64_t framesWritten = 0;
+    std::int64_t interleavedFloatSamplesWritten = 0;
+    std::int64_t bytesWritten = 0;
+    std::int64_t expectedBytes = 0;
+    std::int64_t preflightEstimatedBytes = 0;
+    std::string preflightEstimateKind = "unknown";
+    bool diskPreflightChecked = false;
+    bool diskPreflightEstimateKnown = false;
+    std::uintmax_t diskPreflightAvailableBytes = 0;
+};
+
+struct StreamingStatsAccumulator {
+    long double sumSquares = 0.0L;
+    std::int64_t sampleCount = 0;
+    float minSample = std::numeric_limits<float>::infinity();
+    float maxSample = -std::numeric_limits<float>::infinity();
+    float peakAbs = 0.0f;
+
+    void addSamples(const float* samples, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const float sample = samples[i];
+            sumSquares += static_cast<long double>(sample) * static_cast<long double>(sample);
+            if (sample < minSample) {
+                minSample = sample;
+            }
+            if (sample > maxSample) {
+                maxSample = sample;
+            }
+
+            const float absSample = std::fabs(sample);
+            if (absSample > peakAbs) {
+                peakAbs = absSample;
+            }
+            ++sampleCount;
+        }
+    }
+
+    AveMediaBridge::AudioStats finish() const {
+        AveMediaBridge::AudioStats result;
+        if (sampleCount <= 0) {
+            return result;
+        }
+
+        result.rms = static_cast<double>(std::sqrt(sumSquares / static_cast<long double>(sampleCount)));
+        result.peakAbs = peakAbs;
+        result.minSample = minSample;
+        result.maxSample = maxSample;
+        result.clippingRisk = peakAbs > 1.0f;
+        return result;
+    }
+};
+
+struct StreamingSwrState {
+    SwrContext* ctx = nullptr;
+    AVChannelLayout layout{};
+    AVSampleFormat inputFormat = AV_SAMPLE_FMT_NONE;
+    int sampleRate = 0;
+    int channels = 0;
+    bool initialized = false;
+    std::vector<float> outputBuffer;
 };
 
 std::string wideToUtf8(const wchar_t* value) {
@@ -461,15 +536,618 @@ FastProbeResult runFastProbe(const std::string& path) {
     return result;
 }
 
-double durationSeconds(const AveMediaBridge::AudioImportResult& result) {
-    if (result.source.durationSeconds > 0.0) {
-        return result.source.durationSeconds;
+void addStreamingWarning(StreamingImportResult& result, const std::string& warning) {
+    ++result.decode.warningsCount;
+    if (result.decode.warnings.size() < 16) {
+        result.decode.warnings.push_back(warning);
     }
-    return result.audio.durationSeconds();
 }
 
-bool hasAudio(const AveMediaBridge::AudioImportResult& result) {
-    return result.hasUsableAudio() || result.selectedAudio.index >= 0 || result.probe.audioStreamCount > 0;
+void fillStreamingSourceInfo(StreamingImportResult& result, const AVFormatContext* formatContext, const std::string& path) {
+    result.source.inputPath = path;
+    if (!formatContext) {
+        return;
+    }
+
+    result.source.streamCount = static_cast<int>(formatContext->nb_streams);
+    if (formatContext->duration != AV_NOPTS_VALUE && formatContext->duration > 0) {
+        result.source.durationSeconds = static_cast<double>(formatContext->duration) / static_cast<double>(AV_TIME_BASE);
+    }
+
+    if (formatContext->iformat) {
+        result.source.formatName = formatContext->iformat->name ? formatContext->iformat->name : "";
+        result.source.formatLongName = formatContext->iformat->long_name ? formatContext->iformat->long_name : "";
+    }
+}
+
+void fillStreamingProbeDetails(StreamingImportResult& result, const AVFormatContext* formatContext) {
+    if (!formatContext) {
+        return;
+    }
+
+    result.probe.streamInfoFound = true;
+    result.probe.streams.reserve(formatContext->nb_streams);
+    for (unsigned int i = 0; i < formatContext->nb_streams; ++i) {
+        const AVStream* stream = formatContext->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++result.probe.audioStreamCount;
+        }
+        result.probe.streams.push_back(makeFastStreamSummary(static_cast<int>(i), stream));
+    }
+}
+
+void fillStreamingSelectedAudioInfo(
+    StreamingImportResult& result,
+    const AVStream* stream,
+    const AVCodec* decoder,
+    const AVCodecContext* decoderContext) {
+    if (!stream || !stream->codecpar) {
+        return;
+    }
+
+    const AVCodecParameters* codecpar = stream->codecpar;
+    result.selectedAudio.index = static_cast<int>(stream->index);
+    result.selectedAudio.codecName = avcodec_get_name(codecpar->codec_id);
+    result.selectedAudio.codecId = static_cast<int>(codecpar->codec_id);
+    result.selectedAudio.decoderName = decoder && decoder->name ? decoder->name : "";
+    result.selectedAudio.sampleRate = decoderContext ? decoderContext->sample_rate : codecpar->sample_rate;
+    result.selectedAudio.channels = decoderContext ? decoderContext->ch_layout.nb_channels : codecpar->ch_layout.nb_channels;
+    result.selectedAudio.bitRate = codecpar->bit_rate;
+    result.selectedAudio.timeBase = rationalToString(stream->time_base);
+}
+
+bool estimateDecodedBytesForPreflight(
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream,
+    std::int64_t& estimatedBytes,
+    std::string& estimateKind) {
+    FastProbeResult estimate;
+    estimateFastDurationAndFrames(estimate, formatContext, audioStream);
+    estimatedBytes = estimate.estimatedDecodedBytes;
+    estimateKind = estimate.estimatedDecodedBytesKind;
+    return estimatedBytes > 0 && estimateKind != "unknown";
+}
+
+bool checkDiskPreflight(
+    const std::filesystem::path& sessionDir,
+    StreamingImportResult& result,
+    std::string& error) {
+    result.diskPreflightChecked = true;
+    if (result.preflightEstimatedBytes <= 0) {
+        addStreamingWarning(result, "disk preflight decoded byte estimate unknown; continuing without size gate");
+        return true;
+    }
+
+    std::error_code fsError;
+    const std::filesystem::space_info space = std::filesystem::space(sessionDir, fsError);
+    if (fsError) {
+        addStreamingWarning(result, "disk preflight free-space check failed: " + fsError.message());
+        return true;
+    }
+
+    result.diskPreflightAvailableBytes = space.available;
+    constexpr std::uintmax_t kDiskPreflightHeadroomBytes = 1024 * 1024;
+    const std::uintmax_t requiredBytes =
+        static_cast<std::uintmax_t>(result.preflightEstimatedBytes) + kDiskPreflightHeadroomBytes;
+    if (space.available < requiredBytes) {
+        std::ostringstream out;
+        out << "not enough free disk space for session import: estimated "
+            << result.preflightEstimatedBytes
+            << " decoded bytes, available "
+            << space.available
+            << " bytes";
+        error = out.str();
+        return false;
+    }
+    return true;
+}
+
+int copyStreamingFrameLayout(AVChannelLayout* dst, const AVFrame* frame, const AVCodecContext* decoder) {
+    if (frame->ch_layout.nb_channels > 0 && av_channel_layout_check(&frame->ch_layout)) {
+        return av_channel_layout_copy(dst, &frame->ch_layout);
+    }
+
+    if (decoder->ch_layout.nb_channels > 0 && av_channel_layout_check(&decoder->ch_layout)) {
+        return av_channel_layout_copy(dst, &decoder->ch_layout);
+    }
+
+    const int channels = (std::max)(frame->ch_layout.nb_channels, decoder->ch_layout.nb_channels);
+    if (channels <= 0) {
+        return AVERROR(EINVAL);
+    }
+
+    av_channel_layout_default(dst, channels);
+    return 0;
+}
+
+int ensureStreamingSwr(
+    StreamingSwrState& swr,
+    const AVFrame* frame,
+    const AVCodecContext* decoder,
+    StreamingImportResult& result) {
+    if (swr.initialized) {
+        return 0;
+    }
+
+    const auto inputFormat = static_cast<AVSampleFormat>(frame->format);
+    if (inputFormat == AV_SAMPLE_FMT_NONE) {
+        result.error = "decoded frame has unknown sample format";
+        return AVERROR(EINVAL);
+    }
+
+    const int sampleRate = frame->sample_rate > 0 ? frame->sample_rate : decoder->sample_rate;
+    if (sampleRate <= 0) {
+        result.error = "decoded frame has invalid sample rate";
+        return AVERROR(EINVAL);
+    }
+
+    AVChannelLayout inputLayout{};
+    int ret = copyStreamingFrameLayout(&inputLayout, frame, decoder);
+    if (ret < 0) {
+        result.error = "unable to determine decoded channel layout: " + ffErrorString(ret);
+        return ret;
+    }
+
+    ret = av_channel_layout_copy(&swr.layout, &inputLayout);
+    if (ret < 0) {
+        av_channel_layout_uninit(&inputLayout);
+        result.error = "unable to copy output channel layout: " + ffErrorString(ret);
+        return ret;
+    }
+
+    swr.sampleRate = sampleRate;
+    swr.channels = swr.layout.nb_channels;
+    swr.inputFormat = inputFormat;
+
+    ret = swr_alloc_set_opts2(
+        &swr.ctx,
+        &swr.layout,
+        AV_SAMPLE_FMT_FLT,
+        swr.sampleRate,
+        &inputLayout,
+        inputFormat,
+        sampleRate,
+        0,
+        nullptr);
+    av_channel_layout_uninit(&inputLayout);
+
+    if (ret < 0) {
+        result.error = "swr_alloc_set_opts2 failed: " + ffErrorString(ret);
+        return ret;
+    }
+
+    ret = swr_init(swr.ctx);
+    if (ret < 0) {
+        result.error = "swr_init failed: " + ffErrorString(ret);
+        return ret;
+    }
+
+    swr.initialized = true;
+    result.decode.swrInitialized = true;
+    result.decode.outputSampleRate = swr.sampleRate;
+    result.decode.outputChannels = swr.channels;
+    result.sampleRate = swr.sampleRate;
+    result.channels = swr.channels;
+
+    const char* sampleFormatName = av_get_sample_fmt_name(inputFormat);
+    result.selectedAudio.decoderSampleFormat = sampleFormatName ? sampleFormatName : "";
+    return 0;
+}
+
+bool addWrittenFrames(StreamingImportResult& result, int frameCount, std::string& error) {
+    if (frameCount <= 0) {
+        return true;
+    }
+    if (result.channels <= 0) {
+        error = "streaming import output channel count is invalid";
+        return false;
+    }
+
+    const auto frames = static_cast<std::int64_t>(frameCount);
+    if (result.framesWritten > (std::numeric_limits<std::int64_t>::max)() - frames) {
+        error = "streaming import frame count overflow";
+        return false;
+    }
+
+    const auto samples = frames * static_cast<std::int64_t>(result.channels);
+    if (result.interleavedFloatSamplesWritten > (std::numeric_limits<std::int64_t>::max)() - samples) {
+        error = "streaming import sample count overflow";
+        return false;
+    }
+
+    const auto bytes = samples * static_cast<std::int64_t>(sizeof(float));
+    if (result.bytesWritten > (std::numeric_limits<std::int64_t>::max)() - bytes) {
+        error = "streaming import byte count overflow";
+        return false;
+    }
+
+    result.framesWritten += frames;
+    result.interleavedFloatSamplesWritten += samples;
+    result.bytesWritten += bytes;
+    result.decode.outputSamplesPerChannel += frames;
+    result.decode.outputInterleavedFloatSamples += samples;
+    return true;
+}
+
+int writeConvertedStreamingSamples(
+    StreamingSwrState& swr,
+    const AVFrame* frame,
+    const AVCodecContext* decoder,
+    std::ofstream& output,
+    StreamingStatsAccumulator& stats,
+    StreamingImportResult& result) {
+    int ret = ensureStreamingSwr(swr, frame, decoder, result);
+    if (ret < 0) {
+        return ret;
+    }
+
+    const int outCapacity = swr_get_out_samples(swr.ctx, frame->nb_samples);
+    if (outCapacity < 0) {
+        result.error = "swr_get_out_samples failed: " + ffErrorString(outCapacity);
+        return outCapacity;
+    }
+    if (outCapacity == 0) {
+        return 0;
+    }
+
+    const std::size_t sampleCapacity =
+        static_cast<std::size_t>(outCapacity) * static_cast<std::size_t>(swr.channels);
+    if (swr.outputBuffer.size() < sampleCapacity) {
+        swr.outputBuffer.resize(sampleCapacity);
+    }
+
+    uint8_t* outData[] = { reinterpret_cast<uint8_t*>(swr.outputBuffer.data()) };
+    const uint8_t* const* inData = const_cast<const uint8_t* const*>(frame->extended_data);
+
+    ret = swr_convert(swr.ctx, outData, outCapacity, inData, frame->nb_samples);
+    if (ret < 0) {
+        result.error = "swr_convert failed: " + ffErrorString(ret);
+        return ret;
+    }
+    if (ret == 0) {
+        return 0;
+    }
+
+    const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+    const std::size_t writtenBytes = writtenSamples * sizeof(float);
+    output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
+    if (!output) {
+        result.error = "failed to write original_f32.bin.tmp";
+        return AVERROR(EIO);
+    }
+
+    stats.addSamples(swr.outputBuffer.data(), writtenSamples);
+    std::string countError;
+    if (!addWrittenFrames(result, ret, countError)) {
+        result.error = countError;
+        return AVERROR(EOVERFLOW);
+    }
+    return 0;
+}
+
+int flushStreamingSwr(
+    StreamingSwrState& swr,
+    std::ofstream& output,
+    StreamingStatsAccumulator& stats,
+    StreamingImportResult& result) {
+    if (!swr.initialized) {
+        return 0;
+    }
+
+    while (true) {
+        const std::int64_t delay = swr_get_delay(swr.ctx, swr.sampleRate);
+        if (delay <= 0) {
+            break;
+        }
+
+        const int outCapacity =
+            delay > static_cast<std::int64_t>((std::numeric_limits<int>::max)())
+                ? (std::numeric_limits<int>::max)()
+                : static_cast<int>(delay);
+        const std::size_t sampleCapacity =
+            static_cast<std::size_t>(outCapacity) * static_cast<std::size_t>(swr.channels);
+        if (swr.outputBuffer.size() < sampleCapacity) {
+            swr.outputBuffer.resize(sampleCapacity);
+        }
+
+        uint8_t* outData[] = { reinterpret_cast<uint8_t*>(swr.outputBuffer.data()) };
+        const int ret = swr_convert(swr.ctx, outData, outCapacity, nullptr, 0);
+        if (ret < 0) {
+            result.error = "swr_convert flush failed: " + ffErrorString(ret);
+            return ret;
+        }
+        if (ret == 0) {
+            break;
+        }
+
+        const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+        const std::size_t writtenBytes = writtenSamples * sizeof(float);
+        output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
+        if (!output) {
+            result.error = "failed to write original_f32.bin.tmp";
+            return AVERROR(EIO);
+        }
+
+        stats.addSamples(swr.outputBuffer.data(), writtenSamples);
+        std::string countError;
+        if (!addWrittenFrames(result, ret, countError)) {
+            result.error = countError;
+            return AVERROR(EOVERFLOW);
+        }
+    }
+
+    return 0;
+}
+
+int receiveStreamingFrames(
+    AVCodecContext* decoder,
+    AVFrame* frame,
+    StreamingSwrState& swr,
+    std::ofstream& output,
+    StreamingStatsAccumulator& stats,
+    StreamingImportResult& result) {
+    while (true) {
+        const int ret = avcodec_receive_frame(decoder, frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return 0;
+        }
+        if (ret < 0) {
+            addStreamingWarning(result, "avcodec_receive_frame skipped error: " + ffErrorString(ret));
+            return 0;
+        }
+
+        ++result.decode.decodedFrames;
+        const int convertRet = writeConvertedStreamingSamples(swr, frame, decoder, output, stats, result);
+        av_frame_unref(frame);
+        if (convertRet < 0) {
+            return convertRet;
+        }
+    }
+}
+
+int sendStreamingPacketAndReceive(
+    AVCodecContext* decoder,
+    AVPacket* packet,
+    AVFrame* frame,
+    StreamingSwrState& swr,
+    std::ofstream& output,
+    StreamingStatsAccumulator& stats,
+    StreamingImportResult& result) {
+    int ret = avcodec_send_packet(decoder, packet);
+    if (ret == AVERROR(EAGAIN)) {
+        ret = receiveStreamingFrames(decoder, frame, swr, output, stats, result);
+        if (ret < 0) {
+            return ret;
+        }
+        ret = avcodec_send_packet(decoder, packet);
+    }
+
+    if (ret < 0) {
+        ++result.decode.invalidPacketsSkipped;
+        addStreamingWarning(result, "avcodec_send_packet skipped packet: " + ffErrorString(ret));
+        return 0;
+    }
+
+    return receiveStreamingFrames(decoder, frame, swr, output, stats, result);
+}
+
+StreamingImportResult runStreamingSessionImportToTempFile(
+    const std::string& path,
+    const std::filesystem::path& sessionDir,
+    const std::filesystem::path& audioTmpPath) {
+    StreamingImportResult result;
+    result.source.inputPath = path;
+
+    AVFormatContext* formatContext = nullptr;
+    AVCodecContext* decoderContext = nullptr;
+    AVPacket* packet = nullptr;
+    AVFrame* frame = nullptr;
+    StreamingSwrState swr;
+    StreamingStatsAccumulator stats;
+    std::ofstream output;
+
+    auto cleanup = [&]() {
+        if (output.is_open()) {
+            output.close();
+        }
+        if (packet) {
+            av_packet_free(&packet);
+        }
+        if (frame) {
+            av_frame_free(&frame);
+        }
+        if (swr.ctx) {
+            swr_free(&swr.ctx);
+        }
+        av_channel_layout_uninit(&swr.layout);
+        if (decoderContext) {
+            avcodec_free_context(&decoderContext);
+        }
+        if (formatContext) {
+            avformat_close_input(&formatContext);
+        }
+    };
+
+    int ret = avformat_open_input(&formatContext, path.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        result.error = "avformat_open_input failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+
+    ret = avformat_find_stream_info(formatContext, nullptr);
+    if (ret < 0) {
+        result.error = "avformat_find_stream_info failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+
+    fillStreamingSourceInfo(result, formatContext, path);
+    fillStreamingProbeDetails(result, formatContext);
+
+    const AVCodec* decoder = nullptr;
+    const int audioStreamIndex = av_find_best_stream(formatContext, AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
+    if (audioStreamIndex < 0) {
+        result.error = "no audio stream found: " + ffErrorString(audioStreamIndex);
+        cleanup();
+        return result;
+    }
+
+    AVStream* audioStream = formatContext->streams[audioStreamIndex];
+    AVCodecParameters* codecpar = audioStream->codecpar;
+    if (!decoder) {
+        decoder = avcodec_find_decoder(codecpar->codec_id);
+    }
+    fillStreamingSelectedAudioInfo(result, audioStream, decoder, nullptr);
+    result.diskPreflightEstimateKnown =
+        estimateDecodedBytesForPreflight(
+            formatContext,
+            audioStream,
+            result.preflightEstimatedBytes,
+            result.preflightEstimateKind);
+
+    std::string preflightError;
+    if (!checkDiskPreflight(sessionDir, result, preflightError)) {
+        result.error = preflightError;
+        cleanup();
+        return result;
+    }
+
+    if (!decoder) {
+        result.error = "decoder not found for codec " + result.selectedAudio.codecName;
+        cleanup();
+        return result;
+    }
+
+    decoderContext = avcodec_alloc_context3(decoder);
+    if (!decoderContext) {
+        result.error = "avcodec_alloc_context3 failed";
+        cleanup();
+        return result;
+    }
+
+    ret = avcodec_parameters_to_context(decoderContext, codecpar);
+    if (ret < 0) {
+        result.error = "avcodec_parameters_to_context failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+
+    if (decoderContext->ch_layout.nb_channels <= 0 && codecpar->ch_layout.nb_channels > 0) {
+        av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
+    }
+
+    ret = avcodec_open2(decoderContext, decoder, nullptr);
+    if (ret < 0) {
+        result.error = "avcodec_open2 failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+    result.decode.decoderOpened = true;
+    fillStreamingSelectedAudioInfo(result, audioStream, decoder, decoderContext);
+
+    packet = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!packet || !frame) {
+        result.error = "unable to allocate AVPacket/AVFrame";
+        cleanup();
+        return result;
+    }
+
+    output.open(audioTmpPath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        result.error = "failed to open original_f32.bin.tmp";
+        cleanup();
+        return result;
+    }
+
+    while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+        ++result.decode.packetsRead;
+        if (packet->stream_index == audioStreamIndex) {
+            ++result.decode.audioPackets;
+            const int decodeRet =
+                sendStreamingPacketAndReceive(decoderContext, packet, frame, swr, output, stats, result);
+            av_packet_unref(packet);
+            if (decodeRet < 0) {
+                cleanup();
+                return result;
+            }
+        } else {
+            av_packet_unref(packet);
+        }
+    }
+
+    if (ret != AVERROR_EOF) {
+        result.error = "av_read_frame failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+
+    ret = avcodec_send_packet(decoderContext, nullptr);
+    if (ret < 0 && ret != AVERROR_EOF) {
+        result.error = "decoder flush send failed: " + ffErrorString(ret);
+        cleanup();
+        return result;
+    }
+
+    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result);
+    if (ret < 0) {
+        cleanup();
+        return result;
+    }
+
+    ret = flushStreamingSwr(swr, output, stats, result);
+    if (ret < 0) {
+        cleanup();
+        return result;
+    }
+
+    output.close();
+    if (!output) {
+        result.error = "failed to finalize original_f32.bin.tmp";
+        cleanup();
+        return result;
+    }
+
+    if (result.decode.decodedFrames <= 0 || result.framesWritten <= 0 || result.bytesWritten <= 0) {
+        result.error = "no decoded audio samples were produced";
+        cleanup();
+        return result;
+    }
+    if (result.sampleRate <= 0 || result.channels <= 0) {
+        result.error = "streaming import produced invalid audio shape";
+        cleanup();
+        return result;
+    }
+
+    const std::int64_t maxFramesForExpectedBytes =
+        (std::numeric_limits<std::int64_t>::max)() /
+        (static_cast<std::int64_t>(result.channels) * static_cast<std::int64_t>(sizeof(float)));
+    if (result.framesWritten > maxFramesForExpectedBytes) {
+        result.error = "streaming import expected byte count overflow";
+        cleanup();
+        return result;
+    }
+
+    result.expectedBytes =
+        result.framesWritten *
+        static_cast<std::int64_t>(result.channels) *
+        static_cast<std::int64_t>(sizeof(float));
+    if (result.bytesWritten != result.expectedBytes) {
+        std::ostringstream out;
+        out << "streaming import byte count mismatch: expected "
+            << result.expectedBytes
+            << ", wrote "
+            << result.bytesWritten;
+        result.error = out.str();
+        cleanup();
+        return result;
+    }
+
+    result.stats = stats.finish();
+    result.ok = true;
+    cleanup();
+    return result;
 }
 
 void writeStringArray(std::ostream& out, const std::vector<std::string>& values) {
@@ -679,9 +1357,25 @@ bool writeFastProbeJson(
     return true;
 }
 
-bool writeAudioInfoJson(
+double streamingDurationSeconds(const StreamingImportResult& result) {
+    if (result.source.durationSeconds > 0.0) {
+        return result.source.durationSeconds;
+    }
+    if (result.sampleRate > 0 && result.framesWritten > 0) {
+        return static_cast<double>(result.framesWritten) / static_cast<double>(result.sampleRate);
+    }
+    return 0.0;
+}
+
+bool streamingHasAudio(const StreamingImportResult& result) {
+    return result.ok ||
+        result.selectedAudio.index >= 0 ||
+        result.probe.audioStreamCount > 0;
+}
+
+bool writeStreamingAudioInfoJson(
     const std::filesystem::path& outputPath,
-    const AveMediaBridge::AudioImportResult& result,
+    const StreamingImportResult& result,
     std::string& error) {
     std::ofstream json(outputPath, std::ios::binary);
     if (!json) {
@@ -690,9 +1384,9 @@ bool writeAudioInfoJson(
     }
 
     json << "{\n";
-    json << "  \"sampleRate\": " << result.audio.sampleRate << ",\n";
-    json << "  \"channels\": " << result.audio.channels << ",\n";
-    json << "  \"frames\": " << result.audio.frameCount() << ",\n";
+    json << "  \"sampleRate\": " << result.sampleRate << ",\n";
+    json << "  \"channels\": " << result.channels << ",\n";
+    json << "  \"frames\": " << result.framesWritten << ",\n";
     json << "  \"sampleFormat\": \"float32\",\n";
     json << "  \"sampleLayout\": \"interleaved\",\n";
     json << "  \"dataFile\": \"original_f32.bin\"\n";
@@ -705,10 +1399,10 @@ bool writeAudioInfoJson(
     return true;
 }
 
-bool writeMetadataJson(
+bool writeStreamingMetadataJson(
     const std::filesystem::path& outputPath,
     const std::string& sourcePathUtf8,
-    const AveMediaBridge::AudioImportResult& result,
+    const StreamingImportResult& result,
     std::string& error) {
     std::ofstream json(outputPath, std::ios::binary);
     if (!json) {
@@ -716,19 +1410,14 @@ bool writeMetadataJson(
         return false;
     }
 
-    const std::uintmax_t expectedBytes =
-        static_cast<std::uintmax_t>(result.audio.frameCount()) *
-        static_cast<std::uintmax_t>(result.audio.channels) *
-        static_cast<std::uintmax_t>(sizeof(float));
-
     json << std::fixed << std::setprecision(9);
     json << "{\n";
     json << "  \"apiVersion\": 1,\n";
     json << "  \"sourcePath\": " << jsonString(sourcePathUtf8) << ",\n";
-    json << "  \"hasAudio\": " << (hasAudio(result) ? "true" : "false") << ",\n";
+    json << "  \"hasAudio\": " << (streamingHasAudio(result) ? "true" : "false") << ",\n";
     json << "  \"formatName\": " << jsonString(result.source.formatName) << ",\n";
     json << "  \"formatLongName\": " << jsonString(result.source.formatLongName) << ",\n";
-    json << "  \"durationSec\": " << durationSeconds(result) << ",\n";
+    json << "  \"durationSec\": " << streamingDurationSeconds(result) << ",\n";
     json << "  \"streamCount\": " << result.source.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << result.probe.audioStreamCount << ",\n";
     json << "  \"selectedAudioStreamIndex\": " << result.selectedAudio.index << ",\n";
@@ -741,13 +1430,13 @@ bool writeMetadataJson(
     writeDecodeReportJson(json, result.decode, "  ");
     json << ",\n";
     json << "  \"audio\": {\n";
-    json << "    \"sampleRate\": " << result.audio.sampleRate << ",\n";
-    json << "    \"channels\": " << result.audio.channels << ",\n";
-    json << "    \"frames\": " << result.audio.frameCount() << ",\n";
+    json << "    \"sampleRate\": " << result.sampleRate << ",\n";
+    json << "    \"channels\": " << result.channels << ",\n";
+    json << "    \"frames\": " << result.framesWritten << ",\n";
     json << "    \"sampleFormat\": \"float32\",\n";
     json << "    \"sampleLayout\": \"interleaved\",\n";
     json << "    \"dataFile\": \"original_f32.bin\",\n";
-    json << "    \"expectedDataBytes\": " << expectedBytes << "\n";
+    json << "    \"expectedDataBytes\": " << result.expectedBytes << "\n";
     json << "  },\n";
     json << "  \"audioStats\": {\n";
     json << "    \"rms\": " << result.stats.rms << ",\n";
@@ -774,26 +1463,105 @@ bool writeMetadataJson(
     return true;
 }
 
-bool writeF32Binary(
-    const std::filesystem::path& outputPath,
-    const AveMediaBridge::AudioImportResult& result,
+void removeFileIfExists(const std::filesystem::path& path) {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+}
+
+void cleanupStreamingTempFiles(
+    const std::filesystem::path& audioTmpPath,
+    const std::filesystem::path& audioInfoTmpPath,
+    const std::filesystem::path& metadataTmpPath) {
+    removeFileIfExists(audioTmpPath);
+    removeFileIfExists(audioInfoTmpPath);
+    removeFileIfExists(metadataTmpPath);
+}
+
+bool moveFileReplace(const std::filesystem::path& source, const std::filesystem::path& destination, std::string& error) {
+    if (MoveFileExW(
+            source.c_str(),
+            destination.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+        return true;
+    }
+
+    std::ostringstream out;
+    out << "failed to commit "
+        << destination.filename().string()
+        << ": Win32 error "
+        << GetLastError();
+    error = out.str();
+    return false;
+}
+
+bool verifyStreamingDataFileSize(
+    const std::filesystem::path& audioTmpPath,
+    const StreamingImportResult& result,
     std::string& error) {
-    std::ofstream file(outputPath, std::ios::binary);
-    if (!file) {
-        error = "failed to open original_f32.bin";
+    std::error_code fsError;
+    const auto actualBytes = std::filesystem::file_size(audioTmpPath, fsError);
+    if (fsError) {
+        error = "failed to inspect original_f32.bin.tmp: " + fsError.message();
+        return false;
+    }
+    if (actualBytes != static_cast<std::uintmax_t>(result.expectedBytes)) {
+        std::ostringstream out;
+        out << "streaming import data file size mismatch: expected "
+            << result.expectedBytes
+            << ", actual "
+            << actualBytes;
+        error = out.str();
+        return false;
+    }
+    return true;
+}
+
+bool commitStreamingSessionArtifacts(
+    const std::filesystem::path& audioTmpPath,
+    const std::filesystem::path& audioInfoTmpPath,
+    const std::filesystem::path& metadataTmpPath,
+    const std::filesystem::path& audioDataPath,
+    const std::filesystem::path& audioInfoPath,
+    const std::filesystem::path& metadataPath,
+    std::string& error) {
+    bool dataCommitted = false;
+    bool infoCommitted = false;
+
+    auto rollback = [&]() {
+        if (infoCommitted) {
+            removeFileIfExists(audioInfoPath);
+        }
+        if (dataCommitted) {
+            removeFileIfExists(audioDataPath);
+        }
+        cleanupStreamingTempFiles(audioTmpPath, audioInfoTmpPath, metadataTmpPath);
+    };
+
+    std::error_code fsError;
+    std::filesystem::remove(metadataPath, fsError);
+    if (fsError) {
+        error = "failed to remove old metadata.json before commit: " + fsError.message();
+        rollback();
         return false;
     }
 
-    const auto* bytes = reinterpret_cast<const char*>(result.audio.samples.data());
-    const std::size_t byteCount = result.audio.samples.size() * sizeof(float);
-    if (byteCount > 0) {
-        file.write(bytes, static_cast<std::streamsize>(byteCount));
-    }
-
-    if (!file) {
-        error = "failed to write original_f32.bin";
+    if (!moveFileReplace(audioTmpPath, audioDataPath, error)) {
+        rollback();
         return false;
     }
+    dataCommitted = true;
+
+    if (!moveFileReplace(audioInfoTmpPath, audioInfoPath, error)) {
+        rollback();
+        return false;
+    }
+    infoCommitted = true;
+
+    if (!moveFileReplace(metadataTmpPath, metadataPath, error)) {
+        rollback();
+        return false;
+    }
+
     return true;
 }
 
@@ -899,20 +1667,34 @@ int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t*
             return 1;
         }
 
-        AveMediaBridge::AveMediaBridge bridge;
-        AveMediaBridge::AudioImportResult imported = bridge.importAudio(input);
-        if (!imported.hasUsableAudio()) {
-            setLastErrorText(imported.error.empty() ? "audio import failed" : imported.error);
-            return 2;
-        }
-
         const std::filesystem::path metadataPath = sessionDir / L"metadata.json";
         const std::filesystem::path audioInfoPath = sessionDir / L"audio_info.json";
         const std::filesystem::path audioDataPath = sessionDir / L"original_f32.bin";
+        const std::filesystem::path metadataTmpPath = sessionDir / L"metadata.json.tmp";
+        const std::filesystem::path audioInfoTmpPath = sessionDir / L"audio_info.json.tmp";
+        const std::filesystem::path audioDataTmpPath = sessionDir / L"original_f32.bin.tmp";
 
-        if (!writeF32Binary(audioDataPath, imported, error) ||
-            !writeAudioInfoJson(audioInfoPath, imported, error) ||
-            !writeMetadataJson(metadataPath, input, imported, error)) {
+        cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+
+        StreamingImportResult imported = runStreamingSessionImportToTempFile(input, sessionDir, audioDataTmpPath);
+        if (!imported.ok) {
+            cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
+            setLastErrorText(imported.error.empty() ? "streaming audio import failed" : imported.error);
+            return 2;
+        }
+
+        if (!verifyStreamingDataFileSize(audioDataTmpPath, imported, error) ||
+            !writeStreamingAudioInfoJson(audioInfoTmpPath, imported, error) ||
+            !writeStreamingMetadataJson(metadataTmpPath, input, imported, error) ||
+            !commitStreamingSessionArtifacts(
+                audioDataTmpPath,
+                audioInfoTmpPath,
+                metadataTmpPath,
+                audioDataPath,
+                audioInfoPath,
+                metadataPath,
+                error)) {
+            cleanupStreamingTempFiles(audioDataTmpPath, audioInfoTmpPath, metadataTmpPath);
             setLastErrorText(error);
             return 3;
         }

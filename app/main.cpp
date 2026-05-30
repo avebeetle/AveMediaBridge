@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -241,6 +243,52 @@ void printDllLastErrorText(HMODULE module) {
     }
 }
 
+bool readTextFile(const std::filesystem::path& path, std::string& text) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+
+    text.assign(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>());
+    return true;
+}
+
+bool extractJsonInt64(const std::string& json, const std::string& key, std::int64_t& value) {
+    const std::string token = "\"" + key + "\"";
+    std::size_t pos = json.find(token);
+    if (pos == std::string::npos) {
+        return false;
+    }
+    pos = json.find(':', pos + token.size());
+    if (pos == std::string::npos) {
+        return false;
+    }
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos])) != 0) {
+        ++pos;
+    }
+
+    const std::size_t numberStart = pos;
+    if (pos < json.size() && json[pos] == '-') {
+        ++pos;
+    }
+    while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos])) != 0) {
+        ++pos;
+    }
+    if (pos == numberStart || (pos == numberStart + 1 && json[numberStart] == '-')) {
+        return false;
+    }
+
+    try {
+        value = std::stoll(json.substr(numberStart, pos - numberStart));
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
 int runSmokeDllTransform(const std::string& inputPathText, const std::string& outputPathText) {
     const std::filesystem::path exeDir = getExecutableDirectory();
     const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
@@ -395,13 +443,50 @@ int runSmokeDllImportSession(const std::string& inputPathText, const std::string
     }
 
     FreeLibrary(module);
+    const std::filesystem::path sessionPath(sessionMediaDirText);
+    const std::filesystem::path metadataPath = sessionPath / "metadata.json";
+    const std::filesystem::path audioInfoPath = sessionPath / "audio_info.json";
+    const std::filesystem::path audioDataPath = sessionPath / "original_f32.bin";
+
+    std::string audioInfoText;
+    std::int64_t sampleRate = 0;
+    std::int64_t channels = 0;
+    std::int64_t frames = 0;
+    if (!readTextFile(audioInfoPath, audioInfoText) ||
+        !extractJsonInt64(audioInfoText, "sampleRate", sampleRate) ||
+        !extractJsonInt64(audioInfoText, "channels", channels) ||
+        !extractJsonInt64(audioInfoText, "frames", frames)) {
+        std::cerr << "ERROR: unable to read generated audio_info.json summary.\n";
+        return 1;
+    }
+
+    std::error_code fsError;
+    const bool metadataExists = std::filesystem::exists(metadataPath, fsError);
+    const bool audioInfoExists = std::filesystem::exists(audioInfoPath, fsError);
+    const bool audioDataExists = std::filesystem::exists(audioDataPath, fsError);
+    const auto actualBytes = audioDataExists ? std::filesystem::file_size(audioDataPath, fsError) : 0;
+    if (fsError) {
+        std::cerr << "ERROR: unable to inspect generated artifacts: " << fsError.message() << "\n";
+        return 1;
+    }
+
+    const std::int64_t expectedBytes = frames * channels * static_cast<std::int64_t>(sizeof(float));
+    const bool sizeMatch = audioDataExists && actualBytes == static_cast<std::uintmax_t>(expectedBytes);
+
     std::cout << "Result: OK\n";
     std::cout << "Session media dir: " << sessionMediaDirText << "\n";
+    std::cout << "Streaming import: yes\n";
+    std::cout << "Sample rate: " << sampleRate << "\n";
+    std::cout << "Channels: " << channels << "\n";
+    std::cout << "Frames: " << frames << "\n";
+    std::cout << "Expected bytes: " << expectedBytes << "\n";
+    std::cout << "Actual original_f32.bin bytes: " << actualBytes << "\n";
+    std::cout << "Size match: " << (sizeMatch ? "yes" : "no") << "\n";
     std::cout << "Generated:\n";
-    std::cout << "  metadata.json\n";
-    std::cout << "  audio_info.json\n";
-    std::cout << "  original_f32.bin\n";
-    return 0;
+    std::cout << "  metadata.json " << (metadataExists ? "yes" : "missing") << "\n";
+    std::cout << "  audio_info.json " << (audioInfoExists ? "yes" : "missing") << "\n";
+    std::cout << "  original_f32.bin " << (audioDataExists ? "yes" : "missing") << "\n";
+    return metadataExists && audioInfoExists && audioDataExists && sizeMatch ? 0 : 1;
 }
 
 std::vector<std::filesystem::path> collectMediaFiles(const std::filesystem::path& folder, bool recursive) {

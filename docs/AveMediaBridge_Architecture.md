@@ -290,6 +290,38 @@ Return code:
 - `0`: artifacts were written successfully.
 - non-zero: invalid path, failed decode/import, failed artifact write, or unexpected internal failure.
 
+## Current Import Memory Behavior
+
+There are now two import/decode paths:
+
+- LabApp manual import, processor tests, and `AveMediaBridge_TransformToWav` still use the core `AveMediaBridge::importAudio` path, which creates a full `AudioBufferF32` in memory because those workflows need in-memory sample processing.
+- `AveMediaBridge_ImportAudioToSession` uses the streaming session import path and no longer allocates a full decoded `AudioBufferF32`.
+
+## Streaming Import To Session
+
+`AveMediaBridge_ImportAudioToSession` decodes the selected best audio stream incrementally and writes converted samples directly to `original_f32.bin.tmp`.
+
+Streaming session import rules:
+
+- open the source with FFmpeg and select the best audio stream;
+- decode packets/frames progressively;
+- convert decoded chunks to interleaved little-endian float32 with a bounded resampler/output buffer;
+- append each converted chunk directly to `original_f32.bin.tmp`;
+- keep RAM usage bounded so it does not scale with media duration;
+- count exact `framesWritten` and bytes while writing;
+- verify `bytesWritten == framesWritten * channels * sizeof(float)`;
+- write `audio_info.json.tmp` and `metadata.json.tmp`;
+- commit `original_f32.bin`, `audio_info.json`, and `metadata.json` only after successful decode and validation;
+- delete tmp files on failure so a failed import does not leave valid-looking partial artifacts.
+
+The final artifact names and schemas remain compatible with the existing AveVoice contract. Exact decoded frames are written in `audio_info.json` after import completes.
+
+## Disk Preflight
+
+Before streaming decode starts, session import estimates decoded float32 bytes from available duration, sample rate, and channel metadata. If the estimate is known and free space in `sessionMediaDir` is clearly below the estimated decoded byte count plus a small headroom, import fails before decode.
+
+If the decoded-size estimate is unknown, import continues and records a warning in `metadata.json` because exact bytes will be known only while streaming samples to disk.
+
 ### AveMediaBridge_TransformToWav
 
 ```cpp
@@ -469,7 +501,8 @@ Implemented:
 - thread-local `AveMediaBridge_GetLastErrorText`;
 - `AveMediaBridge_ProbeToJson`;
 - Fast Probe v2 no-decode metadata probing;
-- `AveMediaBridge_ImportAudioToSession`;
+- streaming `AveMediaBridge_ImportAudioToSession`;
+- disk preflight for session import;
 - LabApp smoke commands for transform, probe, and session import.
 
 Not implemented:
