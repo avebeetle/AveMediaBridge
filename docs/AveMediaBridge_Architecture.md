@@ -438,7 +438,7 @@ Draft waveform chunk rules:
 - samples are downmixed to mono by averaging channels;
 - NaN and Inf samples are treated as zero for waveform purposes;
 - each bin stores min/max as two float values, so `valuesPerBin == 2`;
-- `framesPerBin` is fixed for the draft stream and currently uses 512 source frames per bin;
+- `framesPerBin` is fixed for the draft stream and currently uses 128 source frames per bin, matching AveVoice's final waveform pyramid base level;
 - `firstFrame` is monotonic across chunks;
 - `minMaxPairs` is valid only for the duration of the callback and must not be stored by the caller;
 - memory remains bounded by the decoder/resampler buffers plus a small pending waveform chunk buffer;

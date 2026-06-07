@@ -33,7 +33,7 @@ constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
 constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
-constexpr std::uint32_t kDraftWaveformFramesPerBin = 512;
+constexpr std::uint32_t kDraftWaveformFramesPerBin = 128;
 constexpr std::uint32_t kDraftWaveformMaxBinsPerChunk = 64;
 thread_local std::wstring g_lastError;
 
