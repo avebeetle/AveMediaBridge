@@ -1,6 +1,7 @@
 #include "AveMediaBridge/AveMediaBridgeApi.hpp"
 
 #include "AveMediaBridge/AveMediaBridge.hpp"
+#include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -29,12 +31,17 @@ extern "C" {
 
 namespace {
 
+namespace ClipDiag = AveMediaBridge::Diagnostics;
+
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
 constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
 constexpr std::uint32_t kDraftWaveformFramesPerBin = 128;
 constexpr std::uint32_t kDraftWaveformMaxBinsPerChunk = 64;
+constexpr const wchar_t* kFullScaleClipDiagEnvVar = L"AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG";
+constexpr const char* kFullScaleClipDiagLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG]";
+constexpr const char* kFullScaleClipResultLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_RESULT]";
 thread_local std::wstring g_lastError;
 
 struct FastProbeResult {
@@ -142,8 +149,13 @@ struct DraftWaveformState {
     std::uint32_t currentBinFrames = 0;
     float currentMin = 0.0f;
     float currentMax = 0.0f;
+    double currentSumSquares = 0.0;
+    double currentSumAbs = 0.0;
     bool currentBinHasSamples = false;
     std::vector<float> pendingMinMaxPairs;
+    std::vector<double> pendingSumSquaresPerBin;
+    std::vector<double> pendingSumAbsPerBin;
+    std::vector<std::uint64_t> pendingFrameCountPerBin;
 };
 
 struct StreamingImportCallbacks {
@@ -155,6 +167,171 @@ struct StreamingImportCallbacks {
     bool progressEmitted = false;
     DraftWaveformState waveform;
 };
+
+struct FullScaleClipDiagnostic {
+    bool enabled = false;
+    std::string path;
+    std::string codecName;
+    std::string decoderName;
+    std::string inputSampleFormatName;
+    std::string outputSampleFormatName = "flt";
+    ClipDiag::FullScaleSampleStats preSwr;
+    ClipDiag::FullScaleSampleStats postSwr;
+};
+
+bool fullScaleClipDiagEnabledFromEnvironment() {
+    wchar_t value[32] = {};
+    const DWORD copied = GetEnvironmentVariableW(
+        kFullScaleClipDiagEnvVar,
+        value,
+        static_cast<DWORD>(sizeof(value) / sizeof(value[0])));
+    if (copied == 0) {
+        return false;
+    }
+    if (copied == 1 && value[0] == L'0') {
+        return false;
+    }
+    if ((value[0] == L'f' || value[0] == L'F') &&
+        (value[1] == L'a' || value[1] == L'A')) {
+        return false;
+    }
+    return true;
+}
+
+std::string fullScaleBoolText(bool value) {
+    return value ? "yes" : "no";
+}
+
+std::string fullScaleDoubleText(double value) {
+    if (!std::isfinite(value)) {
+        return "nan";
+    }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(9) << value;
+    return out.str();
+}
+
+std::string fullScalePercentText(std::uint64_t count, std::uint64_t sampleCount) {
+    std::ostringstream out;
+    const double percent = sampleCount > 0
+        ? (static_cast<double>(count) * 100.0) / static_cast<double>(sampleCount)
+        : 0.0;
+    out << std::fixed << std::setprecision(9) << percent;
+    return out.str();
+}
+
+std::string fullScalePlanarText(const ClipDiag::FullScaleSampleStats& stats) {
+    if (stats.planarMixed) {
+        return "mixed";
+    }
+    return stats.planar ? "yes" : "no";
+}
+
+std::uint64_t exactOneCount(const ClipDiag::FullScaleSampleStats& stats) {
+    return stats.exactPositiveOneCount + stats.exactNegativeOneCount;
+}
+
+bool hasOversAboveOne(const ClipDiag::FullScaleSampleStats& stats) {
+    return stats.abovePositiveOneCount > 0 || stats.belowNegativeOneCount > 0;
+}
+
+void logFullScaleStageStats(
+    const FullScaleClipDiagnostic& diagnostic,
+    const char* stage,
+    const ClipDiag::FullScaleSampleStats& stats) {
+    std::ostringstream out;
+    out << kFullScaleClipDiagLogPrefix
+        << " path=\"" << diagnostic.path << "\""
+        << " codecName=" << diagnostic.codecName
+        << " decoderName=" << diagnostic.decoderName
+        << " inputSampleFormat=" << diagnostic.inputSampleFormatName
+        << " outputSampleFormat=" << diagnostic.outputSampleFormatName
+        << " stage=" << stage
+        << " sampleFormatName=" << stats.sampleFormatName
+        << " planar=" << fullScalePlanarText(stats)
+        << " channels=" << stats.channels
+        << " frames=" << stats.frames
+        << " sampleCount=" << stats.sampleCount
+        << " finiteCount=" << stats.finiteCount
+        << " nonFiniteCount=" << stats.nonFiniteCount
+        << " min=" << fullScaleDoubleText(stats.finiteCount > 0 ? stats.minValue : std::numeric_limits<double>::quiet_NaN())
+        << " max=" << fullScaleDoubleText(stats.finiteCount > 0 ? stats.maxValue : std::numeric_limits<double>::quiet_NaN())
+        << " maxAbs=" << fullScaleDoubleText(stats.maxAbs)
+        << " exactPositiveOne=" << stats.exactPositiveOneCount
+        << " exactNegativeOne=" << stats.exactNegativeOneCount
+        << " abovePositiveOne=" << stats.abovePositiveOneCount
+        << " belowNegativeOne=" << stats.belowNegativeOneCount
+        << " nearPositiveOne=" << stats.nearPositiveOneCount
+        << " nearNegativeOne=" << stats.nearNegativeOneCount
+        << " percentExactPositiveOne=" << fullScalePercentText(stats.exactPositiveOneCount, stats.sampleCount)
+        << " percentExactNegativeOne=" << fullScalePercentText(stats.exactNegativeOneCount, stats.sampleCount);
+    if (!stats.supported) {
+        out << " unsupported=yes unsupportedReason=\"" << stats.unsupportedReason << "\"";
+    }
+    std::cout << out.str() << "\n";
+}
+
+void logFullScaleClipResult(const FullScaleClipDiagnostic& diagnostic) {
+    const std::uint64_t preExact = exactOneCount(diagnostic.preSwr);
+    const std::uint64_t postExact = exactOneCount(diagnostic.postSwr);
+    const bool swrIntroducedExactOne = diagnostic.preSwr.supported && preExact == 0 && postExact > 0;
+    const char* exactOneFirstAppearsAt =
+        preExact > 0 ? "pre_swr" :
+        postExact > 0 ? "post_swr" :
+        "not_found";
+    const char* likelyCause =
+        !diagnostic.preSwr.supported ? "unsupported" :
+        preExact > 0 ? "source_or_decoder_full_scale" :
+        postExact > 0 ? "swr_float_conversion" :
+        "no_full_scale";
+
+    std::cout << kFullScaleClipResultLogPrefix
+              << " path=\"" << diagnostic.path << "\""
+              << " exactOneFirstAppearsAt=" << exactOneFirstAppearsAt
+              << " swrIntroducedExactOne=" << fullScaleBoolText(swrIntroducedExactOne)
+              << " rawHadOversAboveOne=" << fullScaleBoolText(hasOversAboveOne(diagnostic.preSwr))
+              << " outputHadOversAboveOne=" << fullScaleBoolText(hasOversAboveOne(diagnostic.postSwr))
+              << " likelyCause=" << likelyCause
+              << "\n";
+}
+
+void logFullScaleClipDiagnostic(const FullScaleClipDiagnostic& diagnostic) {
+    if (!diagnostic.enabled) {
+        return;
+    }
+    logFullScaleStageStats(diagnostic, "pre_swr", diagnostic.preSwr);
+    logFullScaleStageStats(diagnostic, "post_swr", diagnostic.postSwr);
+    logFullScaleClipResult(diagnostic);
+}
+
+void analyzePreSwrFrame(
+    FullScaleClipDiagnostic* diagnostic,
+    const AVFrame* frame,
+    const AVCodecContext* decoder) {
+    if (!diagnostic || !diagnostic->enabled) {
+        return;
+    }
+    const int fallbackChannels = decoder ? decoder->ch_layout.nb_channels : 0;
+    ClipDiag::FullScaleSampleStats frameStats;
+    ClipDiag::analyzeFrameSamples(frame, fallbackChannels, frameStats);
+    if (diagnostic->inputSampleFormatName.empty()) {
+        diagnostic->inputSampleFormatName = frameStats.sampleFormatName;
+    }
+    ClipDiag::mergeSampleStats(diagnostic->preSwr, frameStats);
+}
+
+void analyzePostSwrSamples(
+    FullScaleClipDiagnostic* diagnostic,
+    const float* samples,
+    int frames,
+    int channels) {
+    if (!diagnostic || !diagnostic->enabled) {
+        return;
+    }
+    ClipDiag::FullScaleSampleStats chunkStats;
+    ClipDiag::analyzeInterleavedFloatSamples(samples, frames, channels, chunkStats);
+    ClipDiag::mergeSampleStats(diagnostic->postSwr, chunkStats);
+}
 
 std::string wideToUtf8(const wchar_t* value) {
     if (!value || value[0] == L'\0') {
@@ -682,6 +859,12 @@ bool emitPendingDraftWaveformChunk(
         error = "draft waveform bin count overflow";
         return false;
     }
+    if (callbacks->waveform.pendingSumSquaresPerBin.size() != pairCount ||
+        callbacks->waveform.pendingSumAbsPerBin.size() != pairCount ||
+        callbacks->waveform.pendingFrameCountPerBin.size() != pairCount) {
+        error = "draft waveform energy bin count mismatch";
+        return false;
+    }
 
     AveMediaBridgeWaveformChunk chunk{};
     chunk.structSize = sizeof(chunk);
@@ -692,6 +875,10 @@ bool emitPendingDraftWaveformChunk(
     chunk.sampleRate = sampleRate;
     chunk.channels = channels;
     chunk.minMaxPairs = callbacks->waveform.pendingMinMaxPairs.data();
+    chunk.flags = AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY;
+    chunk.sumSquaresPerBin = callbacks->waveform.pendingSumSquaresPerBin.data();
+    chunk.sumAbsPerBin = callbacks->waveform.pendingSumAbsPerBin.data();
+    chunk.frameCountPerBin = callbacks->waveform.pendingFrameCountPerBin.data();
 
     try {
         callbacks->onWaveformChunk(&chunk, callbacks->userData);
@@ -701,6 +888,9 @@ bool emitPendingDraftWaveformChunk(
     }
 
     callbacks->waveform.pendingMinMaxPairs.clear();
+    callbacks->waveform.pendingSumSquaresPerBin.clear();
+    callbacks->waveform.pendingSumAbsPerBin.clear();
+    callbacks->waveform.pendingFrameCountPerBin.clear();
     return true;
 }
 
@@ -715,9 +905,14 @@ void finishCurrentDraftWaveformBin(DraftWaveformState& waveform) {
     }
     waveform.pendingMinMaxPairs.push_back(waveform.currentMin);
     waveform.pendingMinMaxPairs.push_back(waveform.currentMax);
+    waveform.pendingSumSquaresPerBin.push_back(waveform.currentSumSquares);
+    waveform.pendingSumAbsPerBin.push_back(waveform.currentSumAbs);
+    waveform.pendingFrameCountPerBin.push_back(waveform.currentBinFrames);
     waveform.currentBinFrames = 0;
     waveform.currentMin = 0.0f;
     waveform.currentMax = 0.0f;
+    waveform.currentSumSquares = 0.0;
+    waveform.currentSumAbs = 0.0;
     waveform.currentBinHasSamples = false;
 }
 
@@ -756,6 +951,9 @@ bool emitDraftWaveformSamples(
             waveform.currentMax = (std::max)(waveform.currentMax, mono);
         }
 
+        const double monoDouble = static_cast<double>(mono);
+        waveform.currentSumSquares += monoDouble * monoDouble;
+        waveform.currentSumAbs += std::abs(monoDouble);
         ++waveform.currentBinFrames;
         ++waveform.nextFrame;
         if (waveform.currentBinFrames == kDraftWaveformFramesPerBin) {
@@ -1019,11 +1217,16 @@ int writeConvertedStreamingSamples(
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
-    StreamingImportCallbacks* callbacks) {
+    StreamingImportCallbacks* callbacks,
+    FullScaleClipDiagnostic* diagnostic) {
     int ret = ensureStreamingSwr(swr, frame, decoder, result);
     if (ret < 0) {
         return ret;
     }
+    if (diagnostic && diagnostic->enabled && diagnostic->inputSampleFormatName.empty()) {
+        diagnostic->inputSampleFormatName = ClipDiag::sampleFormatName(swr.inputFormat);
+    }
+    analyzePreSwrFrame(diagnostic, frame, decoder);
 
     const int outCapacity = swr_get_out_samples(swr.ctx, frame->nb_samples);
     if (outCapacity < 0) {
@@ -1053,6 +1256,7 @@ int writeConvertedStreamingSamples(
     }
 
     const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+    analyzePostSwrSamples(diagnostic, swr.outputBuffer.data(), ret, swr.channels);
     const std::size_t writtenBytes = writtenSamples * sizeof(float);
     output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
     output.flush();
@@ -1092,7 +1296,8 @@ int flushStreamingSwr(
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
-    StreamingImportCallbacks* callbacks) {
+    StreamingImportCallbacks* callbacks,
+    FullScaleClipDiagnostic* diagnostic) {
     if (!swr.initialized) {
         return 0;
     }
@@ -1124,6 +1329,7 @@ int flushStreamingSwr(
         }
 
         const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+        analyzePostSwrSamples(diagnostic, swr.outputBuffer.data(), ret, swr.channels);
         const std::size_t writtenBytes = writtenSamples * sizeof(float);
         output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
         output.flush();
@@ -1167,7 +1373,8 @@ int receiveStreamingFrames(
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
-    StreamingImportCallbacks* callbacks) {
+    StreamingImportCallbacks* callbacks,
+    FullScaleClipDiagnostic* diagnostic) {
     while (true) {
         const int ret = avcodec_receive_frame(decoder, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -1179,7 +1386,8 @@ int receiveStreamingFrames(
         }
 
         ++result.decode.decodedFrames;
-        const int convertRet = writeConvertedStreamingSamples(swr, frame, decoder, output, stats, result, callbacks);
+        const int convertRet =
+            writeConvertedStreamingSamples(swr, frame, decoder, output, stats, result, callbacks, diagnostic);
         av_frame_unref(frame);
         if (convertRet < 0) {
             return convertRet;
@@ -1195,10 +1403,11 @@ int sendStreamingPacketAndReceive(
     std::ofstream& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
-    StreamingImportCallbacks* callbacks) {
+    StreamingImportCallbacks* callbacks,
+    FullScaleClipDiagnostic* diagnostic) {
     int ret = avcodec_send_packet(decoder, packet);
     if (ret == AVERROR(EAGAIN)) {
-        ret = receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks);
+        ret = receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks, diagnostic);
         if (ret < 0) {
             return ret;
         }
@@ -1211,7 +1420,7 @@ int sendStreamingPacketAndReceive(
         return 0;
     }
 
-    return receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks);
+    return receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks, diagnostic);
 }
 
 StreamingImportResult runStreamingSessionImportToLiveFile(
@@ -1228,6 +1437,9 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     AVFrame* frame = nullptr;
     StreamingSwrState swr;
     StreamingStatsAccumulator stats;
+    FullScaleClipDiagnostic fullScaleDiagnostic;
+    fullScaleDiagnostic.enabled = fullScaleClipDiagEnabledFromEnvironment();
+    fullScaleDiagnostic.path = path;
     std::ofstream output;
 
     auto cleanup = [&]() {
@@ -1330,6 +1542,10 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     }
     result.decode.decoderOpened = true;
     fillStreamingSelectedAudioInfo(result, audioStream, decoder, decoderContext);
+    if (fullScaleDiagnostic.enabled) {
+        fullScaleDiagnostic.codecName = result.selectedAudio.codecName;
+        fullScaleDiagnostic.decoderName = result.selectedAudio.decoderName;
+    }
 
     packet = av_packet_alloc();
     frame = av_frame_alloc();
@@ -1362,7 +1578,16 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         if (packet->stream_index == audioStreamIndex) {
             ++result.decode.audioPackets;
             const int decodeRet =
-                sendStreamingPacketAndReceive(decoderContext, packet, frame, swr, output, stats, result, callbacks);
+                sendStreamingPacketAndReceive(
+                    decoderContext,
+                    packet,
+                    frame,
+                    swr,
+                    output,
+                    stats,
+                    result,
+                    callbacks,
+                    &fullScaleDiagnostic);
             av_packet_unref(packet);
             if (decodeRet < 0) {
                 cleanup();
@@ -1386,13 +1611,13 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         return result;
     }
 
-    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result, callbacks);
+    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result, callbacks, &fullScaleDiagnostic);
     if (ret < 0) {
         cleanup();
         return result;
     }
 
-    ret = flushStreamingSwr(swr, output, stats, result, callbacks);
+    ret = flushStreamingSwr(swr, output, stats, result, callbacks, &fullScaleDiagnostic);
     if (ret < 0) {
         cleanup();
         return result;
@@ -1450,6 +1675,18 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     }
 
     result.stats = stats.finish();
+    if (fullScaleDiagnostic.enabled) {
+        if (fullScaleDiagnostic.codecName.empty()) {
+            fullScaleDiagnostic.codecName = result.selectedAudio.codecName;
+        }
+        if (fullScaleDiagnostic.decoderName.empty()) {
+            fullScaleDiagnostic.decoderName = result.selectedAudio.decoderName;
+        }
+        if (fullScaleDiagnostic.inputSampleFormatName.empty()) {
+            fullScaleDiagnostic.inputSampleFormatName = result.selectedAudio.decoderSampleFormat;
+        }
+        logFullScaleClipDiagnostic(fullScaleDiagnostic);
+    }
     if (!emitImportProgress(callbacks, result, true, result.error)) {
         cleanup();
         return result;

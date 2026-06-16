@@ -7,6 +7,7 @@
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "AveMediaBridge/Core/AudioStats.hpp"
 #include "AveMediaBridge/Process/AudioBufferProcessor.hpp"
+#include "../src/Diagnostics/FullScaleClipDiagnostics.hpp"
 
 #include <Windows.h>
 
@@ -22,12 +23,14 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/log.h>
 #include <libswresample/swresample.h>
 }
@@ -54,6 +57,8 @@ using AveMediaBridge::AudioBufferF32;
 using AveMediaBridge::AudioBufferProcessor;
 using AveMediaBridge::AudioImportResult;
 using AveMediaBridge::AudioStats;
+
+namespace ClipDiag = AveMediaBridge::Diagnostics;
 
 std::string trim(std::string text) {
     auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -271,11 +276,73 @@ struct WaveformChunkSmokeState {
     bool binCountValid = true;
     bool valuesPerBinValid = true;
     bool minMaxPairsValid = true;
+    bool longFormEnergyObserved = false;
+    bool longFormEnergyValid = true;
+    std::uint64_t energyFrameCountTotal = 0;
     ConsoleProgressThrottle console;
 };
 
 std::uint32_t importOptionsSizeBeforeWaveformCallback() {
     return static_cast<std::uint32_t>(offsetof(AveMediaBridgeImportOptions, onWaveformChunk));
+}
+
+class ScopedEnvironmentVariable {
+public:
+    ScopedEnvironmentVariable(std::wstring name, std::wstring value)
+        : name_(std::move(name)) {
+        std::wstring buffer(32767, L'\0');
+        const DWORD copied =
+            GetEnvironmentVariableW(name_.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (copied > 0 && copied < buffer.size()) {
+            hadOldValue_ = true;
+            buffer.resize(copied);
+            oldValue_ = std::move(buffer);
+        }
+        setOk_ = SetEnvironmentVariableW(name_.c_str(), value.c_str()) != 0;
+    }
+
+    ~ScopedEnvironmentVariable() {
+        if (name_.empty()) {
+            return;
+        }
+        SetEnvironmentVariableW(name_.c_str(), hadOldValue_ ? oldValue_.c_str() : nullptr);
+    }
+
+    bool ok() const {
+        return setOk_;
+    }
+
+private:
+    std::wstring name_;
+    std::wstring oldValue_;
+    bool hadOldValue_ = false;
+    bool setOk_ = false;
+};
+
+bool createFullScaleDiagSessionDir(std::filesystem::path& sessionDir, std::string& error) {
+    std::error_code fsError;
+    std::filesystem::path baseDir = std::filesystem::temp_directory_path(fsError);
+    if (fsError) {
+        baseDir = std::filesystem::current_path(fsError) / "test_output";
+    }
+    if (fsError) {
+        error = "unable to choose temporary diagnostic session directory: " + fsError.message();
+        return false;
+    }
+
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::ostringstream name;
+    name << "AveMediaBridge_full_scale_clip_diag_"
+         << GetCurrentProcessId()
+         << "_"
+         << ticks;
+    sessionDir = baseDir / name.str();
+    std::filesystem::create_directories(sessionDir, fsError);
+    if (fsError) {
+        error = "unable to create diagnostic session directory: " + fsError.message();
+        return false;
+    }
+    return true;
 }
 
 void configureDllSearchPath(const std::filesystem::path& exeDir, const std::filesystem::path& ffmpegDir) {
@@ -625,7 +692,229 @@ void AVEMEDIABRIDGE_CALL waveformChunkSmokeCallback(
             }
         }
     }
+    const bool hasEnergy =
+        chunk->structSize >= offsetof(AveMediaBridgeWaveformChunk, frameCountPerBin) +
+                sizeof(chunk->frameCountPerBin) &&
+        (chunk->flags & AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY) != 0 &&
+        chunk->sumSquaresPerBin &&
+        chunk->sumAbsPerBin &&
+        chunk->frameCountPerBin;
+    if (hasEnergy) {
+        state->longFormEnergyObserved = true;
+        for (std::uint32_t bin = 0; bin < chunk->binCount; ++bin) {
+            if (!std::isfinite(chunk->sumSquaresPerBin[bin]) ||
+                !std::isfinite(chunk->sumAbsPerBin[bin]) ||
+                chunk->frameCountPerBin[bin] == 0 ||
+                chunk->frameCountPerBin[bin] > chunk->framesPerBin) {
+                state->longFormEnergyValid = false;
+                break;
+            }
+            state->energyFrameCountTotal += chunk->frameCountPerBin[bin];
+        }
+    }
     state->totalBinsReceived += chunk->binCount;
+}
+
+struct SyntheticEnergyBin {
+    float minValue = 0.0f;
+    float maxValue = 0.0f;
+    double sumSquares = 0.0;
+    double sumAbs = 0.0;
+    std::uint64_t frameCount = 0;
+};
+
+std::vector<SyntheticEnergyBin> buildSyntheticEnergyBins(
+    const std::vector<float>& monoSamples,
+    std::uint32_t framesPerBin) {
+    std::vector<SyntheticEnergyBin> bins;
+    if (framesPerBin == 0) {
+        return bins;
+    }
+
+    SyntheticEnergyBin current;
+    bool currentHasSamples = false;
+    std::uint32_t currentFrames = 0;
+    for (float sample : monoSamples) {
+        const float mono = std::isfinite(sample) ? sample : 0.0f;
+        if (!currentHasSamples) {
+            current.minValue = mono;
+            current.maxValue = mono;
+            currentHasSamples = true;
+        } else {
+            current.minValue = (std::min)(current.minValue, mono);
+            current.maxValue = (std::max)(current.maxValue, mono);
+        }
+        current.sumSquares += static_cast<double>(mono) * static_cast<double>(mono);
+        current.sumAbs += std::abs(static_cast<double>(mono));
+        ++current.frameCount;
+        ++currentFrames;
+
+        if (currentFrames == framesPerBin) {
+            bins.push_back(current);
+            current = {};
+            currentHasSamples = false;
+            currentFrames = 0;
+        }
+    }
+
+    if (currentHasSamples) {
+        bins.push_back(current);
+    }
+    return bins;
+}
+
+double syntheticRms(const SyntheticEnergyBin& bin) {
+    return bin.frameCount > 0
+        ? std::sqrt(bin.sumSquares / static_cast<double>(bin.frameCount))
+        : 0.0;
+}
+
+double syntheticMeanAbs(const SyntheticEnergyBin& bin) {
+    return bin.frameCount > 0
+        ? bin.sumAbs / static_cast<double>(bin.frameCount)
+        : 0.0;
+}
+
+int runWaveformEnergyChunkContractTest() {
+    auto nearEnough = [](double left, double right) {
+        return std::abs(left - right) <= 0.000001;
+    };
+
+    const auto silence = buildSyntheticEnergyBins(std::vector<float>(4, 0.0f), 4);
+    const auto constant = buildSyntheticEnergyBins(std::vector<float>(4, 0.5f), 4);
+    std::vector<float> transientSamples(128, 0.0f);
+    transientSamples[127] = 1.0f;
+    const auto transient = buildSyntheticEnergyBins(transientSamples, 128);
+    const auto tail = buildSyntheticEnergyBins({0.25f, 0.25f, 0.25f, 0.25f, 0.75f}, 4);
+
+    const bool silenceOk =
+        silence.size() == 1 &&
+        silence[0].minValue == 0.0f &&
+        silence[0].maxValue == 0.0f &&
+        nearEnough(syntheticRms(silence[0]), 0.0) &&
+        nearEnough(syntheticMeanAbs(silence[0]), 0.0);
+    const bool constantOk =
+        constant.size() == 1 &&
+        constant[0].minValue == 0.5f &&
+        constant[0].maxValue == 0.5f &&
+        nearEnough(syntheticRms(constant[0]), 0.5) &&
+        nearEnough(syntheticMeanAbs(constant[0]), 0.5);
+    const bool transientOk =
+        transient.size() == 1 &&
+        transient[0].maxValue == 1.0f &&
+        syntheticRms(transient[0]) < 0.1 &&
+        syntheticMeanAbs(transient[0]) < 0.01;
+    const bool tailOk =
+        tail.size() == 2 &&
+        tail[0].frameCount == 4 &&
+        tail[1].frameCount == 1 &&
+        tail[1].minValue == 0.75f &&
+        tail[1].maxValue == 0.75f;
+
+    std::cout << "LongForm energy chunk contract test\n";
+    std::cout << "  silence: " << (silenceOk ? "ok" : "failed") << "\n";
+    std::cout << "  constant 0.5 RMS: " << syntheticRms(constant[0]) << "\n";
+    std::cout << "  constant 0.5 meanAbs: " << syntheticMeanAbs(constant[0]) << "\n";
+    std::cout << "  transient peak: " << transient[0].maxValue << "\n";
+    std::cout << "  transient RMS: " << syntheticRms(transient[0]) << "\n";
+    std::cout << "  transient meanAbs: " << syntheticMeanAbs(transient[0]) << "\n";
+    std::cout << "  tail frameCount: " << tail[1].frameCount << "\n";
+    std::cout << "  flag: AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY\n";
+
+    if (!silenceOk || !constantOk || !transientOk || !tailOk) {
+        std::cout << "Runtime status: AVEMEDIABRIDGE_WAVEFORM_ENERGY_CHUNK_FAILED\n";
+        return 1;
+    }
+
+    std::cout << "Runtime status: AVEMEDIABRIDGE_WAVEFORM_ENERGY_CHUNK_OK\n";
+    return 0;
+}
+
+bool analyzeMonoFrameSamples(
+    AVSampleFormat format,
+    void* sampleData,
+    int sampleCount,
+    ClipDiag::FullScaleSampleStats& stats) {
+    AVFrame* frame = av_frame_alloc();
+    if (!frame) {
+        return false;
+    }
+
+    frame->format = format;
+    frame->nb_samples = sampleCount;
+    av_channel_layout_default(&frame->ch_layout, 1);
+    frame->data[0] = static_cast<std::uint8_t*>(sampleData);
+    frame->extended_data = frame->data;
+    const bool ok = ClipDiag::analyzeFrameSamples(frame, 1, stats);
+    av_channel_layout_uninit(&frame->ch_layout);
+    av_frame_free(&frame);
+    return ok;
+}
+
+int runFullScaleSampleStatsContractTest() {
+    auto nearEnough = [](double left, double right) {
+        return std::abs(left - right) <= 0.000001;
+    };
+
+    std::int16_t s16Samples[] = {
+        static_cast<std::int16_t>(-32768),
+        static_cast<std::int16_t>(0),
+        static_cast<std::int16_t>(32767)
+    };
+    ClipDiag::FullScaleSampleStats s16Stats;
+    const bool s16Analyzed =
+        analyzeMonoFrameSamples(AV_SAMPLE_FMT_S16, s16Samples, 3, s16Stats);
+    const bool s16Ok =
+        s16Analyzed &&
+        s16Stats.sampleCount == 3 &&
+        s16Stats.finiteCount == 3 &&
+        s16Stats.exactNegativeOneCount == 1 &&
+        s16Stats.exactPositiveOneCount == 0 &&
+        s16Stats.nearNegativeOneCount == 1 &&
+        s16Stats.nearPositiveOneCount == 0 &&
+        s16Stats.abovePositiveOneCount == 0 &&
+        s16Stats.belowNegativeOneCount == 0 &&
+        s16Stats.zeroCount == 1 &&
+        nearEnough(s16Stats.minValue, -1.0) &&
+        nearEnough(s16Stats.maxValue, 32767.0 / 32768.0) &&
+        nearEnough(s16Stats.maxAbs, 1.0);
+
+    float floatSamples[] = {-1.2f, -1.0f, 0.0f, 1.0f, 1.25f};
+    ClipDiag::FullScaleSampleStats floatStats;
+    const bool floatAnalyzed =
+        analyzeMonoFrameSamples(AV_SAMPLE_FMT_FLT, floatSamples, 5, floatStats);
+    const bool floatOk =
+        floatAnalyzed &&
+        floatStats.sampleCount == 5 &&
+        floatStats.finiteCount == 5 &&
+        floatStats.exactNegativeOneCount == 1 &&
+        floatStats.exactPositiveOneCount == 1 &&
+        floatStats.nearNegativeOneCount == 1 &&
+        floatStats.nearPositiveOneCount == 1 &&
+        floatStats.abovePositiveOneCount == 1 &&
+        floatStats.belowNegativeOneCount == 1 &&
+        floatStats.zeroCount == 1 &&
+        nearEnough(floatStats.minValue, -1.2) &&
+        nearEnough(floatStats.maxValue, 1.25) &&
+        nearEnough(floatStats.maxAbs, 1.25);
+
+    std::cout << "Full-scale sample stats contract test\n";
+    std::cout << "  S16 analyzed: " << (s16Analyzed ? "yes" : "no") << "\n";
+    std::cout << "  S16 exact -1: " << s16Stats.exactNegativeOneCount << "\n";
+    std::cout << "  S16 exact +1: " << s16Stats.exactPositiveOneCount << "\n";
+    std::cout << "  FLT analyzed: " << (floatAnalyzed ? "yes" : "no") << "\n";
+    std::cout << "  FLT exact -1: " << floatStats.exactNegativeOneCount << "\n";
+    std::cout << "  FLT exact +1: " << floatStats.exactPositiveOneCount << "\n";
+    std::cout << "  FLT > +1: " << floatStats.abovePositiveOneCount << "\n";
+    std::cout << "  FLT < -1: " << floatStats.belowNegativeOneCount << "\n";
+
+    if (!s16Ok || !floatOk) {
+        std::cout << "Runtime status: AVEMEDIABRIDGE_FULL_SCALE_STATS_CONTRACT_FAILED\n";
+        return 1;
+    }
+
+    std::cout << "Runtime status: AVEMEDIABRIDGE_FULL_SCALE_STATS_CONTRACT_OK\n";
+    return 0;
 }
 
 int runSmokeDllTransform(const std::string& inputPathText, const std::string& outputPathText) {
@@ -1038,6 +1327,9 @@ int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std
     std::cout << "Waveform binCount valid: " << (waveformState.binCountValid ? "yes" : "no") << "\n";
     std::cout << "Waveform valuesPerBin valid: " << (waveformState.valuesPerBinValid ? "yes" : "no") << "\n";
     std::cout << "Waveform min/max values finite: " << (waveformState.minMaxPairsValid ? "yes" : "no") << "\n";
+    std::cout << "Waveform long-form energy observed: " << (waveformState.longFormEnergyObserved ? "yes" : "no") << "\n";
+    std::cout << "Waveform long-form energy valid: " << (waveformState.longFormEnergyValid ? "yes" : "no") << "\n";
+    std::cout << "Waveform long-form energy frameCount total: " << waveformState.energyFrameCountTotal << "\n";
     std::cout << "Progress callbacks observed: " << waveformState.progressCallbackCount << "\n";
     std::cout << "Progress frames monotonic: " << (waveformState.progressMonotonic ? "yes" : "no") << "\n";
     printSessionArtifactSummary(sessionMediaDirText, summary);
@@ -1048,6 +1340,9 @@ int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std
             waveformState.binCountValid &&
             waveformState.valuesPerBinValid &&
             waveformState.minMaxPairsValid &&
+            waveformState.longFormEnergyObserved &&
+            waveformState.longFormEnergyValid &&
+            waveformState.energyFrameCountTotal > 0 &&
             waveformState.totalBinsReceived > 0 &&
             waveformState.progressCallbackCount > 0 &&
             waveformState.progressMonotonic &&
@@ -1057,6 +1352,82 @@ int runSmokeDllImportSessionWaveform(const std::string& inputPathText, const std
             summary.sizeMatch
         ? 0
         : 1;
+}
+
+int runWaveformFullScalePrepostSwrTest(const std::string& inputPathText) {
+    std::filesystem::path sessionDir;
+    std::string sessionError;
+    if (!createFullScaleDiagSessionDir(sessionDir, sessionError)) {
+        std::cerr << "ERROR: " << sessionError << "\n";
+        return 1;
+    }
+
+    const std::filesystem::path exeDir = getExecutableDirectory();
+    const std::filesystem::path ffmpegDir = exeDir / "Lib" / "ffmpeg";
+    const std::filesystem::path dllPath = exeDir / "AveMediaBridge.dll";
+
+    std::wcout << L"Waveform full-scale pre/post SWR diagnostic\n";
+    std::wcout << L"  DLL: " << dllPath.wstring() << L"\n";
+    std::wcout << L"  FFmpeg DLL dir: " << ffmpegDir.wstring() << L"\n";
+    std::wcout << L"  Session media dir: " << sessionDir.wstring() << L"\n";
+
+    HMODULE module = loadBridgeDll(exeDir, ffmpegDir);
+    if (!module) {
+        std::wcerr << L"ERROR: LoadLibraryW(AveMediaBridge.dll) failed. Win32 error: " << GetLastError() << L"\n";
+        return 1;
+    }
+
+    auto importSessionEx =
+        reinterpret_cast<ImportAudioToSessionExFn>(GetProcAddress(module, "AveMediaBridge_ImportAudioToSessionEx"));
+    if (!importSessionEx) {
+        std::cerr << "ERROR: GetProcAddress(AveMediaBridge_ImportAudioToSessionEx) failed. Win32 error: " << GetLastError() << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    const std::wstring inputPath = stringToWide(inputPathText);
+    const std::wstring sessionMediaDir = sessionDir.wstring();
+    if (inputPath.empty() || sessionMediaDir.empty()) {
+        std::cerr << "ERROR: unable to convert input or session path to UTF-16.\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    ScopedEnvironmentVariable fullScaleDiagEnv(L"AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG", L"1");
+    if (!fullScaleDiagEnv.ok()) {
+        std::cerr << "ERROR: unable to enable AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG. Win32 error: "
+                  << GetLastError()
+                  << "\n";
+        FreeLibrary(module);
+        return 1;
+    }
+
+    AveMediaBridgeImportOptions options{};
+    options.structSize = importOptionsSizeBeforeWaveformCallback();
+    options.inputPath = inputPath.c_str();
+    options.sessionMediaDir = sessionMediaDir.c_str();
+
+    const int result = importSessionEx(&options);
+    if (result != 0) {
+        std::cerr << "Result: FAIL\n";
+        std::cerr << "AveMediaBridge_ImportAudioToSessionEx returned " << result << "\n";
+        printDllLastErrorText(module);
+        FreeLibrary(module);
+        return result;
+    }
+
+    FreeLibrary(module);
+    SessionArtifactSummary summary;
+    std::string summaryError;
+    if (!readSessionArtifactSummary(sessionDir, summary, summaryError)) {
+        std::cerr << "ERROR: " << summaryError << ".\n";
+        return 1;
+    }
+
+    std::cout << "Result: OK\n";
+    printSessionArtifactSummary(sessionDir.string(), summary);
+    std::cout << "Full-scale diagnostic completed: yes\n";
+    return summary.metadataExists && summary.audioInfoExists && summary.audioDataExists && summary.sizeMatch ? 0 : 1;
 }
 
 int runSmokeDllImportSessionCancel(const std::string& inputPathText, const std::string& sessionMediaDirText) {
@@ -1398,6 +1769,20 @@ int main(int argc, char** argv) {
         const std::string inputPath = stripMatchingQuotes(argv[2]);
         const std::string sessionMediaDir = stripMatchingQuotes(joinArgs(argc, argv, 3));
         return runSmokeDllImportSessionWaveform(inputPath, sessionMediaDir);
+    }
+    if (firstArg == "waveform-energy-chunk-contract-test") {
+        return runWaveformEnergyChunkContractTest();
+    }
+    if (firstArg == "full-scale-sample-stats-contract-test") {
+        return runFullScaleSampleStatsContractTest();
+    }
+    if (firstArg == "waveform-full-scale-prepost-swr-test") {
+        if (argc < 3) {
+            std::cout << "Usage: AveMediaBridgeLabApp.exe waveform-full-scale-prepost-swr-test <input-file>\n";
+            return 1;
+        }
+        const std::string inputPath = stripMatchingQuotes(joinArgs(argc, argv, 2));
+        return runWaveformFullScalePrepostSwrTest(inputPath);
     }
     if (firstArg == "smoke-dll-import-session-cancel") {
         if (argc < 4) {
