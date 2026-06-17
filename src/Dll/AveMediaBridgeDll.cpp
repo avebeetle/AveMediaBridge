@@ -6,6 +6,7 @@
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/PacketScan.hpp"
+#include "../Probe/ProbeJsonWriter.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -1970,92 +1971,54 @@ bool validateOutputPath(const wchar_t* outputPath, std::filesystem::path& output
     return createParentDirectory(outputFsPath, error);
 }
 
+Probe::FastProbeJsonDocument makeFastProbeJsonDocument(const FastProbeResult& result) {
+    Probe::FastProbeJsonDocument document;
+    document.sourcePath = result.sourcePath;
+    document.formatName = result.formatName;
+    document.formatLongName = result.formatLongName;
+    document.containerFormat = result.containerFormat;
+    document.streamCount = result.streamCount;
+    document.audioStreamCount = result.audioStreamCount;
+    document.hasAudio = result.hasAudio;
+    document.bestAudioStreamIndex = result.bestAudioStreamIndex;
+    document.selectedAudio = result.selectedAudio;
+    document.channelLayout = result.channelLayout;
+    document.durationSec = result.durationSec;
+    document.durationKind = result.durationKind;
+    document.durationEstimationMethod = result.durationEstimationMethod;
+    document.decodedSampleFrames = result.decodedSampleFrames;
+    document.decodedSampleFramesKind = result.decodedSampleFramesKind;
+    document.decodedSampleFramesTrust = result.decodedSampleFramesTrust;
+    document.decodedSampleFramesSource = result.decodedSampleFramesSource;
+    document.decodedSampleFramesBeforeCorrection = result.decodedSampleFramesBeforeCorrection;
+    document.packetPtsSpanFrames = result.packetPtsSpanFrames;
+    document.packetDurationSumFrames = result.packetDurationSumFrames;
+    document.packetFrameCountCandidateUsed = result.packetFrameCountCandidateUsed;
+    document.frameCountPolicyReason = result.frameCountPolicyReason;
+    document.decodedSampleFramesBeforeGaplessCorrection =
+        result.decodedSampleFramesBeforeGaplessCorrection;
+    document.skipSamplesStart = result.skipSamplesStart;
+    document.skipSamplesEnd = result.skipSamplesEnd;
+    document.skipSamplesTotal = result.skipSamplesTotal;
+    document.gaplessCorrectedDecodedSampleFrames = result.gaplessCorrectedDecodedSampleFrames;
+    document.gaplessCorrectionApplied = result.gaplessCorrectionApplied;
+    document.gaplessCorrectionSource = result.gaplessCorrectionSource;
+    document.gaplessSideDataPacketCount = result.gaplessSideDataPacketCount;
+    document.gaplessAudioPacketsScanned = result.gaplessAudioPacketsScanned;
+    document.estimatedDecodedBytes = result.estimatedDecodedBytes;
+    document.estimatedDecodedBytesKind = result.estimatedDecodedBytesKind;
+    document.probeScore = result.probeScore;
+    document.streams = result.streams;
+    document.warnings = result.warnings;
+    document.errors = result.errors;
+    return document;
+}
+
 bool writeFastProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeResult& result,
     std::string& error) {
-    if (!createParentDirectory(outputPath, error)) {
-        return false;
-    }
-
-    std::ofstream json(outputPath, std::ios::binary);
-    if (!json) {
-        error = "failed to open JSON output file";
-        return false;
-    }
-
-    json << std::fixed << std::setprecision(9);
-    json << "{\n";
-    json << "  \"apiVersion\": 1,\n";
-    json << "  \"schemaVersion\": 2,\n";
-    json << "  \"sourcePath\": " << jsonString(result.sourcePath) << ",\n";
-    json << "  \"probeMode\": \"fast_v2\",\n";
-    json << "  \"hasAudio\": " << (result.hasAudio ? "true" : "false") << ",\n";
-    json << "  \"bestAudioStreamIndex\": " << result.bestAudioStreamIndex << ",\n";
-    json << "  \"selectedAudioStreamIndex\": " << result.selectedAudio.index << ",\n";
-    json << "  \"containerFormat\": " << jsonString(result.containerFormat) << ",\n";
-    json << "  \"formatName\": " << jsonString(result.formatName) << ",\n";
-    json << "  \"formatLongName\": " << jsonString(result.formatLongName) << ",\n";
-    json << "  \"codecName\": " << jsonString(result.selectedAudio.codecName) << ",\n";
-    json << "  \"codecId\": " << result.selectedAudio.codecId << ",\n";
-    json << "  \"sampleRate\": " << result.selectedAudio.sampleRate << ",\n";
-    json << "  \"channels\": " << result.selectedAudio.channels << ",\n";
-    json << "  \"channelLayout\": " << jsonString(result.channelLayout) << ",\n";
-    json << "  \"frames\": " << result.decodedSampleFrames << ",\n";
-    json << "  \"durationSec\": " << result.durationSec << ",\n";
-    json << "  \"durationKind\": " << jsonString(result.durationKind) << ",\n";
-    json << "  \"durationEstimationMethod\": " << jsonString(result.durationEstimationMethod) << ",\n";
-    json << "  \"decodedSampleFrames\": " << result.decodedSampleFrames << ",\n";
-    json << "  \"decodedSampleFramesKind\": " << jsonString(result.decodedSampleFramesKind) << ",\n";
-    json << "  \"decodedSampleFramesTrust\": " << jsonString(result.decodedSampleFramesTrust) << ",\n";
-    json << "  \"decodedSampleFramesSource\": " << jsonString(result.decodedSampleFramesSource) << ",\n";
-    json << "  \"decodedSampleFramesBeforeCorrection\": "
-         << result.decodedSampleFramesBeforeCorrection << ",\n";
-    json << "  \"packetPtsSpanFrames\": " << result.packetPtsSpanFrames << ",\n";
-    json << "  \"packetDurationSumFrames\": " << result.packetDurationSumFrames << ",\n";
-    json << "  \"packetFrameCountCandidateUsed\": "
-         << (result.packetFrameCountCandidateUsed ? "true" : "false") << ",\n";
-    json << "  \"frameCountPolicyReason\": "
-         << jsonString(result.frameCountPolicyReason) << ",\n";
-    json << "  \"decodedSampleFramesBeforeGaplessCorrection\": "
-         << result.decodedSampleFramesBeforeGaplessCorrection << ",\n";
-    json << "  \"skipSamplesStart\": " << result.skipSamplesStart << ",\n";
-    json << "  \"skipSamplesEnd\": " << result.skipSamplesEnd << ",\n";
-    json << "  \"skipSamplesTotal\": " << result.skipSamplesTotal << ",\n";
-    json << "  \"gaplessCorrectedDecodedSampleFrames\": "
-         << result.gaplessCorrectedDecodedSampleFrames << ",\n";
-    json << "  \"gaplessCorrectionApplied\": "
-         << (result.gaplessCorrectionApplied ? "true" : "false") << ",\n";
-    json << "  \"gaplessCorrectionSource\": "
-         << jsonString(result.gaplessCorrectionSource) << ",\n";
-    json << "  \"gaplessSideDataPacketCount\": "
-         << result.gaplessSideDataPacketCount << ",\n";
-    json << "  \"gaplessAudioPacketsScanned\": "
-         << result.gaplessAudioPacketsScanned << ",\n";
-    json << "  \"estimatedDecodedBytes\": " << result.estimatedDecodedBytes << ",\n";
-    json << "  \"estimatedDecodedBytesKind\": " << jsonString(result.estimatedDecodedBytesKind) << ",\n";
-    json << "  \"probeScore\": " << result.probeScore << ",\n";
-    json << "  \"streamCount\": " << result.streamCount << ",\n";
-    json << "  \"audioStreamCount\": " << result.audioStreamCount << ",\n";
-    json << "  \"selectedAudioStream\": ";
-    writeSelectedAudioJson(json, result.selectedAudio, "  ");
-    json << ",\n";
-    json << "  \"streams\": ";
-    writeStreamSummariesJson(json, result.streams, "  ");
-    json << ",\n";
-    json << "  \"warnings\": ";
-    writeStringArray(json, result.warnings);
-    json << ",\n";
-    json << "  \"errors\": ";
-    writeStringArray(json, result.errors);
-    json << "\n";
-    json << "}\n";
-
-    if (!json) {
-        error = "failed to write JSON output file";
-        return false;
-    }
-    return true;
+    return Probe::writeProbeJson(outputPath, makeFastProbeJsonDocument(result), error);
 }
 
 double streamingDurationSeconds(const StreamingImportResult& result) {

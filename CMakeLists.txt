@@ -64,6 +64,7 @@ add_library(AveMediaBridge SHARED
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
+    src/Probe/ProbeJsonWriter.cpp
 )
 
 target_link_libraries(AveMediaBridge PRIVATE AveMediaBridgeCore)
