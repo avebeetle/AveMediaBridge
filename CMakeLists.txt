@@ -62,6 +62,7 @@ target_link_libraries(AveMediaBridgeCore
 add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
+    src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
 )
 

@@ -4,6 +4,7 @@
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
+#include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/PacketScan.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -625,111 +626,6 @@ void fillFastSelectedAudio(
     result.channelLayout = describeChannelLayout(codecpar->ch_layout);
 }
 
-std::string int64ToString(std::int64_t value) {
-    return std::to_string(value);
-}
-
-std::int64_t roundedFramesFromSeconds(double seconds, int sampleRate) {
-    if (seconds <= 0.0 || sampleRate <= 0 || !std::isfinite(seconds)) {
-        return 0;
-    }
-    const long double frames =
-        static_cast<long double>(seconds) * static_cast<long double>(sampleRate);
-    if (frames <= 0.0L ||
-        frames > static_cast<long double>((std::numeric_limits<std::int64_t>::max)())) {
-        return 0;
-    }
-    return static_cast<std::int64_t>(std::llround(frames));
-}
-
-std::int64_t frameDeltaAbs(std::int64_t left, std::int64_t right) {
-    return left >= right ? left - right : right - left;
-}
-
-bool formatNameContains(const std::string& formatName, const char* token) {
-    return formatName.find(token) != std::string::npos;
-}
-
-bool isPacketTimelinePolicyContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "mpegts") ||
-        formatNameContains(formatName, "flv");
-}
-
-bool isMpegTsContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "mpegts");
-}
-
-bool isFlvContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "flv");
-}
-
-bool isMovMp4FamilyContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "mov") ||
-        formatNameContains(formatName, "mp4") ||
-        formatNameContains(formatName, "m4a") ||
-        formatNameContains(formatName, "3gp") ||
-        formatNameContains(formatName, "3g2") ||
-        formatNameContains(formatName, "mj2");
-}
-
-bool isAsfContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "asf");
-}
-
-bool isOggContainer(const std::string& formatName) {
-    return formatNameContains(formatName, "ogg");
-}
-
-bool isMpegPsContainer(const std::string& formatName) {
-    return formatName == "mpeg";
-}
-
-bool isBareMp3Container(const std::string& formatName) {
-    return formatName == "mp3";
-}
-
-bool isMp3AudioCodec(const FastProbeResult& result) {
-    return result.selectedAudio.codecId == AV_CODEC_ID_MP3 ||
-        result.selectedAudio.codecName == "mp3";
-}
-
-bool isAacAudioCodec(const FastProbeResult& result) {
-    return result.selectedAudio.codecId == AV_CODEC_ID_AAC ||
-        result.selectedAudio.codecName == "aac";
-}
-
-bool isRawAdtsAac(const FastProbeResult& result) {
-    return result.formatName == "aac" && isAacAudioCodec(result);
-}
-
-bool isOpusAudioCodec(const FastProbeResult& result) {
-    return result.selectedAudio.codecId == AV_CODEC_ID_OPUS ||
-        result.selectedAudio.codecName == "opus";
-}
-
-bool isMp2AudioCodec(const FastProbeResult& result) {
-    return result.selectedAudio.codecId == AV_CODEC_ID_MP2 ||
-        result.selectedAudio.codecName == "mp2";
-}
-
-bool isWmav2AudioCodec(const FastProbeResult& result) {
-    return result.selectedAudio.codecId == AV_CODEC_ID_WMAV2 ||
-        result.selectedAudio.codecName == "wmav2";
-}
-
-bool shouldScanPacketFrameCountCandidates(const FastProbeResult& result) {
-    if (result.selectedAudio.sampleRate <= 0 ||
-        result.decodedSampleFramesKind == "exact") {
-        return false;
-    }
-    return isPacketTimelinePolicyContainer(result.formatName) ||
-        isRawAdtsAac(result) ||
-        isOpusAudioCodec(result) ||
-        (isMovMp4FamilyContainer(result.formatName) && isMp3AudioCodec(result)) ||
-        (isAsfContainer(result.formatName) && isWmav2AudioCodec(result)) ||
-        (isMpegPsContainer(result.formatName) && isMp2AudioCodec(result));
-}
-
 void updateEstimatedDecodedBytes(FastProbeResult& result) {
     if (result.decodedSampleFrames > 0 && result.selectedAudio.channels > 0) {
         result.estimatedDecodedBytes =
@@ -738,234 +634,6 @@ void updateEstimatedDecodedBytes(FastProbeResult& result) {
             static_cast<std::int64_t>(sizeof(float));
         result.estimatedDecodedBytesKind = result.decodedSampleFramesKind;
     }
-}
-
-void recordGaplessSkipSampleScan(FastProbeResult& result, const Probe::GaplessSkipSampleScan& scan) {
-    result.decodedSampleFramesBeforeGaplessCorrection = result.decodedSampleFrames;
-    result.skipSamplesStart = scan.skipSamplesStart;
-    result.skipSamplesEnd = scan.skipSamplesEnd;
-    result.skipSamplesTotal = scan.skipSamplesTotal;
-    result.gaplessSideDataPacketCount = scan.sideDataPacketCount;
-    result.gaplessAudioPacketsScanned = scan.audioPacketsScanned;
-    result.gaplessCorrectionSource = scan.source;
-    result.gaplessCorrectedDecodedSampleFrames = result.decodedSampleFrames;
-    if (!scan.warning.empty()) {
-        result.warnings.push_back(scan.warning);
-    }
-}
-
-void applyGaplessSkipSampleCorrection(FastProbeResult& result, const Probe::GaplessSkipSampleScan& scan) {
-    recordGaplessSkipSampleScan(result, scan);
-    const bool twoSidedCorrection =
-        result.decodedSampleFrames > 0 &&
-        result.decodedSampleFramesKind != "exact" &&
-        result.skipSamplesStart > 0 &&
-        result.skipSamplesEnd > 0 &&
-        result.skipSamplesTotal > 0 &&
-        result.decodedSampleFrames > result.skipSamplesTotal;
-    const bool bareMp3OneSidedStartSkipCorrection =
-        result.decodedSampleFrames > 0 &&
-        result.decodedSampleFramesKind != "exact" &&
-        isBareMp3Container(result.formatName) &&
-        isMp3AudioCodec(result) &&
-        result.skipSamplesStart > 0 &&
-        result.skipSamplesEnd == 0 &&
-        result.decodedSampleFrames > result.skipSamplesStart;
-    if (!twoSidedCorrection && !bareMp3OneSidedStartSkipCorrection) {
-        return;
-    }
-
-    const std::int64_t correctionFrames =
-        twoSidedCorrection ? result.skipSamplesTotal : result.skipSamplesStart;
-    const std::int64_t correctedFrames = result.decodedSampleFrames - correctionFrames;
-    if (correctedFrames <= 0) {
-        return;
-    }
-
-    result.gaplessCorrectionApplied = true;
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.gaplessCorrectedDecodedSampleFrames = correctedFrames;
-    result.decodedSampleFrames = correctedFrames;
-    result.decodedSampleFramesKind = "estimated_gapless_corrected";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = "mp3_gapless_skip_samples";
-    result.frameCountPolicyReason = bareMp3OneSidedStartSkipCorrection
-        ? "bare_mp3_one_sided_start_skip_applied"
-        : "packet skip/discard side data corrected the duration estimate";
-    updateEstimatedDecodedBytes(result);
-}
-
-void applyOpusFrameCountPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isOpusAudioCodec(result) ||
-        result.skipSamplesTotal <= 0 ||
-        scan.audioPacketCount <= 0) {
-        return;
-    }
-
-    const std::int64_t opusPaddingToApply =
-        isOggContainer(result.formatName)
-            ? result.skipSamplesStart
-            : result.skipSamplesTotal;
-    std::int64_t correctedFrames = 0;
-    if (scan.packetDurationSumFrames > opusPaddingToApply) {
-        correctedFrames = scan.packetDurationSumFrames - opusPaddingToApply;
-    } else if (scan.packetPtsSpanWithoutLastDurationFrames > 0) {
-        correctedFrames = scan.packetPtsSpanWithoutLastDurationFrames;
-    }
-    if (correctedFrames <= 0) {
-        return;
-    }
-
-    result.gaplessCorrectionApplied = true;
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.gaplessCorrectedDecodedSampleFrames = correctedFrames;
-    result.decodedSampleFrames = correctedFrames;
-    result.decodedSampleFramesKind = "estimated_gapless_corrected";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = "opus_gapless_skip_discard";
-    result.frameCountPolicyReason = "opus_gapless_or_packet_timeline_used";
-    updateEstimatedDecodedBytes(result);
-}
-
-void applyAdtsAacFrameCountPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isRawAdtsAac(result) ||
-        scan.audioPacketCount <= 0) {
-        return;
-    }
-
-    std::int64_t candidateFrames = 0;
-    std::string candidateSource;
-    if (scan.packetDurationSumFrames > 0 &&
-        scan.aacFrameCountCandidateFrames > 0 &&
-        frameDeltaAbs(scan.packetDurationSumFrames, scan.aacFrameCountCandidateFrames) <= 1024) {
-        candidateFrames = scan.packetDurationSumFrames;
-        candidateSource = "aac_adts_packet_duration_sum";
-    } else if (scan.aacFrameCountCandidateFrames > 0) {
-        candidateFrames = scan.aacFrameCountCandidateFrames;
-        candidateSource = "aac_adts_packet_count";
-    } else if (scan.packetDurationSumFrames > 0) {
-        candidateFrames = scan.packetDurationSumFrames;
-        candidateSource = "aac_adts_packet_duration_sum";
-    } else if (scan.packetPtsSpanFrames > 0) {
-        candidateFrames = scan.packetPtsSpanFrames;
-        candidateSource = "aac_adts_packet_pts_span";
-    }
-
-    if (candidateFrames <= 0) {
-        return;
-    }
-
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.decodedSampleFrames = candidateFrames;
-    result.decodedSampleFramesKind = candidateSource == "aac_adts_packet_duration_sum"
-        ? "packet_duration_sum"
-        : "packet_derived";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = candidateSource;
-    result.packetFrameCountCandidateUsed = true;
-    result.frameCountPolicyReason = "adts_aac_packet_count_or_duration_used";
-    updateEstimatedDecodedBytes(result);
-}
-
-void applyMpegPsMp2FrameCountPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isMpegPsContainer(result.formatName) ||
-        !isMp2AudioCodec(result) ||
-        scan.mp2FrameCountCandidateFrames <= 0) {
-        return;
-    }
-
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.decodedSampleFrames = scan.mp2FrameCountCandidateFrames;
-    result.decodedSampleFramesKind = "packet_derived";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = "mpegps_mp2_packet_count";
-    result.packetFrameCountCandidateUsed = true;
-    result.frameCountPolicyReason = "mpegps_mp2_packet_count_used";
-    updateEstimatedDecodedBytes(result);
-}
-
-void applyMp4Mp3PacketCountMinusSkipPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isMovMp4FamilyContainer(result.formatName) ||
-        !isMp3AudioCodec(result) ||
-        result.skipSamplesStart <= 0 ||
-        result.skipSamplesEnd != 0 ||
-        scan.audioPacketCount <= 0 ||
-        scan.packetsWithDuration != scan.audioPacketCount ||
-        scan.packetsWithTimestamp != scan.audioPacketCount ||
-        !scan.packetPtsMonotonic ||
-        scan.mp3FrameCountCandidateFrames <= result.skipSamplesStart ||
-        !scan.warning.empty()) {
-        return;
-    }
-
-    const std::int64_t candidateFrames =
-        scan.mp3FrameCountCandidateFrames - result.skipSamplesStart;
-    const std::int64_t mp3SamplesPerPacket =
-        Probe::mp3SamplesPerFrameForSampleRate(result.selectedAudio.sampleRate);
-    const std::int64_t mp3PacketSanityFrames = 2 * std::max<std::int64_t>(1, mp3SamplesPerPacket);
-    if (candidateFrames <= 0 ||
-        (result.decodedSampleFrames > 0 &&
-         frameDeltaAbs(candidateFrames, result.decodedSampleFrames) > mp3PacketSanityFrames)) {
-        return;
-    }
-
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.decodedSampleFrames = candidateFrames;
-    result.decodedSampleFramesKind = "packet_derived";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = "mp3_packet_count_minus_skip_start";
-    result.packetFrameCountCandidateUsed = true;
-    result.frameCountPolicyReason = "mp4_mp3_packet_count_minus_skip_start_used";
-    updateEstimatedDecodedBytes(result);
-}
-
-void applyWmav2PacketCountMinusDelayPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isAsfContainer(result.formatName) ||
-        !isWmav2AudioCodec(result) ||
-        result.selectedAudio.sampleRate <= 0 ||
-        result.selectedAudio.channels <= 0 ||
-        scan.audioPacketCount <= 0 ||
-        scan.packetPtsSpanWithoutLastDurationFrames <= 0 ||
-        scan.packetsWithTimestamp != scan.audioPacketCount ||
-        !scan.packetPtsMonotonic ||
-        !scan.warning.empty()) {
-        return;
-    }
-
-    const std::int64_t wmav2DecoderDelayFrames =
-        Probe::wmav2SamplesPerFrameForSampleRate(result.selectedAudio.sampleRate);
-    if (wmav2DecoderDelayFrames <= 0 ||
-        scan.wmav2FrameCountCandidateFrames <= wmav2DecoderDelayFrames) {
-        return;
-    }
-
-    constexpr std::int64_t kAsfPacketTimelineToleranceFrames = 128;
-    const std::int64_t candidateFrames =
-        scan.wmav2FrameCountCandidateFrames - wmav2DecoderDelayFrames;
-    if (candidateFrames <= 0 ||
-        frameDeltaAbs(candidateFrames, scan.packetPtsSpanWithoutLastDurationFrames) >
-            kAsfPacketTimelineToleranceFrames) {
-        return;
-    }
-
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.decodedSampleFrames = candidateFrames;
-    result.decodedSampleFramesKind = "packet_derived";
-    result.decodedSampleFramesTrust = "authoritative";
-    result.decodedSampleFramesSource = "wmav2_packet_count_minus_decoder_delay";
-    result.packetFrameCountCandidateUsed = true;
-    result.frameCountPolicyReason = "wmav2_packet_count_minus_decoder_delay_used";
-    updateEstimatedDecodedBytes(result);
 }
 
 void estimateFastDurationAndFrames(
@@ -1021,99 +689,61 @@ void estimateFastDurationAndFrames(
     updateEstimatedDecodedBytes(result);
 }
 
-void applyPacketFrameCountPolicy(FastProbeResult& result, const Probe::PacketFrameCountScan& scan) {
-    result.packetPtsSpanFrames = scan.packetPtsSpanFrames;
-    result.packetDurationSumFrames = scan.packetDurationSumFrames;
-    if (!scan.warning.empty()) {
-        result.warnings.push_back(scan.warning);
-    }
-
-    if (result.gaplessCorrectionApplied ||
-        result.decodedSampleFramesKind == "exact" ||
-        !isPacketTimelinePolicyContainer(result.formatName) ||
-        scan.audioPacketCount <= 0 ||
-        scan.packetsWithTimestamp <= 0 ||
-        scan.firstPacketPts == AV_NOPTS_VALUE ||
-        scan.lastPacketPts == AV_NOPTS_VALUE ||
-        scan.packetPtsSpanFrames <= 0 ||
-        (scan.lastPacketDuration <= 0 && scan.packetDurationSumFrames <= 0)) {
-        return;
-    }
-
-    const std::int64_t currentFrames = result.decodedSampleFrames;
-    const std::int64_t packetPtsSpan = scan.packetPtsSpanFrames;
-    const std::int64_t packetDurationSum = scan.packetDurationSumFrames;
-    const std::int64_t currentToPacketDuration =
-        packetDurationSum > 0 ? frameDeltaAbs(currentFrames, packetDurationSum) : frameDeltaAbs(currentFrames, packetPtsSpan);
-    const std::int64_t packetSpanToDuration =
-        packetDurationSum > 0 ? frameDeltaAbs(packetPtsSpan, packetDurationSum) : 0;
-    const bool differsMeaningfully =
-        currentFrames <= 0 || frameDeltaAbs(packetPtsSpan, currentFrames) >= 1024;
-    const bool alignsBetter =
-        packetDurationSum <= 0 || packetSpanToDuration <= currentToPacketDuration;
-    const bool mpegTsPacketSpanTrusted =
-        isMpegTsContainer(result.formatName) &&
-        scan.packetPtsMonotonic &&
-        scan.packetsWithTimestamp == scan.audioPacketCount &&
-        differsMeaningfully;
-    const bool packetSpanTrusted =
-        differsMeaningfully &&
-        alignsBetter &&
-        packetSpanToDuration <= 1024;
-    if (!mpegTsPacketSpanTrusted && !packetSpanTrusted) {
-        return;
-    }
-
-    const bool exactPacketSpanTrusted =
-        mpegTsPacketSpanTrusted || packetSpanToDuration <= 128;
-    const char* reason = mpegTsPacketSpanTrusted
-        ? "mpegts_packet_pts_span_used"
-        : "packet PTS span is trusted for transport/timeline container and aligns better than duration estimate";
-
-    result.decodedSampleFramesBeforeCorrection = result.decodedSampleFrames;
-    result.decodedSampleFrames = packetPtsSpan;
-    result.decodedSampleFramesKind = "packet_pts_span";
-    result.decodedSampleFramesTrust =
-        exactPacketSpanTrusted ? "authoritative" : "aligned_authoritative";
-    result.decodedSampleFramesSource = "packet_pts_span";
-    result.packetFrameCountCandidateUsed = true;
-    result.frameCountPolicyReason = reason;
-    updateEstimatedDecodedBytes(result);
+Probe::FrameCountPolicyState makeFrameCountPolicyState(const FastProbeResult& result) {
+    Probe::FrameCountPolicyState state;
+    state.formatName = result.formatName;
+    state.selectedAudio.codecId = static_cast<AVCodecID>(result.selectedAudio.codecId);
+    state.selectedAudio.codecName = result.selectedAudio.codecName;
+    state.selectedAudio.sampleRate = result.selectedAudio.sampleRate;
+    state.selectedAudio.channels = result.selectedAudio.channels;
+    state.decodedSampleFrames = result.decodedSampleFrames;
+    state.decodedSampleFramesKind = result.decodedSampleFramesKind;
+    state.decodedSampleFramesTrust = result.decodedSampleFramesTrust;
+    state.decodedSampleFramesSource = result.decodedSampleFramesSource;
+    state.decodedSampleFramesBeforeCorrection = result.decodedSampleFramesBeforeCorrection;
+    state.packetPtsSpanFrames = result.packetPtsSpanFrames;
+    state.packetDurationSumFrames = result.packetDurationSumFrames;
+    state.packetFrameCountCandidateUsed = result.packetFrameCountCandidateUsed;
+    state.frameCountPolicyReason = result.frameCountPolicyReason;
+    state.decodedSampleFramesBeforeGaplessCorrection =
+        result.decodedSampleFramesBeforeGaplessCorrection;
+    state.skipSamplesStart = result.skipSamplesStart;
+    state.skipSamplesEnd = result.skipSamplesEnd;
+    state.skipSamplesTotal = result.skipSamplesTotal;
+    state.gaplessCorrectedDecodedSampleFrames = result.gaplessCorrectedDecodedSampleFrames;
+    state.gaplessCorrectionApplied = result.gaplessCorrectionApplied;
+    state.gaplessCorrectionSource = result.gaplessCorrectionSource;
+    state.gaplessSideDataPacketCount = result.gaplessSideDataPacketCount;
+    state.gaplessAudioPacketsScanned = result.gaplessAudioPacketsScanned;
+    state.estimatedDecodedBytes = result.estimatedDecodedBytes;
+    state.estimatedDecodedBytesKind = result.estimatedDecodedBytesKind;
+    state.warnings = result.warnings;
+    return state;
 }
 
-void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audioStream) {
-    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
-    if (result.decodedSampleFramesTrust == "authoritative" ||
-        result.decodedSampleFramesTrust == "aligned_authoritative") {
-        return;
-    }
-
-    if (result.decodedSampleFrames <= 0) {
-        result.decodedSampleFramesTrust = "unknown";
-        result.decodedSampleFramesSource = "unknown";
-        result.frameCountPolicyReason = "no decoded sample frame estimate is available";
-        return;
-    }
-
-    if (result.decodedSampleFramesKind == "exact") {
-        result.decodedSampleFramesTrust = "authoritative";
-        result.decodedSampleFramesSource = "exact_pcm_stream_duration";
-        result.frameCountPolicyReason = "exact frame count accepted";
-        return;
-    }
-
-    if (codecpar && !isPcmCodec(codecpar->codec_id)) {
-        result.decodedSampleFramesTrust = "unsafe_estimated";
-        if (result.decodedSampleFramesSource == "unknown") {
-            result.decodedSampleFramesSource = "duration_estimate";
-        }
-        result.frameCountPolicyReason =
-            "compressed stream uses duration-derived frame estimate with no trusted correction candidate";
-        return;
-    }
-
-    result.decodedSampleFramesTrust = "unknown";
-    result.frameCountPolicyReason = "frame count trust could not be established";
+void applyFrameCountPolicyState(FastProbeResult& result, const Probe::FrameCountPolicyState& state) {
+    result.decodedSampleFrames = state.decodedSampleFrames;
+    result.decodedSampleFramesKind = state.decodedSampleFramesKind;
+    result.decodedSampleFramesTrust = state.decodedSampleFramesTrust;
+    result.decodedSampleFramesSource = state.decodedSampleFramesSource;
+    result.decodedSampleFramesBeforeCorrection = state.decodedSampleFramesBeforeCorrection;
+    result.packetPtsSpanFrames = state.packetPtsSpanFrames;
+    result.packetDurationSumFrames = state.packetDurationSumFrames;
+    result.packetFrameCountCandidateUsed = state.packetFrameCountCandidateUsed;
+    result.frameCountPolicyReason = state.frameCountPolicyReason;
+    result.decodedSampleFramesBeforeGaplessCorrection =
+        state.decodedSampleFramesBeforeGaplessCorrection;
+    result.skipSamplesStart = state.skipSamplesStart;
+    result.skipSamplesEnd = state.skipSamplesEnd;
+    result.skipSamplesTotal = state.skipSamplesTotal;
+    result.gaplessCorrectedDecodedSampleFrames = state.gaplessCorrectedDecodedSampleFrames;
+    result.gaplessCorrectionApplied = state.gaplessCorrectionApplied;
+    result.gaplessCorrectionSource = state.gaplessCorrectionSource;
+    result.gaplessSideDataPacketCount = state.gaplessSideDataPacketCount;
+    result.gaplessAudioPacketsScanned = state.gaplessAudioPacketsScanned;
+    result.estimatedDecodedBytes = state.estimatedDecodedBytes;
+    result.estimatedDecodedBytesKind = state.estimatedDecodedBytesKind;
+    result.warnings = state.warnings;
 }
 
 void applyFastFrameCountPolicies(
@@ -1125,6 +755,7 @@ void applyFastFrameCountPolicies(
         return;
     }
 
+    Probe::FrameCountPolicyState policyState = makeFrameCountPolicyState(result);
     const Probe::PacketScanOptions packetScanOptions{
         kFastProbeSizeBytes,
         kFastProbeAnalyzeDurationUs
@@ -1138,29 +769,34 @@ void applyFastFrameCountPolicies(
             static_cast<int>(audioStream->index),
             packetScanOptions);
         if (codecpar->codec_id == AV_CODEC_ID_MP3) {
-            applyGaplessSkipSampleCorrection(result, gaplessScan);
+            Probe::applyGaplessSkipSampleCorrection(policyState, gaplessScan);
         } else {
-            recordGaplessSkipSampleScan(result, gaplessScan);
+            Probe::recordGaplessSkipSampleScan(policyState, gaplessScan);
         }
     }
 
-    if (shouldScanPacketFrameCountCandidates(result)) {
+    if (Probe::shouldScanPacketFrameCountCandidates(policyState)) {
         const Probe::PacketFrameCountScan packetScan =
             Probe::scanPacketFrameCountCandidates(
                 path,
                 static_cast<int>(audioStream->index),
-                result.selectedAudio.sampleRate,
+                policyState.selectedAudio.sampleRate,
                 codecpar->codec_id,
                 packetScanOptions);
-        result.packetPtsSpanFrames = packetScan.packetPtsSpanFrames;
-        result.packetDurationSumFrames = packetScan.packetDurationSumFrames;
-        applyAdtsAacFrameCountPolicy(result, packetScan);
-        applyOpusFrameCountPolicy(result, packetScan);
-        applyMp4Mp3PacketCountMinusSkipPolicy(result, packetScan);
-        applyPacketFrameCountPolicy(result, packetScan);
-        applyMpegPsMp2FrameCountPolicy(result, packetScan);
-        applyWmav2PacketCountMinusDelayPolicy(result, packetScan);
+        Probe::applyPacketFrameCountPolicies(policyState, packetScan);
     }
+
+    applyFrameCountPolicyState(result, policyState);
+}
+
+void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audioStream) {
+    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
+    Probe::FrameCountPolicyState policyState = makeFrameCountPolicyState(result);
+    Probe::finalizeFrameCountTrustPolicy(
+        policyState,
+        codecpar != nullptr,
+        codecpar && isPcmCodec(codecpar->codec_id));
+    applyFrameCountPolicyState(result, policyState);
 }
 
 FastProbeResult runFastProbe(const std::string& path) {
