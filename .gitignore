@@ -31,7 +31,7 @@ Output/
 Temp/
 
 # Local FFmpeg dependency package
-ffmpeg/
+/ffmpeg/
 external/ffmpeg/
 FFmpeg-master/
 

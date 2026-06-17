@@ -3,6 +3,7 @@
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
+#include "../Ffmpeg/FfmpegStreamSelection.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -570,20 +571,6 @@ AveMediaBridge::StreamSummary makeFastStreamSummary(int index, const AVStream* s
     summary.bitRate = codecpar->bit_rate;
     summary.timeBase = rationalToString(stream->time_base);
     return summary;
-}
-
-int findFirstAudioStream(const AVFormatContext* formatContext) {
-    if (!formatContext) {
-        return -1;
-    }
-
-    for (unsigned int i = 0; i < formatContext->nb_streams; ++i) {
-        const AVStream* stream = formatContext->streams[i];
-        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
 }
 
 double secondsFromStreamDuration(const AVStream* stream) {
@@ -1579,19 +1566,20 @@ FastProbeResult runFastProbe(const std::string& path) {
     result.streamInfoFound = true;
     fillFastStreamDetails(result, formatContext.get());
 
-    const AVCodec* decoder = nullptr;
-    int audioStreamIndex = av_find_best_stream(formatContext.get(), AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
-    if (audioStreamIndex < 0) {
-        const int fallbackAudioStreamIndex = findFirstAudioStream(formatContext.get());
-        if (fallbackAudioStreamIndex >= 0) {
-            result.warnings.push_back("av_find_best_stream(audio) failed, using first audio stream: " + ffErrorString(audioStreamIndex));
-            audioStreamIndex = fallbackAudioStreamIndex;
-        } else {
-            result.errors.push_back("no audio stream found: " + ffErrorString(audioStreamIndex));
-            return result;
-        }
+    const Ffmpeg::AudioStreamSelection selection =
+        Ffmpeg::selectBestAudioStreamWithFirstAudioFallback(formatContext.get());
+    if (selection.streamIndex < 0) {
+        result.errors.push_back("no audio stream found: " + ffErrorString(selection.bestStreamResult));
+        return result;
+    }
+    if (selection.usedFirstAudioFallback) {
+        result.warnings.push_back(
+            "av_find_best_stream(audio) failed, using first audio stream: " +
+            ffErrorString(selection.bestStreamResult));
     }
 
+    const int audioStreamIndex = selection.streamIndex;
+    const AVCodec* decoder = selection.decoder;
     result.bestAudioStreamIndex = audioStreamIndex;
     AVStream* audioStream = formatContext->streams[audioStreamIndex];
     if (!decoder && audioStream && audioStream->codecpar) {
@@ -2351,14 +2339,16 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     fillStreamingSourceInfo(result, formatContext, path);
     fillStreamingProbeDetails(result, formatContext);
 
-    const AVCodec* decoder = nullptr;
-    const int audioStreamIndex = av_find_best_stream(formatContext, AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
-    if (audioStreamIndex < 0) {
-        result.error = "no audio stream found: " + ffErrorString(audioStreamIndex);
+    const Ffmpeg::AudioStreamSelection selection =
+        Ffmpeg::selectBestAudioStreamStrict(formatContext);
+    if (selection.streamIndex < 0) {
+        result.error = "no audio stream found: " + ffErrorString(selection.bestStreamResult);
         cleanup();
         return result;
     }
 
+    const int audioStreamIndex = selection.streamIndex;
+    const AVCodec* decoder = selection.decoder;
     AVStream* audioStream = formatContext->streams[audioStreamIndex];
     AVCodecParameters* codecpar = audioStream->codecpar;
     if (!decoder) {
