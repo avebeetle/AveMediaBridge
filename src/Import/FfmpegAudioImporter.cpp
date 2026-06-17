@@ -3,6 +3,7 @@
 #include "AveMediaBridge/Core/AudioStats.hpp"
 #include "../Core/MediaBridgeError.hpp"
 #include "../Decode/AudioDecodeHelpers.hpp"
+#include "../Decode/PcmFormat.hpp"
 
 #include <algorithm>
 #include <climits>
@@ -175,8 +176,7 @@ int ensureSwr(SwrState& swr, const AVFrame* frame, const AVCodecContext* decoder
     result.audio.sampleRate = swr.sampleRate;
     result.audio.channels = swr.channels;
 
-    const char* sampleFormatName = av_get_sample_fmt_name(inputFormat);
-    result.selectedAudio.decoderSampleFormat = sampleFormatName ? sampleFormatName : "";
+    result.selectedAudio.decoderSampleFormat = Decode::sampleFormatName(inputFormat);
     return 0;
 }
 

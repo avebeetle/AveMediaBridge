@@ -4,6 +4,7 @@
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 #include "../Core/MediaBridgeError.hpp"
 #include "../Decode/AudioDecodeHelpers.hpp"
+#include "../Decode/PcmFormat.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/MediaProbeService.hpp"
@@ -790,8 +791,7 @@ int ensureStreamingSwr(
     result.sampleRate = swr.sampleRate;
     result.channels = swr.channels;
 
-    const char* sampleFormatName = av_get_sample_fmt_name(inputFormat);
-    result.selectedAudio.decoderSampleFormat = sampleFormatName ? sampleFormatName : "";
+    result.selectedAudio.decoderSampleFormat = AveMediaBridge::Decode::sampleFormatName(inputFormat);
     return 0;
 }
 
