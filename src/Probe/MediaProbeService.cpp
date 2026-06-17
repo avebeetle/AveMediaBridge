@@ -2,6 +2,7 @@
 
 #include "FrameCountPolicy.hpp"
 #include "PacketScan.hpp"
+#include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 
@@ -14,15 +15,10 @@ namespace AveMediaBridge::Probe {
 namespace {
 
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
+using AveMediaBridge::ffErrorString;
 
 constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
 constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
-
-std::string ffErrorString(int err) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buffer, sizeof(buffer));
-    return std::string(buffer);
-}
 
 std::string mediaTypeName(AVMediaType type) {
     const char* name = av_get_media_type_string(type);

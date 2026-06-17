@@ -1,6 +1,7 @@
 #include "AveMediaBridge/Import/FfmpegAudioImporter.hpp"
 
 #include "AveMediaBridge/Core/AudioStats.hpp"
+#include "../Core/MediaBridgeError.hpp"
 
 #include <algorithm>
 #include <climits>
@@ -28,12 +29,6 @@ struct SwrState {
     int channels = 0;
     bool initialized = false;
 };
-
-std::string ffErrorString(int err) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buffer, sizeof(buffer));
-    return std::string(buffer);
-}
 
 std::string rationalToString(AVRational value) {
     std::ostringstream out;

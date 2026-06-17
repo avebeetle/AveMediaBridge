@@ -2,6 +2,7 @@
 
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
+#include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/MediaProbeService.hpp"
@@ -28,6 +29,7 @@ namespace {
 namespace ClipDiag = AveMediaBridge::Diagnostics;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
+using AveMediaBridge::ffErrorString;
 using AveMediaBridge::Utils::jsonString;
 
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
@@ -370,12 +372,6 @@ int copyWideText(const std::wstring& text, wchar_t* outBuffer, int outBufferChar
     outBuffer[charsToCopy] = L'\0';
 
     return text.size() + 1 <= capacity ? 0 : 2;
-}
-
-std::string ffErrorString(int err) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buffer, sizeof(buffer));
-    return std::string(buffer);
 }
 
 void addStreamingWarning(StreamingImportResult& result, const std::string& warning) {

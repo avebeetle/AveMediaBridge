@@ -1,5 +1,6 @@
 #include "PacketScan.hpp"
 
+#include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 
 #include <cmath>
@@ -9,11 +10,7 @@
 namespace AveMediaBridge::Probe {
 namespace {
 
-std::string ffErrorString(int err) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buffer, sizeof(buffer));
-    return std::string(buffer);
-}
+using AveMediaBridge::ffErrorString;
 
 std::uint32_t readLittleEndianU32(const std::uint8_t* data) {
     if (!data) {

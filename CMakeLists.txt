@@ -39,6 +39,7 @@ add_library(AveMediaBridgeCore STATIC
     src/AveMediaBridge.cpp
     src/Core/AudioBufferF32.cpp
     src/Core/AudioStats.cpp
+    src/Core/MediaBridgeError.cpp
     src/Export/FfmpegWavAudioExporter.cpp
     src/Import/FfmpegAudioImporter.cpp
     src/Process/AudioBufferProcessor.cpp

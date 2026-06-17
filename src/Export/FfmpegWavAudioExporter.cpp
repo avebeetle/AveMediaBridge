@@ -1,5 +1,7 @@
 #include "AveMediaBridge/Export/FfmpegWavAudioExporter.hpp"
 
+#include "../Core/MediaBridgeError.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -16,12 +18,6 @@ extern "C" {
 
 namespace AveMediaBridge {
 namespace {
-
-std::string ffErrorString(int err) {
-    char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buffer, sizeof(buffer));
-    return std::string(buffer);
-}
 
 std::int16_t floatToPcm16(float sample) {
     const float clamped = std::max(-1.0f, std::min(1.0f, sample));
