@@ -2,6 +2,7 @@
 
 #include "AveMediaBridge/Core/AudioStats.hpp"
 #include "../Core/MediaBridgeError.hpp"
+#include "../Decode/AudioDecodeHelpers.hpp"
 
 #include <algorithm>
 #include <climits>
@@ -109,24 +110,6 @@ void fillSelectedAudioInfo(AudioImportResult& result, const AVStream* stream, co
     result.selectedAudio.timeBase = rationalToString(stream->time_base);
 }
 
-int copyFrameLayout(AVChannelLayout* dst, const AVFrame* frame, const AVCodecContext* decoder) {
-    if (frame->ch_layout.nb_channels > 0 && av_channel_layout_check(&frame->ch_layout)) {
-        return av_channel_layout_copy(dst, &frame->ch_layout);
-    }
-
-    if (decoder->ch_layout.nb_channels > 0 && av_channel_layout_check(&decoder->ch_layout)) {
-        return av_channel_layout_copy(dst, &decoder->ch_layout);
-    }
-
-    const int channels = std::max(frame->ch_layout.nb_channels, decoder->ch_layout.nb_channels);
-    if (channels <= 0) {
-        return AVERROR(EINVAL);
-    }
-
-    av_channel_layout_default(dst, channels);
-    return 0;
-}
-
 int ensureSwr(SwrState& swr, const AVFrame* frame, const AVCodecContext* decoder, AudioImportResult& result) {
     if (swr.initialized) {
         return 0;
@@ -145,7 +128,7 @@ int ensureSwr(SwrState& swr, const AVFrame* frame, const AVCodecContext* decoder
     }
 
     AVChannelLayout inputLayout{};
-    int ret = copyFrameLayout(&inputLayout, frame, decoder);
+    int ret = Decode::copyDecodedFrameLayout(&inputLayout, frame, decoder);
     if (ret < 0) {
         result.error = "unable to determine decoded channel layout: " + ffErrorString(ret);
         return ret;
