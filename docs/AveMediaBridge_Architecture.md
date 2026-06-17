@@ -86,6 +86,88 @@ CMake builds three targets:
 - `AveMediaBridge`: DLL module exposing the C ABI used by future AveVoice `ModuleLoader` calls.
 - `AveMediaBridgeLabApp`: console lab application for manual import tests, the existing interactive menu, and DLL smoke commands.
 
+## Current DLL Monolith
+
+`src/Dll/AveMediaBridgeDll.cpp` currently contains the whole DLL implementation. It should be treated as a compatibility adapter plus implementation staging area until the refactor is complete.
+
+Current logical sections inside that file:
+
+- public exported API layer: `AveMediaBridge_TransformToWav`, `AveMediaBridge_GetVersionString`, `AveMediaBridge_GetLastErrorText`, `AveMediaBridge_ProbeToJson`, `AveMediaBridge_ProbeFrameCountCandidatesToJson`, `AveMediaBridge_ImportAudioToSession`, `AveMediaBridge_ImportAudioToSessionEx`, and legacy `AveMediaBridge_GetVersion`;
+- FFmpeg setup and lifetime helpers: error formatting, channel layout formatting, codec/container helpers, and raw FFmpeg object ownership currently held in local `std::unique_ptr` deleters;
+- stream selection: selected/best audio stream discovery plus first-audio fallback;
+- probe/preflight: fast metadata extraction, duration estimates, disk preflight, and source/stream metadata filling;
+- packet scan: gapless skip sample side-data scan and packet timeline/frame-count candidate scan;
+- frame-count trust policy: codec/container-specific rules that decide whether `decodedSampleFrames` is authoritative, aligned-authoritative, unsafe-estimated, or unknown;
+- decode/resample: decoder open/send/receive, `SwrContext` configuration, converted float32 output, and decoder flush;
+- progressive import: streaming artifact creation, chunked writes to `original_f32.bin`, progress callbacks, cancel polling, and waveform chunk callbacks;
+- waveform chunk/progress emission: draft min/max and energy chunk accumulation plus throttled progress snapshots;
+- JSON serialization: fast probe JSON, streaming `metadata.json`, `audio_info.json`, arrays, stream summaries, warnings, and errors;
+- error/result handling: thread-local last-error text, validation, temp-file cleanup, commit/rename, and return-code translation.
+
+This shape is intentionally documented before extraction so future moves can preserve behavior one seam at a time.
+
+## Target Internal Source Skeleton
+
+The DLL target should eventually compile mostly small internal modules, with `src/Dll/AveMediaBridgeDll.cpp` reduced to argument validation, exception guards, last-error handling, and calls into services.
+
+Planned layout:
+
+```text
+include/AveMediaBridge/
+  AveMediaBridgeApi.hpp
+  AveMediaBridgeTypes.hpp
+
+src/Dll/
+  AveMediaBridgeDll.cpp
+
+src/Core/
+  MediaBridgeContext.hpp/.cpp
+  MediaBridgeError.hpp/.cpp
+  Result.hpp
+
+src/Ffmpeg/
+  FfmpegHeaders.hpp
+  FfmpegRuntime.hpp/.cpp
+  FfmpegDeleters.hpp
+  FfmpegStreamSelection.hpp/.cpp
+
+src/Probe/
+  MediaProbeService.hpp/.cpp
+  PacketScan.hpp/.cpp
+  FrameCountPolicy.hpp/.cpp
+  ProbeJsonWriter.hpp/.cpp
+
+src/Decode/
+  AudioDecodeService.hpp/.cpp
+  AudioResampler.hpp/.cpp
+  PcmFormat.hpp/.cpp
+
+src/Import/
+  StreamingImportService.hpp/.cpp
+  WaveformChunkEmitter.hpp/.cpp
+  ProgressReporter.hpp/.cpp
+
+src/Utils/
+  PathUtils.hpp/.cpp
+  JsonUtils.hpp/.cpp
+  Logging.hpp/.cpp
+```
+
+Do not create empty compilation units just to match this tree. New files should appear only when a real extraction stage moves behavior with tests.
+
+Target ownership rules:
+
+- `src/Dll` owns the exported C ABI, thread-local error text, and ABI compatibility checks.
+- `src/Ffmpeg` owns all FFmpeg include exposure, object deleters, and runtime setup helpers.
+- `src/Probe` owns no-decode metadata probing, packet scans, frame-count trust, and probe JSON writing.
+- `src/Decode` owns decoder/resampler setup and converted PCM frame production.
+- `src/Import` owns session artifact streaming, progress/cancel callbacks, waveform chunk emission, and final commit/cleanup.
+- `src/Utils` owns small path/JSON/log helpers that do not depend on FFmpeg.
+
+Public ABI rules do not change during this refactor. FFmpeg types remain private implementation details, and no C++ ownership crosses the DLL boundary.
+
+Detailed staged extraction guidance lives in `docs/AveMediaBridge_RefactorPlan.md`. The current frame-count policy is documented in `docs/AveMediaBridge_FrameCountPolicy.md`.
+
 ## Public Boundary
 
 Public project-owned C++ types are allowed inside the core static-library boundary. These include:
@@ -438,11 +520,17 @@ Draft waveform chunk rules:
 - samples are downmixed to mono by averaging channels;
 - NaN and Inf samples are treated as zero for waveform purposes;
 - each bin stores min/max as two float values, so `valuesPerBin == 2`;
+- new callers may also read optional LongForm energy arrays when `AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY` is set:
+  - `sumSquaresPerBin` stores the sum of averaged-mono `sample * sample` values for each bin;
+  - `sumAbsPerBin` stores the sum of absolute averaged-mono sample values for each bin;
+  - `frameCountPerBin` stores the actual frame count represented by each bin, including partial tail bins;
 - `framesPerBin` is fixed for the draft stream and currently uses 128 source frames per bin, matching AveVoice's final waveform pyramid base level;
 - `firstFrame` is monotonic across chunks;
-- `minMaxPairs` is valid only for the duration of the callback and must not be stored by the caller;
+- `minMaxPairs` and optional energy arrays are valid only for the duration of the callback and must not be stored by the caller;
 - memory remains bounded by the decoder/resampler buffers plus a small pending waveform chunk buffer;
 - cancellation is still polled during import, and canceled imports still clean temporary artifacts.
+
+The LongForm fields are appended to `AveMediaBridgeWaveformChunk`, so existing min/max-only callers remain compatible. Callers must check both `structSize` and the energy flag before reading the appended pointers. If the flag is absent or any energy pointer is null, the chunk is min/max-only and RMS/meanAbs must not be approximated from min/max.
 
 These chunks are temporary UI-oriented data for future progressive waveform UX. They are not the canonical final waveform format, are not written to final waveform files inside AveMediaBridge, and do not replace AveVoice's separate final `WaveformPeaksBuilder` stage.
 

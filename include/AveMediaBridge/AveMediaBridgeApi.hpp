@@ -15,6 +15,7 @@
 #endif
 
 #define AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED 4
+#define AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY 0x00000001u
 
 struct AveMediaBridgeImportProgress {
     uint32_t structSize;
@@ -45,6 +46,10 @@ struct AveMediaBridgeWaveformChunk {
     int sampleRate;
     int channels;
     const float* minMaxPairs;
+    uint32_t flags;
+    const double* sumSquaresPerBin;
+    const double* sumAbsPerBin;
+    const uint64_t* frameCountPerBin;
 };
 
 typedef void (AVEMEDIABRIDGE_CALL *AveMediaBridgeWaveformChunkCallback)(
@@ -75,6 +80,10 @@ AVEMEDIABRIDGE_C_API int AveMediaBridge_GetLastErrorText(
     int outBufferChars);
 
 AVEMEDIABRIDGE_C_API int AveMediaBridge_ProbeToJson(
+    const wchar_t* inputPath,
+    const wchar_t* outputJsonPath);
+
+AVEMEDIABRIDGE_C_API int AveMediaBridge_ProbeFrameCountCandidatesToJson(
     const wchar_t* inputPath,
     const wchar_t* outputJsonPath);
 
