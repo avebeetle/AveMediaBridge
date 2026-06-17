@@ -164,6 +164,8 @@ Target ownership rules:
 - `src/Import` owns session artifact streaming, progress/cancel callbacks, waveform chunk emission, and final commit/cleanup.
 - `src/Utils` owns small path/JSON/log helpers that do not depend on FFmpeg.
 
+Current extraction status: `src/Utils/JsonUtils.hpp/.cpp` provides shared JSON string escaping for probe JSON and streaming import metadata writers. It is intentionally small and does not own JSON schemas, field order, filesystem output, or media policy.
+
 Public ABI rules do not change during this refactor. FFmpeg types remain private implementation details, and no C++ ownership crosses the DLL boundary.
 
 Detailed staged extraction guidance lives in `docs/AveMediaBridge_RefactorPlan.md`. The current frame-count policy is documented in `docs/AveMediaBridge_FrameCountPolicy.md`.

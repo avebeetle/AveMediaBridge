@@ -5,6 +5,7 @@
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/MediaProbeService.hpp"
+#include "../Utils/JsonUtils.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -27,6 +28,7 @@ namespace {
 namespace ClipDiag = AveMediaBridge::Diagnostics;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
+using AveMediaBridge::Utils::jsonString;
 
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
@@ -368,45 +370,6 @@ int copyWideText(const std::wstring& text, wchar_t* outBuffer, int outBufferChar
     outBuffer[charsToCopy] = L'\0';
 
     return text.size() + 1 <= capacity ? 0 : 2;
-}
-
-std::string jsonString(const std::string& value) {
-    std::ostringstream out;
-    out << '"';
-    for (const unsigned char ch : value) {
-        switch (ch) {
-            case '"':
-                out << "\\\"";
-                break;
-            case '\\':
-                out << "\\\\";
-                break;
-            case '\b':
-                out << "\\b";
-                break;
-            case '\f':
-                out << "\\f";
-                break;
-            case '\n':
-                out << "\\n";
-                break;
-            case '\r':
-                out << "\\r";
-                break;
-            case '\t':
-                out << "\\t";
-                break;
-            default:
-                if (ch < 0x20) {
-                    out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
-                } else {
-                    out << static_cast<char>(ch);
-                }
-                break;
-        }
-    }
-    out << '"';
-    return out.str();
 }
 
 std::string ffErrorString(int err) {

@@ -66,6 +66,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/MediaProbeService.cpp
     src/Probe/PacketScan.cpp
     src/Probe/ProbeJsonWriter.cpp
+    src/Utils/JsonUtils.cpp
 )
 
 target_link_libraries(AveMediaBridge PRIVATE AveMediaBridgeCore)
