@@ -63,6 +63,7 @@ add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/FrameCountPolicy.cpp
+    src/Probe/MediaProbeService.cpp
     src/Probe/PacketScan.cpp
     src/Probe/ProbeJsonWriter.cpp
 )

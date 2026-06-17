@@ -4,9 +4,7 @@
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
-#include "../Probe/FrameCountPolicy.hpp"
-#include "../Probe/PacketScan.hpp"
-#include "../Probe/ProbeJsonWriter.hpp"
+#include "../Probe/MediaProbeService.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -31,8 +29,6 @@ namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
 
 constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
-constexpr std::int64_t kFastProbeSizeBytes = 4 * 1024 * 1024;
-constexpr std::int64_t kFastProbeAnalyzeDurationUs = 3 * AV_TIME_BASE;
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
 constexpr std::uint32_t kDraftWaveformFramesPerBin = 128;
 constexpr std::uint32_t kDraftWaveformMaxBinsPerChunk = 64;
@@ -40,47 +36,6 @@ constexpr const wchar_t* kFullScaleClipDiagEnvVar = L"AVEMEDIABRIDGE_FULL_SCALE_
 constexpr const char* kFullScaleClipDiagLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG]";
 constexpr const char* kFullScaleClipResultLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_RESULT]";
 thread_local std::wstring g_lastError;
-
-struct FastProbeResult {
-    std::string sourcePath;
-    std::string formatName;
-    std::string formatLongName;
-    std::string containerFormat;
-    int streamCount = 0;
-    int audioStreamCount = 0;
-    bool streamInfoFound = false;
-    bool hasAudio = false;
-    int bestAudioStreamIndex = -1;
-    AveMediaBridge::SelectedAudioStreamInfo selectedAudio;
-    std::string channelLayout;
-    double durationSec = 0.0;
-    std::string durationKind = "unknown";
-    std::string durationEstimationMethod = "unknown";
-    std::int64_t decodedSampleFrames = 0;
-    std::string decodedSampleFramesKind = "unknown";
-    std::string decodedSampleFramesTrust = "unknown";
-    std::string decodedSampleFramesSource = "unknown";
-    std::int64_t decodedSampleFramesBeforeCorrection = 0;
-    std::int64_t packetPtsSpanFrames = 0;
-    std::int64_t packetDurationSumFrames = 0;
-    bool packetFrameCountCandidateUsed = false;
-    std::string frameCountPolicyReason = "unknown";
-    std::int64_t decodedSampleFramesBeforeGaplessCorrection = 0;
-    std::int64_t skipSamplesStart = 0;
-    std::int64_t skipSamplesEnd = 0;
-    std::int64_t skipSamplesTotal = 0;
-    std::int64_t gaplessCorrectedDecodedSampleFrames = 0;
-    bool gaplessCorrectionApplied = false;
-    std::string gaplessCorrectionSource = "none";
-    std::int64_t gaplessSideDataPacketCount = 0;
-    std::int64_t gaplessAudioPacketsScanned = 0;
-    std::int64_t estimatedDecodedBytes = 0;
-    std::string estimatedDecodedBytesKind = "unknown";
-    int probeScore = -1;
-    std::vector<AveMediaBridge::StreamSummary> streams;
-    std::vector<std::string> warnings;
-    std::vector<std::string> errors;
-};
 
 struct StreamingImportResult {
     bool ok = false;
@@ -460,408 +415,6 @@ std::string ffErrorString(int err) {
     return std::string(buffer);
 }
 
-std::string rationalToString(AVRational value) {
-    std::ostringstream out;
-    out << value.num << "/" << value.den;
-    return out.str();
-}
-
-std::string mediaTypeName(AVMediaType type) {
-    const char* name = av_get_media_type_string(type);
-    return name ? std::string(name) : std::string("unknown");
-}
-
-std::string describeChannelLayout(const AVChannelLayout& layout) {
-    if (layout.nb_channels <= 0 || !av_channel_layout_check(&layout)) {
-        return {};
-    }
-
-    char buffer[128] = {};
-    if (av_channel_layout_describe(&layout, buffer, sizeof(buffer)) <= 0) {
-        return {};
-    }
-    return std::string(buffer);
-}
-
-bool isPcmCodec(AVCodecID codecId) {
-    switch (codecId) {
-        case AV_CODEC_ID_PCM_S16LE:
-        case AV_CODEC_ID_PCM_S16BE:
-        case AV_CODEC_ID_PCM_U16LE:
-        case AV_CODEC_ID_PCM_U16BE:
-        case AV_CODEC_ID_PCM_S8:
-        case AV_CODEC_ID_PCM_U8:
-        case AV_CODEC_ID_PCM_MULAW:
-        case AV_CODEC_ID_PCM_ALAW:
-        case AV_CODEC_ID_PCM_S32LE:
-        case AV_CODEC_ID_PCM_S32BE:
-        case AV_CODEC_ID_PCM_U32LE:
-        case AV_CODEC_ID_PCM_U32BE:
-        case AV_CODEC_ID_PCM_S24LE:
-        case AV_CODEC_ID_PCM_S24BE:
-        case AV_CODEC_ID_PCM_U24LE:
-        case AV_CODEC_ID_PCM_U24BE:
-        case AV_CODEC_ID_PCM_S24DAUD:
-        case AV_CODEC_ID_PCM_ZORK:
-        case AV_CODEC_ID_PCM_S16LE_PLANAR:
-        case AV_CODEC_ID_PCM_DVD:
-        case AV_CODEC_ID_PCM_F32BE:
-        case AV_CODEC_ID_PCM_F32LE:
-        case AV_CODEC_ID_PCM_F64BE:
-        case AV_CODEC_ID_PCM_F64LE:
-        case AV_CODEC_ID_PCM_BLURAY:
-        case AV_CODEC_ID_PCM_LXF:
-        case AV_CODEC_ID_PCM_S8_PLANAR:
-        case AV_CODEC_ID_PCM_S24LE_PLANAR:
-        case AV_CODEC_ID_PCM_S32LE_PLANAR:
-        case AV_CODEC_ID_PCM_S16BE_PLANAR:
-        case AV_CODEC_ID_PCM_S64LE:
-        case AV_CODEC_ID_PCM_S64BE:
-        case AV_CODEC_ID_PCM_F16LE:
-        case AV_CODEC_ID_PCM_F24LE:
-        case AV_CODEC_ID_PCM_VIDC:
-        case AV_CODEC_ID_PCM_SGA:
-            return true;
-        default:
-            return false;
-    }
-}
-
-AveMediaBridge::StreamSummary makeFastStreamSummary(int index, const AVStream* stream) {
-    AveMediaBridge::StreamSummary summary;
-    summary.index = index;
-    if (!stream || !stream->codecpar) {
-        return summary;
-    }
-
-    const AVCodecParameters* codecpar = stream->codecpar;
-    summary.mediaType = mediaTypeName(codecpar->codec_type);
-    summary.codecName = avcodec_get_name(codecpar->codec_id);
-    summary.codecId = static_cast<int>(codecpar->codec_id);
-    summary.sampleRate = codecpar->sample_rate;
-    summary.channels = codecpar->ch_layout.nb_channels;
-    summary.bitRate = codecpar->bit_rate;
-    summary.timeBase = rationalToString(stream->time_base);
-    return summary;
-}
-
-double secondsFromStreamDuration(const AVStream* stream) {
-    if (!stream || stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
-        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
-        return 0.0;
-    }
-
-    return static_cast<double>(stream->duration) * av_q2d(stream->time_base);
-}
-
-std::int64_t exactPcmFramesFromStreamDuration(const AVStream* stream, const AVCodecParameters* codecpar) {
-    if (!stream || !codecpar || !isPcmCodec(codecpar->codec_id) || codecpar->sample_rate <= 0 ||
-        stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
-        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
-        return 0;
-    }
-
-    if (stream->time_base.num == 1 && stream->time_base.den == codecpar->sample_rate) {
-        return stream->duration;
-    }
-
-    const long double frames =
-        static_cast<long double>(stream->duration) *
-        static_cast<long double>(stream->time_base.num) *
-        static_cast<long double>(codecpar->sample_rate) /
-        static_cast<long double>(stream->time_base.den);
-    const auto rounded = static_cast<std::int64_t>(std::llround(frames));
-    if (rounded > 0 && std::fabs(frames - static_cast<long double>(rounded)) < 0.000001L) {
-        return rounded;
-    }
-    return 0;
-}
-
-void fillFastSourceInfo(FastProbeResult& result, const AVFormatContext* formatContext) {
-    if (!formatContext) {
-        return;
-    }
-
-    result.streamCount = static_cast<int>(formatContext->nb_streams);
-    result.probeScore = formatContext->probe_score;
-    if (formatContext->iformat) {
-        result.formatName = formatContext->iformat->name ? formatContext->iformat->name : "";
-        result.formatLongName = formatContext->iformat->long_name ? formatContext->iformat->long_name : "";
-        result.containerFormat = !result.formatLongName.empty() ? result.formatLongName : result.formatName;
-    }
-}
-
-void fillFastStreamDetails(FastProbeResult& result, const AVFormatContext* formatContext) {
-    if (!formatContext) {
-        return;
-    }
-
-    result.streams.reserve(formatContext->nb_streams);
-    for (unsigned int i = 0; i < formatContext->nb_streams; ++i) {
-        const AVStream* stream = formatContext->streams[i];
-        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            ++result.audioStreamCount;
-        }
-        result.streams.push_back(makeFastStreamSummary(static_cast<int>(i), stream));
-    }
-}
-
-void fillFastSelectedAudio(
-    FastProbeResult& result,
-    const AVStream* stream,
-    const AVCodec* decoder) {
-    if (!stream || !stream->codecpar) {
-        return;
-    }
-
-    const AVCodecParameters* codecpar = stream->codecpar;
-    result.hasAudio = true;
-    result.selectedAudio.index = static_cast<int>(stream->index);
-    result.selectedAudio.codecName = avcodec_get_name(codecpar->codec_id);
-    result.selectedAudio.codecId = static_cast<int>(codecpar->codec_id);
-    result.selectedAudio.decoderName = decoder && decoder->name ? decoder->name : "";
-    result.selectedAudio.sampleRate = codecpar->sample_rate;
-    result.selectedAudio.channels = codecpar->ch_layout.nb_channels;
-    result.selectedAudio.bitRate = codecpar->bit_rate;
-    result.selectedAudio.timeBase = rationalToString(stream->time_base);
-    result.channelLayout = describeChannelLayout(codecpar->ch_layout);
-}
-
-void updateEstimatedDecodedBytes(FastProbeResult& result) {
-    if (result.decodedSampleFrames > 0 && result.selectedAudio.channels > 0) {
-        result.estimatedDecodedBytes =
-            result.decodedSampleFrames *
-            static_cast<std::int64_t>(result.selectedAudio.channels) *
-            static_cast<std::int64_t>(sizeof(float));
-        result.estimatedDecodedBytesKind = result.decodedSampleFramesKind;
-    }
-}
-
-void estimateFastDurationAndFrames(
-    FastProbeResult& result,
-    const AVFormatContext* formatContext,
-    const AVStream* audioStream) {
-    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
-    const double streamSeconds = secondsFromStreamDuration(audioStream);
-    const std::int64_t exactPcmFrames = exactPcmFramesFromStreamDuration(audioStream, codecpar);
-
-    if (streamSeconds > 0.0) {
-        result.durationSec = streamSeconds;
-        result.durationEstimationMethod = "from_stream";
-        result.durationKind = exactPcmFrames > 0 ? "exact" : "estimated";
-    } else if (formatContext && formatContext->duration != AV_NOPTS_VALUE && formatContext->duration > 0) {
-        result.durationSec = static_cast<double>(formatContext->duration) / static_cast<double>(AV_TIME_BASE);
-        result.durationEstimationMethod = "from_pts";
-        result.durationKind = "estimated";
-    } else if (formatContext) {
-        const std::int64_t bitRate =
-            codecpar && codecpar->bit_rate > 0 ? codecpar->bit_rate : formatContext->bit_rate;
-        const std::int64_t byteSize = formatContext->pb ? avio_size(formatContext->pb) : -1;
-        if (bitRate > 0 && byteSize > 0) {
-            result.durationSec = (static_cast<double>(byteSize) * 8.0) / static_cast<double>(bitRate);
-            result.durationEstimationMethod = "from_bitrate";
-            result.durationKind = "estimated";
-        }
-    }
-
-    const int sampleRate = codecpar ? codecpar->sample_rate : 0;
-    if (exactPcmFrames > 0) {
-        result.decodedSampleFrames = exactPcmFrames;
-        result.decodedSampleFramesKind = "exact";
-        result.decodedSampleFramesTrust = "authoritative";
-        result.decodedSampleFramesSource = "exact_pcm_stream_duration";
-        result.frameCountPolicyReason = "PCM stream duration is in sample frames";
-    } else if (result.durationSec > 0.0 && sampleRate > 0 && std::isfinite(result.durationSec)) {
-        result.decodedSampleFrames =
-            static_cast<std::int64_t>(std::llround(result.durationSec * static_cast<double>(sampleRate)));
-        result.decodedSampleFramesKind = result.decodedSampleFrames > 0 ? "estimated" : "unknown";
-        if (result.decodedSampleFrames > 0) {
-            if (result.durationEstimationMethod == "from_stream") {
-                result.decodedSampleFramesSource = "stream_duration_estimate";
-            } else if (result.durationEstimationMethod == "from_pts") {
-                result.decodedSampleFramesSource = "format_duration_estimate";
-            } else {
-                result.decodedSampleFramesSource = "duration_estimate";
-            }
-            result.frameCountPolicyReason = "duration-derived compressed frame count is estimated";
-        }
-    }
-
-    updateEstimatedDecodedBytes(result);
-}
-
-Probe::FrameCountPolicyState makeFrameCountPolicyState(const FastProbeResult& result) {
-    Probe::FrameCountPolicyState state;
-    state.formatName = result.formatName;
-    state.selectedAudio.codecId = static_cast<AVCodecID>(result.selectedAudio.codecId);
-    state.selectedAudio.codecName = result.selectedAudio.codecName;
-    state.selectedAudio.sampleRate = result.selectedAudio.sampleRate;
-    state.selectedAudio.channels = result.selectedAudio.channels;
-    state.decodedSampleFrames = result.decodedSampleFrames;
-    state.decodedSampleFramesKind = result.decodedSampleFramesKind;
-    state.decodedSampleFramesTrust = result.decodedSampleFramesTrust;
-    state.decodedSampleFramesSource = result.decodedSampleFramesSource;
-    state.decodedSampleFramesBeforeCorrection = result.decodedSampleFramesBeforeCorrection;
-    state.packetPtsSpanFrames = result.packetPtsSpanFrames;
-    state.packetDurationSumFrames = result.packetDurationSumFrames;
-    state.packetFrameCountCandidateUsed = result.packetFrameCountCandidateUsed;
-    state.frameCountPolicyReason = result.frameCountPolicyReason;
-    state.decodedSampleFramesBeforeGaplessCorrection =
-        result.decodedSampleFramesBeforeGaplessCorrection;
-    state.skipSamplesStart = result.skipSamplesStart;
-    state.skipSamplesEnd = result.skipSamplesEnd;
-    state.skipSamplesTotal = result.skipSamplesTotal;
-    state.gaplessCorrectedDecodedSampleFrames = result.gaplessCorrectedDecodedSampleFrames;
-    state.gaplessCorrectionApplied = result.gaplessCorrectionApplied;
-    state.gaplessCorrectionSource = result.gaplessCorrectionSource;
-    state.gaplessSideDataPacketCount = result.gaplessSideDataPacketCount;
-    state.gaplessAudioPacketsScanned = result.gaplessAudioPacketsScanned;
-    state.estimatedDecodedBytes = result.estimatedDecodedBytes;
-    state.estimatedDecodedBytesKind = result.estimatedDecodedBytesKind;
-    state.warnings = result.warnings;
-    return state;
-}
-
-void applyFrameCountPolicyState(FastProbeResult& result, const Probe::FrameCountPolicyState& state) {
-    result.decodedSampleFrames = state.decodedSampleFrames;
-    result.decodedSampleFramesKind = state.decodedSampleFramesKind;
-    result.decodedSampleFramesTrust = state.decodedSampleFramesTrust;
-    result.decodedSampleFramesSource = state.decodedSampleFramesSource;
-    result.decodedSampleFramesBeforeCorrection = state.decodedSampleFramesBeforeCorrection;
-    result.packetPtsSpanFrames = state.packetPtsSpanFrames;
-    result.packetDurationSumFrames = state.packetDurationSumFrames;
-    result.packetFrameCountCandidateUsed = state.packetFrameCountCandidateUsed;
-    result.frameCountPolicyReason = state.frameCountPolicyReason;
-    result.decodedSampleFramesBeforeGaplessCorrection =
-        state.decodedSampleFramesBeforeGaplessCorrection;
-    result.skipSamplesStart = state.skipSamplesStart;
-    result.skipSamplesEnd = state.skipSamplesEnd;
-    result.skipSamplesTotal = state.skipSamplesTotal;
-    result.gaplessCorrectedDecodedSampleFrames = state.gaplessCorrectedDecodedSampleFrames;
-    result.gaplessCorrectionApplied = state.gaplessCorrectionApplied;
-    result.gaplessCorrectionSource = state.gaplessCorrectionSource;
-    result.gaplessSideDataPacketCount = state.gaplessSideDataPacketCount;
-    result.gaplessAudioPacketsScanned = state.gaplessAudioPacketsScanned;
-    result.estimatedDecodedBytes = state.estimatedDecodedBytes;
-    result.estimatedDecodedBytesKind = state.estimatedDecodedBytesKind;
-    result.warnings = state.warnings;
-}
-
-void applyFastFrameCountPolicies(
-    FastProbeResult& result,
-    const std::string& path,
-    const AVStream* audioStream) {
-    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
-    if (!codecpar) {
-        return;
-    }
-
-    Probe::FrameCountPolicyState policyState = makeFrameCountPolicyState(result);
-    const Probe::PacketScanOptions packetScanOptions{
-        kFastProbeSizeBytes,
-        kFastProbeAnalyzeDurationUs
-    };
-
-    Probe::GaplessSkipSampleScan gaplessScan;
-    if ((codecpar->codec_id == AV_CODEC_ID_MP3 || codecpar->codec_id == AV_CODEC_ID_OPUS) &&
-        result.decodedSampleFramesKind != "exact") {
-        gaplessScan = Probe::scanGaplessSkipSampleSideData(
-            path,
-            static_cast<int>(audioStream->index),
-            packetScanOptions);
-        if (codecpar->codec_id == AV_CODEC_ID_MP3) {
-            Probe::applyGaplessSkipSampleCorrection(policyState, gaplessScan);
-        } else {
-            Probe::recordGaplessSkipSampleScan(policyState, gaplessScan);
-        }
-    }
-
-    if (Probe::shouldScanPacketFrameCountCandidates(policyState)) {
-        const Probe::PacketFrameCountScan packetScan =
-            Probe::scanPacketFrameCountCandidates(
-                path,
-                static_cast<int>(audioStream->index),
-                policyState.selectedAudio.sampleRate,
-                codecpar->codec_id,
-                packetScanOptions);
-        Probe::applyPacketFrameCountPolicies(policyState, packetScan);
-    }
-
-    applyFrameCountPolicyState(result, policyState);
-}
-
-void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audioStream) {
-    const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
-    Probe::FrameCountPolicyState policyState = makeFrameCountPolicyState(result);
-    Probe::finalizeFrameCountTrustPolicy(
-        policyState,
-        codecpar != nullptr,
-        codecpar && isPcmCodec(codecpar->codec_id));
-    applyFrameCountPolicyState(result, policyState);
-}
-
-FastProbeResult runFastProbe(const std::string& path) {
-    FastProbeResult result;
-    result.sourcePath = path;
-
-    Ffmpeg::UniqueAVFormatContext formatContext(avformat_alloc_context());
-    if (!formatContext) {
-        result.errors.push_back("avformat_alloc_context failed");
-        return result;
-    }
-
-    formatContext->probesize = kFastProbeSizeBytes;
-    formatContext->max_analyze_duration = kFastProbeAnalyzeDurationUs;
-
-    AVDictionary* options = nullptr;
-    av_dict_set(&options, "probesize", "4194304", 0);
-    av_dict_set(&options, "analyzeduration", "3000000", 0);
-
-    AVFormatContext* openContext = formatContext.release();
-    int ret = avformat_open_input(&openContext, path.c_str(), nullptr, &options);
-    formatContext.reset(openContext);
-    av_dict_free(&options);
-    if (ret < 0) {
-        result.errors.push_back("avformat_open_input failed: " + ffErrorString(ret));
-        return result;
-    }
-
-    ret = avformat_find_stream_info(formatContext.get(), nullptr);
-    fillFastSourceInfo(result, formatContext.get());
-    if (ret < 0) {
-        result.errors.push_back("avformat_find_stream_info failed: " + ffErrorString(ret));
-        return result;
-    }
-
-    result.streamInfoFound = true;
-    fillFastStreamDetails(result, formatContext.get());
-
-    const Ffmpeg::AudioStreamSelection selection =
-        Ffmpeg::selectBestAudioStreamWithFirstAudioFallback(formatContext.get());
-    if (selection.streamIndex < 0) {
-        result.errors.push_back("no audio stream found: " + ffErrorString(selection.bestStreamResult));
-        return result;
-    }
-    if (selection.usedFirstAudioFallback) {
-        result.warnings.push_back(
-            "av_find_best_stream(audio) failed, using first audio stream: " +
-            ffErrorString(selection.bestStreamResult));
-    }
-
-    const int audioStreamIndex = selection.streamIndex;
-    const AVCodec* decoder = selection.decoder;
-    result.bestAudioStreamIndex = audioStreamIndex;
-    AVStream* audioStream = formatContext->streams[audioStreamIndex];
-    if (!decoder && audioStream && audioStream->codecpar) {
-        decoder = avcodec_find_decoder(audioStream->codecpar->codec_id);
-    }
-    fillFastSelectedAudio(result, audioStream, decoder);
-    estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
-    applyFastFrameCountPolicies(result, path, audioStream);
-    finalizeFrameCountTrustPolicy(result, audioStream);
-    return result;
-}
-
 void addStreamingWarning(StreamingImportResult& result, const std::string& warning) {
     ++result.decode.warningsCount;
     if (result.decode.warnings.size() < 16) {
@@ -898,7 +451,7 @@ void fillStreamingProbeDetails(StreamingImportResult& result, const AVFormatCont
         if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             ++result.probe.audioStreamCount;
         }
-        result.probe.streams.push_back(makeFastStreamSummary(static_cast<int>(i), stream));
+        result.probe.streams.push_back(Probe::makeStreamSummary(static_cast<int>(i), stream));
     }
 }
 
@@ -919,7 +472,7 @@ void fillStreamingSelectedAudioInfo(
     result.selectedAudio.sampleRate = decoderContext ? decoderContext->sample_rate : codecpar->sample_rate;
     result.selectedAudio.channels = decoderContext ? decoderContext->ch_layout.nb_channels : codecpar->ch_layout.nb_channels;
     result.selectedAudio.bitRate = codecpar->bit_rate;
-    result.selectedAudio.timeBase = rationalToString(stream->time_base);
+    result.selectedAudio.timeBase = Probe::rationalToString(stream->time_base);
 }
 
 bool estimateDecodedBytesForPreflight(
@@ -929,16 +482,13 @@ bool estimateDecodedBytesForPreflight(
     std::int64_t& estimatedFrames,
     std::int64_t& estimatedBytes,
     std::string& estimateKind) {
-    FastProbeResult estimate;
-    fillFastSourceInfo(estimate, formatContext);
-    fillFastSelectedAudio(estimate, audioStream, nullptr);
-    estimateFastDurationAndFrames(estimate, formatContext, audioStream);
-    applyFastFrameCountPolicies(estimate, path, audioStream);
-    finalizeFrameCountTrustPolicy(estimate, audioStream);
-    estimatedFrames = estimate.decodedSampleFrames;
-    estimatedBytes = estimate.estimatedDecodedBytes;
-    estimateKind = estimate.estimatedDecodedBytesKind;
-    return estimatedBytes > 0 && estimateKind != "unknown";
+    return Probe::estimateDecodedBytesForPreflight(
+        formatContext,
+        audioStream,
+        path,
+        estimatedFrames,
+        estimatedBytes,
+        estimateKind);
 }
 
 std::uint64_t nonNegativeToUint64(std::int64_t value) {
@@ -1971,56 +1521,6 @@ bool validateOutputPath(const wchar_t* outputPath, std::filesystem::path& output
     return createParentDirectory(outputFsPath, error);
 }
 
-Probe::FastProbeJsonDocument makeFastProbeJsonDocument(const FastProbeResult& result) {
-    Probe::FastProbeJsonDocument document;
-    document.sourcePath = result.sourcePath;
-    document.formatName = result.formatName;
-    document.formatLongName = result.formatLongName;
-    document.containerFormat = result.containerFormat;
-    document.streamCount = result.streamCount;
-    document.audioStreamCount = result.audioStreamCount;
-    document.hasAudio = result.hasAudio;
-    document.bestAudioStreamIndex = result.bestAudioStreamIndex;
-    document.selectedAudio = result.selectedAudio;
-    document.channelLayout = result.channelLayout;
-    document.durationSec = result.durationSec;
-    document.durationKind = result.durationKind;
-    document.durationEstimationMethod = result.durationEstimationMethod;
-    document.decodedSampleFrames = result.decodedSampleFrames;
-    document.decodedSampleFramesKind = result.decodedSampleFramesKind;
-    document.decodedSampleFramesTrust = result.decodedSampleFramesTrust;
-    document.decodedSampleFramesSource = result.decodedSampleFramesSource;
-    document.decodedSampleFramesBeforeCorrection = result.decodedSampleFramesBeforeCorrection;
-    document.packetPtsSpanFrames = result.packetPtsSpanFrames;
-    document.packetDurationSumFrames = result.packetDurationSumFrames;
-    document.packetFrameCountCandidateUsed = result.packetFrameCountCandidateUsed;
-    document.frameCountPolicyReason = result.frameCountPolicyReason;
-    document.decodedSampleFramesBeforeGaplessCorrection =
-        result.decodedSampleFramesBeforeGaplessCorrection;
-    document.skipSamplesStart = result.skipSamplesStart;
-    document.skipSamplesEnd = result.skipSamplesEnd;
-    document.skipSamplesTotal = result.skipSamplesTotal;
-    document.gaplessCorrectedDecodedSampleFrames = result.gaplessCorrectedDecodedSampleFrames;
-    document.gaplessCorrectionApplied = result.gaplessCorrectionApplied;
-    document.gaplessCorrectionSource = result.gaplessCorrectionSource;
-    document.gaplessSideDataPacketCount = result.gaplessSideDataPacketCount;
-    document.gaplessAudioPacketsScanned = result.gaplessAudioPacketsScanned;
-    document.estimatedDecodedBytes = result.estimatedDecodedBytes;
-    document.estimatedDecodedBytesKind = result.estimatedDecodedBytesKind;
-    document.probeScore = result.probeScore;
-    document.streams = result.streams;
-    document.warnings = result.warnings;
-    document.errors = result.errors;
-    return document;
-}
-
-bool writeFastProbeJson(
-    const std::filesystem::path& outputPath,
-    const FastProbeResult& result,
-    std::string& error) {
-    return Probe::writeProbeJson(outputPath, makeFastProbeJsonDocument(result), error);
-}
-
 double streamingDurationSeconds(const StreamingImportResult& result) {
     if (result.source.durationSeconds > 0.0) {
         return result.source.durationSeconds;
@@ -2339,14 +1839,14 @@ int AveMediaBridge_ProbeToJson(const wchar_t* inputPath, const wchar_t* outputJs
             return 1;
         }
 
-        FastProbeResult probe = runFastProbe(input);
-        if (!writeFastProbeJson(outputFsPath, probe, error)) {
+        Probe::FastProbeResult probe = Probe::runFastProbe(input);
+        if (!Probe::writeFastProbeJson(outputFsPath, probe, error)) {
             setLastErrorText(error);
             return 3;
         }
 
-        if (!probe.errors.empty() && !probe.streamInfoFound) {
-            setLastErrorText(probe.errors.front());
+        if (!probe.document.errors.empty() && !probe.streamInfoFound) {
+            setLastErrorText(probe.document.errors.front());
             return 2;
         }
 
@@ -2373,14 +1873,14 @@ int AveMediaBridge_ProbeFrameCountCandidatesToJson(
             return 1;
         }
 
-        FastProbeResult probe = runFastProbe(input);
-        if (!writeFastProbeJson(outputFsPath, probe, error)) {
+        Probe::FastProbeResult probe = Probe::runFastProbe(input);
+        if (!Probe::writeFastProbeJson(outputFsPath, probe, error)) {
             setLastErrorText(error);
             return 3;
         }
 
-        if (!probe.errors.empty() && !probe.streamInfoFound) {
-            setLastErrorText(probe.errors.front());
+        if (!probe.document.errors.empty() && !probe.streamInfoFound) {
+            setLastErrorText(probe.document.errors.front());
             return 2;
         }
 
