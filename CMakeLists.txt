@@ -100,3 +100,40 @@ add_custom_command(TARGET AveMediaBridgeLabApp POST_BUILD
 )
 
 copy_ffmpeg_runtime_dlls(AveMediaBridgeLabApp)
+
+add_executable(AveMediaBridgePcmExtentAudit
+    app/PcmExtentAudit.cpp
+    src/Core/MediaBridgeError.cpp
+    src/Decode/AudioDecodeHelpers.cpp
+    src/Decode/PcmFormat.cpp
+    src/Ffmpeg/FfmpegStreamSelection.cpp
+    src/Probe/FrameCountPolicy.cpp
+    src/Probe/MediaProbeService.cpp
+    src/Probe/PacketScan.cpp
+    src/Probe/ProbeJsonWriter.cpp
+    src/Utils/JsonUtils.cpp
+)
+
+target_include_directories(AveMediaBridgePcmExtentAudit
+    PRIVATE
+        "${AVEMEDIABRIDGE_ROOT}/include"
+        "${AVEMEDIABRIDGE_ROOT}/src"
+        "${FFMPEG_INCLUDE_DIR}"
+)
+
+target_link_libraries(AveMediaBridgePcmExtentAudit
+    PRIVATE
+        "${FFMPEG_LIB_DIR}/avformat.lib"
+        "${FFMPEG_LIB_DIR}/avcodec.lib"
+        "${FFMPEG_LIB_DIR}/avutil.lib"
+        "${FFMPEG_LIB_DIR}/swresample.lib"
+)
+
+copy_ffmpeg_runtime_dlls(AveMediaBridgePcmExtentAudit)
+
+enable_testing()
+
+add_test(
+    NAME AveMediaBridgePcmExtentAuditSelfTest
+    COMMAND $<TARGET_FILE:AveMediaBridgePcmExtentAudit> --self-test
+)
