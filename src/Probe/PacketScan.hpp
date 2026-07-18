@@ -44,6 +44,25 @@ struct PacketFrameCountScan {
     std::string warning;
 };
 
+struct OggVorbisTerminalScan {
+    bool attempted = false;
+    bool scanComplete = false;
+    bool vorbisSerialKnown = false;
+    std::uint32_t vorbisSerial = 0;
+    std::int64_t pageCount = 0;
+    std::int64_t bosPageCount = 0;
+    std::int64_t eosPageCount = 0;
+    std::int64_t serialNumberCount = 0;
+    std::int64_t vorbisBosCount = 0;
+    std::int64_t vorbisEosCount = 0;
+    bool eosObserved = false;
+    bool chainedOrAmbiguous = false;
+    bool truncated = false;
+    bool timestampDiscontinuity = false;
+    std::int64_t selectedAudioEosGranule = -1;
+    std::string warning;
+};
+
 std::int64_t mp3SamplesPerFrameForSampleRate(int sampleRate);
 std::int64_t wmav2SamplesPerFrameForSampleRate(int sampleRate);
 
@@ -58,5 +77,7 @@ PacketFrameCountScan scanPacketFrameCountCandidates(
     int sampleRate,
     AVCodecID codecId,
     PacketScanOptions options);
+
+OggVorbisTerminalScan scanOggVorbisTerminalEvidence(const std::string& path);
 
 }  // namespace AveMediaBridge::Probe

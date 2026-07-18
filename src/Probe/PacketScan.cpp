@@ -3,9 +3,15 @@
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <set>
+#include <vector>
 
 namespace AveMediaBridge::Probe {
 namespace {
@@ -21,6 +27,43 @@ std::uint32_t readLittleEndianU32(const std::uint8_t* data) {
         (static_cast<std::uint32_t>(data[2]) << 16) |
         (static_cast<std::uint32_t>(data[3]) << 24);
 }
+
+std::uint32_t readLittleEndianU32(const char* data) {
+    if (!data) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(static_cast<unsigned char>(data[0])) |
+        (static_cast<std::uint32_t>(static_cast<unsigned char>(data[1])) << 8) |
+        (static_cast<std::uint32_t>(static_cast<unsigned char>(data[2])) << 16) |
+        (static_cast<std::uint32_t>(static_cast<unsigned char>(data[3])) << 24);
+}
+
+std::int64_t readLittleEndianI64(const char* data) {
+    if (!data) {
+        return -1;
+    }
+    std::uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value |= static_cast<std::uint64_t>(static_cast<unsigned char>(data[i])) << (8 * i);
+    }
+    return static_cast<std::int64_t>(value);
+}
+
+bool payloadStartsWithVorbisIdentificationPacket(const std::vector<unsigned char>& payload) {
+    constexpr unsigned char kVorbisIdentificationPacketType = 0x01;
+    constexpr char kVorbisSignature[] = "vorbis";
+    return payload.size() >= 7 &&
+        payload[0] == kVorbisIdentificationPacketType &&
+        std::memcmp(payload.data() + 1, kVorbisSignature, 6) == 0;
+}
+
+struct OggLogicalStreamState {
+    bool seen = false;
+    bool isVorbis = false;
+    bool eosObserved = false;
+    std::uint32_t nextSequenceNumber = 0;
+    std::int64_t lastGranule = -1;
+};
 
 std::int64_t saturatingAddSamples(std::int64_t current, std::uint32_t add) {
     const std::int64_t maxValue = (std::numeric_limits<std::int64_t>::max)();
@@ -361,6 +404,142 @@ GaplessSkipSampleScan scanGaplessSkipSampleSideData(
     } else if (streamInitialPadding > 0 || streamTrailingPadding > 0) {
         result.source = "stream_padding";
     }
+    return result;
+}
+
+OggVorbisTerminalScan scanOggVorbisTerminalEvidence(const std::string& path) {
+    OggVorbisTerminalScan result;
+    result.attempted = true;
+    if (path.empty()) {
+        result.warning = "Ogg/Vorbis terminal scan skipped: empty path";
+        return result;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        result.warning = "Ogg/Vorbis terminal scan open failed";
+        return result;
+    }
+
+    std::map<std::uint32_t, OggLogicalStreamState> streams;
+    std::set<std::uint32_t> serials;
+    while (true) {
+        std::array<char, 27> header{};
+        input.read(header.data(), static_cast<std::streamsize>(header.size()));
+        if (input.gcount() == 0 && input.eof()) {
+            result.scanComplete = true;
+            break;
+        }
+        if (input.gcount() != static_cast<std::streamsize>(header.size())) {
+            result.truncated = true;
+            result.warning = "Ogg/Vorbis terminal scan found truncated page header";
+            break;
+        }
+        if (std::string(header.data(), 4) != "OggS") {
+            result.truncated = true;
+            result.warning = "Ogg/Vorbis terminal scan found invalid capture pattern";
+            break;
+        }
+
+        const unsigned char version = static_cast<unsigned char>(header[4]);
+        if (version != 0) {
+            result.truncated = true;
+            result.warning = "Ogg/Vorbis terminal scan found unsupported page version";
+            break;
+        }
+
+        const unsigned char headerType = static_cast<unsigned char>(header[5]);
+        const std::int64_t granule = readLittleEndianI64(header.data() + 6);
+        const std::uint32_t serial = readLittleEndianU32(header.data() + 14);
+        const std::uint32_t sequenceNumber = readLittleEndianU32(header.data() + 18);
+        const int pageSegments = static_cast<unsigned char>(header[26]);
+
+        std::vector<unsigned char> lacing(static_cast<std::size_t>(pageSegments));
+        if (!lacing.empty()) {
+            input.read(reinterpret_cast<char*>(lacing.data()), static_cast<std::streamsize>(lacing.size()));
+            if (input.gcount() != static_cast<std::streamsize>(lacing.size())) {
+                result.truncated = true;
+                result.warning = "Ogg/Vorbis terminal scan found truncated segment table";
+                break;
+            }
+        }
+
+        std::int64_t payloadBytes = 0;
+        for (unsigned char lace : lacing) {
+            payloadBytes += lace;
+        }
+        if (payloadBytes < 0) {
+            result.truncated = true;
+            result.warning = "Ogg/Vorbis terminal scan found invalid payload length";
+            break;
+        }
+
+        std::vector<unsigned char> payload(static_cast<std::size_t>(payloadBytes));
+        if (!payload.empty()) {
+            input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+            if (input.gcount() != static_cast<std::streamsize>(payload.size())) {
+                result.truncated = true;
+                result.warning = "Ogg/Vorbis terminal scan found truncated page payload";
+                break;
+            }
+        }
+
+        ++result.pageCount;
+        serials.insert(serial);
+        OggLogicalStreamState& stream = streams[serial];
+        if (stream.seen && sequenceNumber != stream.nextSequenceNumber) {
+            result.timestampDiscontinuity = true;
+        }
+        stream.seen = true;
+        stream.nextSequenceNumber = sequenceNumber + 1;
+
+        if ((headerType & 0x02u) != 0) {
+            ++result.bosPageCount;
+            if (payloadStartsWithVorbisIdentificationPacket(payload)) {
+                stream.isVorbis = true;
+                ++result.vorbisBosCount;
+                result.vorbisSerial = serial;
+                result.vorbisSerialKnown = result.vorbisBosCount == 1;
+            }
+        }
+
+        if (stream.isVorbis && granule >= 0) {
+            if (stream.lastGranule >= 0 && granule < stream.lastGranule) {
+                result.timestampDiscontinuity = true;
+            }
+            stream.lastGranule = granule;
+        }
+
+        if ((headerType & 0x04u) != 0) {
+            ++result.eosPageCount;
+            stream.eosObserved = true;
+            if (stream.isVorbis) {
+                ++result.vorbisEosCount;
+                result.eosObserved = granule >= 0;
+                result.selectedAudioEosGranule = granule;
+            }
+        }
+    }
+
+    result.serialNumberCount = static_cast<std::int64_t>(serials.size());
+    if (result.vorbisBosCount != 1 || result.vorbisEosCount != 1) {
+        result.chainedOrAmbiguous = result.vorbisBosCount > 1 || result.vorbisEosCount > 1;
+    }
+    if (!result.vorbisSerialKnown) {
+        result.warning = result.warning.empty()
+            ? "Ogg/Vorbis terminal scan did not find one selected Vorbis logical stream"
+            : result.warning;
+    } else if (!result.eosObserved) {
+        result.warning = result.warning.empty()
+            ? "Ogg/Vorbis terminal scan did not find selected Vorbis EOS granule"
+            : result.warning;
+    }
+    if (result.timestampDiscontinuity) {
+        result.warning = result.warning.empty()
+            ? "Ogg/Vorbis terminal scan found sequence or granule discontinuity"
+            : result.warning;
+    }
+    result.scanComplete = result.scanComplete && !result.truncated;
     return result;
 }
 

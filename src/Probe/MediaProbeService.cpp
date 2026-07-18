@@ -90,6 +90,30 @@ double secondsFromStreamDuration(const AVStream* stream) {
     return static_cast<double>(stream->duration) * av_q2d(stream->time_base);
 }
 
+std::int64_t exactFramesFromTimeBaseDuration(
+    std::int64_t duration,
+    AVRational timeBase,
+    int sampleRate) {
+    if (duration == AV_NOPTS_VALUE ||
+        duration <= 0 ||
+        timeBase.num <= 0 ||
+        timeBase.den <= 0 ||
+        sampleRate <= 0) {
+        return 0;
+    }
+
+    const long double frames =
+        static_cast<long double>(duration) *
+        static_cast<long double>(timeBase.num) *
+        static_cast<long double>(sampleRate) /
+        static_cast<long double>(timeBase.den);
+    const auto rounded = static_cast<std::int64_t>(std::llround(frames));
+    if (rounded > 0 && std::fabs(frames - static_cast<long double>(rounded)) < 0.000001L) {
+        return rounded;
+    }
+    return 0;
+}
+
 std::int64_t exactPcmFramesFromStreamDuration(
     const AVStream* stream,
     const AVCodecParameters* codecpar) {
@@ -113,6 +137,37 @@ std::int64_t exactPcmFramesFromStreamDuration(
         return rounded;
     }
     return 0;
+}
+
+std::int64_t exactStreamDurationFrames(
+    const AVStream* stream,
+    const AVCodecParameters* codecpar) {
+    return exactFramesFromTimeBaseDuration(
+        stream && stream->duration != AV_NOPTS_VALUE ? stream->duration : AV_NOPTS_VALUE,
+        stream ? stream->time_base : AVRational{0, 1},
+        codecpar ? codecpar->sample_rate : 0);
+}
+
+std::int64_t exactFormatDurationFrames(
+    const AVFormatContext* formatContext,
+    const AVCodecParameters* codecpar) {
+    return exactFramesFromTimeBaseDuration(
+        formatContext ? formatContext->duration : AV_NOPTS_VALUE,
+        AVRational{1, AV_TIME_BASE},
+        codecpar ? codecpar->sample_rate : 0);
+}
+
+bool formatNameContains(const std::string& formatName, const char* token) {
+    return formatName.find(token) != std::string::npos;
+}
+
+bool isOggVorbisProbeCandidate(
+    const FastProbeJsonDocument& document,
+    const AVCodecParameters* codecpar) {
+    return codecpar &&
+        (codecpar->codec_id == AV_CODEC_ID_VORBIS || document.selectedAudio.codecName == "vorbis") &&
+        formatNameContains(document.formatName, "ogg") &&
+        document.decodedSampleFramesKind != "exact";
 }
 
 void updateEstimatedDecodedBytes(FastProbeJsonDocument& document) {
@@ -240,6 +295,8 @@ FrameCountPolicyState makeFrameCountPolicyState(const FastProbeJsonDocument& doc
     state.selectedAudio.codecName = document.selectedAudio.codecName;
     state.selectedAudio.sampleRate = document.selectedAudio.sampleRate;
     state.selectedAudio.channels = document.selectedAudio.channels;
+    state.streamDurationFrames = document.streamDurationFrames;
+    state.formatDurationFrames = document.formatDurationFrames;
     state.decodedSampleFrames = document.decodedSampleFrames;
     state.decodedSampleFramesKind = document.decodedSampleFramesKind;
     state.decodedSampleFramesTrust = document.decodedSampleFramesTrust;
@@ -261,6 +318,18 @@ FrameCountPolicyState makeFrameCountPolicyState(const FastProbeJsonDocument& doc
     state.gaplessAudioPacketsScanned = document.gaplessAudioPacketsScanned;
     state.estimatedDecodedBytes = document.estimatedDecodedBytes;
     state.estimatedDecodedBytesKind = document.estimatedDecodedBytesKind;
+    state.oggVorbisTerminalScanAvailable = document.oggVorbisTerminalScanAvailable;
+    state.oggVorbisTerminalScanComplete = document.oggVorbisTerminalScanComplete;
+    state.oggVorbisEosObserved = document.oggVorbisEosObserved;
+    state.oggVorbisEosGranuleKnown = document.oggVorbisEosGranuleKnown;
+    state.oggVorbisEosGranuleFrames = document.oggVorbisEosGranuleFrames;
+    state.oggVorbisTruncated = document.oggVorbisTruncated;
+    state.oggVorbisChainedOrAmbiguous = document.oggVorbisChainedOrAmbiguous;
+    state.oggVorbisTimestampDiscontinuity = document.oggVorbisTimestampDiscontinuity;
+    state.oggVorbisSerialNumberCount = document.oggVorbisSerialNumberCount;
+    state.oggVorbisVorbisBosCount = document.oggVorbisVorbisBosCount;
+    state.oggVorbisVorbisEosCount = document.oggVorbisVorbisEosCount;
+    state.oggVorbisTerminalScanWarning = document.oggVorbisTerminalScanWarning;
     state.warnings = document.warnings;
     return state;
 }
@@ -270,6 +339,8 @@ void applyFrameCountPolicyState(FastProbeJsonDocument& document, const FrameCoun
     document.decodedSampleFramesKind = state.decodedSampleFramesKind;
     document.decodedSampleFramesTrust = state.decodedSampleFramesTrust;
     document.decodedSampleFramesSource = state.decodedSampleFramesSource;
+    document.streamDurationFrames = state.streamDurationFrames;
+    document.formatDurationFrames = state.formatDurationFrames;
     document.decodedSampleFramesBeforeCorrection = state.decodedSampleFramesBeforeCorrection;
     document.packetPtsSpanFrames = state.packetPtsSpanFrames;
     document.packetDurationSumFrames = state.packetDurationSumFrames;
@@ -287,12 +358,25 @@ void applyFrameCountPolicyState(FastProbeJsonDocument& document, const FrameCoun
     document.gaplessAudioPacketsScanned = state.gaplessAudioPacketsScanned;
     document.estimatedDecodedBytes = state.estimatedDecodedBytes;
     document.estimatedDecodedBytesKind = state.estimatedDecodedBytesKind;
+    document.oggVorbisTerminalScanAvailable = state.oggVorbisTerminalScanAvailable;
+    document.oggVorbisTerminalScanComplete = state.oggVorbisTerminalScanComplete;
+    document.oggVorbisEosObserved = state.oggVorbisEosObserved;
+    document.oggVorbisEosGranuleKnown = state.oggVorbisEosGranuleKnown;
+    document.oggVorbisEosGranuleFrames = state.oggVorbisEosGranuleFrames;
+    document.oggVorbisTruncated = state.oggVorbisTruncated;
+    document.oggVorbisChainedOrAmbiguous = state.oggVorbisChainedOrAmbiguous;
+    document.oggVorbisTimestampDiscontinuity = state.oggVorbisTimestampDiscontinuity;
+    document.oggVorbisSerialNumberCount = state.oggVorbisSerialNumberCount;
+    document.oggVorbisVorbisBosCount = state.oggVorbisVorbisBosCount;
+    document.oggVorbisVorbisEosCount = state.oggVorbisVorbisEosCount;
+    document.oggVorbisTerminalScanWarning = state.oggVorbisTerminalScanWarning;
     document.warnings = state.warnings;
 }
 
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
     const std::string& path,
+    const AVFormatContext* formatContext,
     const AVStream* audioStream) {
     const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
     if (!codecpar) {
@@ -300,6 +384,8 @@ void applyFastFrameCountPolicies(
     }
 
     FrameCountPolicyState policyState = makeFrameCountPolicyState(result.document);
+    policyState.streamDurationFrames = exactStreamDurationFrames(audioStream, codecpar);
+    policyState.formatDurationFrames = exactFormatDurationFrames(formatContext, codecpar);
     const PacketScanOptions packetScanOptions{
         kFastProbeSizeBytes,
         kFastProbeAnalyzeDurationUs
@@ -317,6 +403,12 @@ void applyFastFrameCountPolicies(
         } else {
             recordGaplessSkipSampleScan(policyState, gaplessScan);
         }
+    }
+
+    if (isOggVorbisProbeCandidate(result.document, codecpar)) {
+        const OggVorbisTerminalScan oggScan = scanOggVorbisTerminalEvidence(path);
+        recordOggVorbisTerminalScan(policyState, oggScan);
+        applyOggVorbisExactExtentPolicy(policyState);
     }
 
     if (shouldScanPacketFrameCountCandidates(policyState)) {
@@ -340,6 +432,7 @@ void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audi
         policyState,
         codecpar != nullptr,
         codecpar && isPcmCodec(codecpar->codec_id));
+    traceFrameCountPolicyDecisionIfEnabled(policyState);
     applyFrameCountPolicyState(result.document, policyState);
 }
 
@@ -426,7 +519,7 @@ FastProbeResult runFastProbe(const std::string& path) {
     }
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
-    applyFastFrameCountPolicies(result, path, audioStream);
+    applyFastFrameCountPolicies(result, path, formatContext.get(), audioStream);
     finalizeFrameCountTrustPolicy(result, audioStream);
     return result;
 }
@@ -449,7 +542,7 @@ bool estimateDecodedBytesForPreflight(
     fillFastSourceInfo(estimate, formatContext);
     fillFastSelectedAudio(estimate, audioStream, nullptr);
     estimateFastDurationAndFrames(estimate, formatContext, audioStream);
-    applyFastFrameCountPolicies(estimate, path, audioStream);
+    applyFastFrameCountPolicies(estimate, path, formatContext, audioStream);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
     estimatedFrames = estimate.document.decodedSampleFrames;
     estimatedBytes = estimate.document.estimatedDecodedBytes;

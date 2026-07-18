@@ -23,6 +23,8 @@ struct FastProbeJsonDocument {
     double durationSec = 0.0;
     std::string durationKind = "unknown";
     std::string durationEstimationMethod = "unknown";
+    std::int64_t streamDurationFrames = 0;
+    std::int64_t formatDurationFrames = 0;
     std::int64_t decodedSampleFrames = 0;
     std::string decodedSampleFramesKind = "unknown";
     std::string decodedSampleFramesTrust = "unknown";
@@ -43,6 +45,18 @@ struct FastProbeJsonDocument {
     std::int64_t gaplessAudioPacketsScanned = 0;
     std::int64_t estimatedDecodedBytes = 0;
     std::string estimatedDecodedBytesKind = "unknown";
+    bool oggVorbisTerminalScanAvailable = false;
+    bool oggVorbisTerminalScanComplete = false;
+    bool oggVorbisEosObserved = false;
+    bool oggVorbisEosGranuleKnown = false;
+    std::int64_t oggVorbisEosGranuleFrames = -1;
+    bool oggVorbisTruncated = false;
+    bool oggVorbisChainedOrAmbiguous = false;
+    bool oggVorbisTimestampDiscontinuity = false;
+    std::int64_t oggVorbisSerialNumberCount = 0;
+    std::int64_t oggVorbisVorbisBosCount = 0;
+    std::int64_t oggVorbisVorbisEosCount = 0;
+    std::string oggVorbisTerminalScanWarning;
     int probeScore = -1;
     std::vector<StreamSummary> streams;
     std::vector<std::string> warnings;

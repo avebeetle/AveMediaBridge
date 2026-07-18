@@ -1,7 +1,11 @@
 #include "FrameCountPolicy.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstdint>
+#include <iostream>
+#include <sstream>
 
 namespace AveMediaBridge::Probe {
 namespace {
@@ -67,6 +71,11 @@ bool isOpusAudioCodec(const FrameCountPolicyState& state) {
         state.selectedAudio.codecName == "opus";
 }
 
+bool isVorbisAudioCodec(const FrameCountPolicyState& state) {
+    return state.selectedAudio.codecId == AV_CODEC_ID_VORBIS ||
+        state.selectedAudio.codecName == "vorbis";
+}
+
 bool isMp2AudioCodec(const FrameCountPolicyState& state) {
     return state.selectedAudio.codecId == AV_CODEC_ID_MP2 ||
         state.selectedAudio.codecName == "mp2";
@@ -85,6 +94,55 @@ void updateEstimatedDecodedBytes(FrameCountPolicyState& state) {
             static_cast<std::int64_t>(sizeof(float));
         state.estimatedDecodedBytesKind = state.decodedSampleFramesKind;
     }
+}
+
+bool auditEnabled() {
+    const char* value = std::getenv("AVEMEDIABRIDGE_PCM_EXTENT_AUDIT");
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+    std::string text(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text != "0" && text != "false" && text != "off" && text != "no";
+}
+
+const char* boolText(bool value) {
+    return value ? "yes" : "no";
+}
+
+void applyOggVorbisExactExtentPolicyInternal(FrameCountPolicyState& state) {
+    if (state.gaplessCorrectionApplied ||
+        state.decodedSampleFramesKind == "exact" ||
+        !isOggContainer(state.formatName) ||
+        !isVorbisAudioCodec(state) ||
+        state.selectedAudio.sampleRate <= 0 ||
+        state.decodedSampleFrames <= 0 ||
+        state.streamDurationFrames <= 0 ||
+        state.decodedSampleFramesSource != "stream_duration_estimate" ||
+        state.streamDurationFrames != state.decodedSampleFrames ||
+        (state.packetPtsSpanFrames > 0 && state.packetPtsSpanFrames != state.decodedSampleFrames) ||
+        (state.packetDurationSumFrames > 0 && state.packetDurationSumFrames != state.decodedSampleFrames) ||
+        state.skipSamplesTotal != 0 ||
+        !state.oggVorbisTerminalScanAvailable ||
+        !state.oggVorbisTerminalScanComplete ||
+        state.oggVorbisTruncated ||
+        state.oggVorbisChainedOrAmbiguous ||
+        state.oggVorbisTimestampDiscontinuity ||
+        !state.oggVorbisEosObserved ||
+        !state.oggVorbisEosGranuleKnown ||
+        state.oggVorbisEosGranuleFrames <= 0 ||
+        state.oggVorbisEosGranuleFrames != state.decodedSampleFrames) {
+        return;
+    }
+
+    state.decodedSampleFramesBeforeCorrection = state.decodedSampleFrames;
+    state.decodedSampleFramesKind = "exact";
+    state.decodedSampleFramesTrust = "authoritative";
+    state.decodedSampleFramesSource = "ogg_vorbis_eos_granule";
+    state.frameCountPolicyReason = "ogg_vorbis_exact_extent_proven";
+    updateEstimatedDecodedBytes(state);
 }
 
 void applyOpusFrameCountPolicy(FrameCountPolicyState& state, const PacketFrameCountScan& scan) {
@@ -351,6 +409,23 @@ void recordGaplessSkipSampleScan(
     }
 }
 
+void recordOggVorbisTerminalScan(
+    FrameCountPolicyState& state,
+    const OggVorbisTerminalScan& scan) {
+    state.oggVorbisTerminalScanAvailable = scan.attempted;
+    state.oggVorbisTerminalScanComplete = scan.scanComplete;
+    state.oggVorbisEosObserved = scan.eosObserved;
+    state.oggVorbisEosGranuleKnown = scan.selectedAudioEosGranule >= 0;
+    state.oggVorbisEosGranuleFrames = scan.selectedAudioEosGranule;
+    state.oggVorbisTruncated = scan.truncated;
+    state.oggVorbisChainedOrAmbiguous = scan.chainedOrAmbiguous;
+    state.oggVorbisTimestampDiscontinuity = scan.timestampDiscontinuity;
+    state.oggVorbisSerialNumberCount = scan.serialNumberCount;
+    state.oggVorbisVorbisBosCount = scan.vorbisBosCount;
+    state.oggVorbisVorbisEosCount = scan.vorbisEosCount;
+    state.oggVorbisTerminalScanWarning = scan.warning;
+}
+
 void applyGaplessSkipSampleCorrection(
     FrameCountPolicyState& state,
     const GaplessSkipSampleScan& scan) {
@@ -392,6 +467,10 @@ void applyGaplessSkipSampleCorrection(
         ? "bare_mp3_one_sided_start_skip_applied"
         : "packet skip/discard side data corrected the duration estimate";
     updateEstimatedDecodedBytes(state);
+}
+
+void applyOggVorbisExactExtentPolicy(FrameCountPolicyState& state) {
+    applyOggVorbisExactExtentPolicyInternal(state);
 }
 
 void applyPacketFrameCountPolicies(
@@ -442,6 +521,36 @@ void finalizeFrameCountTrustPolicy(
 
     state.decodedSampleFramesTrust = "unknown";
     state.frameCountPolicyReason = "frame count trust could not be established";
+}
+
+void traceFrameCountPolicyDecisionIfEnabled(const FrameCountPolicyState& state) {
+    if (!auditEnabled()) {
+        return;
+    }
+
+    std::ostringstream out;
+    out << "[AVEMEDIABRIDGE_FRAME_COUNT_POLICY]"
+        << " container=" << state.formatName
+        << " codec=" << state.selectedAudio.codecName
+        << " streamFrames=" << state.streamDurationFrames
+        << " formatFrames=" << state.formatDurationFrames
+        << " eosGranuleKnown=" << boolText(state.oggVorbisEosGranuleKnown)
+        << " eosGranuleFrames=" << state.oggVorbisEosGranuleFrames
+        << " packetTerminalKnown=" << boolText(state.oggVorbisEosGranuleKnown || state.packetPtsSpanFrames > 0)
+        << " packetTerminalFrames="
+        << (state.packetPtsSpanFrames > 0 ? state.packetPtsSpanFrames : state.oggVorbisEosGranuleFrames)
+        << " packetScanComplete="
+        << boolText(state.packetPtsSpanFrames > 0 || state.oggVorbisTerminalScanComplete)
+        << " truncated=" << boolText(state.oggVorbisTruncated)
+        << " chained=" << boolText(state.oggVorbisChainedOrAmbiguous)
+        << " skipStart=" << state.skipSamplesStart
+        << " skipEnd=" << state.skipSamplesEnd
+        << " decisionFrames=" << state.decodedSampleFrames
+        << " decisionKind=" << state.decodedSampleFramesKind
+        << " decisionTrust=" << state.decodedSampleFramesTrust
+        << " decisionSource=" << state.decodedSampleFramesSource
+        << " decisionReason=" << state.frameCountPolicyReason;
+    std::cout << out.str() << '\n';
 }
 
 }  // namespace AveMediaBridge::Probe
