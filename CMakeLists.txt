@@ -137,3 +137,29 @@ add_test(
     NAME AveMediaBridgePcmExtentAuditSelfTest
     COMMAND $<TARGET_FILE:AveMediaBridgePcmExtentAudit> --self-test
 )
+
+add_executable(AveMediaBridgeFrameCountPolicyTest
+    app/FrameCountPolicyTest.cpp
+    src/Core/MediaBridgeError.cpp
+    src/Probe/FrameCountPolicy.cpp
+    src/Probe/PacketScan.cpp
+)
+
+target_include_directories(AveMediaBridgeFrameCountPolicyTest
+    PRIVATE
+        "${AVEMEDIABRIDGE_ROOT}/include"
+        "${AVEMEDIABRIDGE_ROOT}/src"
+        "${FFMPEG_INCLUDE_DIR}"
+)
+
+target_link_libraries(AveMediaBridgeFrameCountPolicyTest
+    PRIVATE
+        "${FFMPEG_LIB_DIR}/avformat.lib"
+        "${FFMPEG_LIB_DIR}/avcodec.lib"
+        "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+
+add_test(
+    NAME AveMediaBridgeFrameCountPolicyTest
+    COMMAND $<TARGET_FILE:AveMediaBridgeFrameCountPolicyTest>
+)

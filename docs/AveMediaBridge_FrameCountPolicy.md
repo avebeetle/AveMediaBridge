@@ -85,6 +85,44 @@ Raw ADTS AAC duration can be bitrate-estimated and badly wrong. For format `aac`
 
 AAC packet frame-size fallback uses 1024 samples because that is the codec frame size, not a sample-rate assumption.
 
+### Ogg/Vorbis
+
+Ogg/Vorbis may expose an exact decoded PCM extent before full decode when the
+selected Vorbis logical stream has coherent container evidence:
+
+- selected codec is Vorbis;
+- demuxer/container is Ogg-family;
+- selected stream duration converts exactly to sample frames;
+- one Vorbis BOS stream can be identified;
+- the same Vorbis logical stream has an EOS granule;
+- EOS granule equals the stream-duration frame count;
+- no scan truncation, chain ambiguity, sequence/granule discontinuity, packet
+  terminal mismatch, or unaccounted skip/discard samples is present.
+
+When this evidence is present:
+
+```text
+decodedSampleFramesKind = exact
+decodedSampleFramesTrust = authoritative
+decodedSampleFramesSource = ogg_vorbis_eos_granule
+frameCountPolicyReason = ogg_vorbis_exact_extent_proven
+```
+
+AveMediaBridge does not round this value to a 1024-frame grid and does not add
+synthetic tail samples. Consumers such as AveVoice should preserve the exact
+authoritative count and reserve their existing 1024-frame provisional alignment
+for unsafe estimates.
+
+Rejection rules:
+
+- chained Ogg remains `unsafe_estimated` unless a future policy proves the sum
+  of logical Vorbis streams safely;
+- missing EOS, truncated scans, EOS/stream mismatches, packet-terminal
+  conflicts, and ambiguous selected-audio evidence remain provisional;
+- OGV with one provable selected Vorbis logical stream may be exact even when a
+  separate video serial is present;
+- Matroska/WebM Vorbis is not covered by this Ogg-specific policy.
+
 ### Opus
 
 For Opus in Ogg/OGA/WebM/Matroska/MKA/WEBA:
@@ -169,4 +207,3 @@ When extracting this policy into `src/Probe/FrameCountPolicy.hpp/.cpp`, keep the
 - final `decodedSampleFrames*` fields.
 
 Regression comparison should include every JSON field listed above for representative short and long files. A refactor is not complete if the values change without an intentional behavior-change stage.
-

@@ -386,13 +386,100 @@ No AveVoice files were changed during this audit.
 - The `640` frames are not codec padding, skip/discard, granule trim, rounding,
   resampler behavior, or writer error.
 
+## Product resolution
+
+The product fix promotes only proven Ogg/Vorbis extents from provisional to
+exact authority. The implemented seam is:
+
+```text
+src/Probe/PacketScan.cpp
+src/Probe/FrameCountPolicy.cpp
+src/Probe/MediaProbeService.cpp
+```
+
+The probe path now performs a read-only Ogg terminal-evidence scan for selected
+Ogg/Vorbis streams. It identifies the Vorbis logical stream from its BOS
+identification packet and accepts the EOS granule only when it belongs to that
+stream. Exact promotion requires:
+
+```text
+streamDurationFrames == decodedSampleFrames
+selectedAudioEosGranule == decodedSampleFrames
+skipSamplesStart == 0
+skipSamplesEnd == 0
+no truncation
+no selected-audio ambiguity
+no sequence/granule discontinuity
+no conflicting packet terminal evidence
+```
+
+For the target file the fixed probe result is:
+
+```text
+decodedSampleFrames = 105840000
+decodedSampleFramesKind = exact
+decodedSampleFramesTrust = authoritative
+decodedSampleFramesSource = ogg_vorbis_eos_granule
+frameCountPolicyReason = ogg_vorbis_exact_extent_proven
+```
+
+The full import result remains:
+
+```text
+decoder frames = 105840000
+resampler frames = 105840000
+writer frames = 105840000
+probe-to-final delta = 0
+```
+
+The 40-minute corpus probe comparison intentionally changed only:
+
+```text
+06_ogg_vorbis_stereo_44100.ogg
+25_oga_vorbis_stereo_44100.oga
+60_ogv_theora_vorbis_stereo_44100.ogv
+```
+
+Each moved from `estimated/unsafe_estimated/stream_duration_estimate` to
+`exact/authoritative/ogg_vorbis_eos_granule`. FLAC, M4A AAC, Matroska Vorbis,
+WebM Vorbis, Ogg Opus, and the existing packet-derived AAC/Opus policies stayed
+unchanged.
+
+Malformed controls stayed provisional:
+
+```text
+truncated Ogg -> unsafe_estimated
+missing EOS -> unsafe_estimated
+chained Ogg -> unsafe_estimated
+```
+
+The measured 5-run median probe times for the three promoted files stayed near
+the previous baseline:
+
+```text
+06 OGG before/after median: 1026.282 ms / 1020.880 ms
+25 OGA before/after median: 1027.331 ms / 1021.029 ms
+60 OGV before/after median: 1016.455 ms / 1021.813 ms
+```
+
+No full decode was added to probe. Decoder, resampler, writer, session
+artifacts, public C ABI, and JSON field names were not changed.
+
+AveVoice source was not changed. Its existing
+`readProgressiveViewportProbeEstimate` logic already preserves exact
+authoritative counts and applies the 1024-frame grid only to provisional
+estimates. With the fixed Ogg probe, AveVoice receives `105840000` as exact and
+does not create the artificial `[105840000, 105840640)` tail. The M4A AAC
+negative control remains `unsafe_estimated`, so the consumer provisional policy
+is still active for unsafe formats.
+
 ## 21. What remains unproved
 
-- A product fix was intentionally not implemented.
-- The audit does not yet prove a safe authoritative policy for every possible
-  Ogg/Vorbis edge case such as chained streams, missing EOS, truncated files, or
-  non-zero initial granules.
+- A general exact policy for every possible chained Ogg/Vorbis file is not
+  implemented.
+- Non-zero Ogg/Vorbis skip/discard cases remain provisional until their
+  container and decoder semantics are proven in fixtures.
 - The cross-format controls are representative local fixtures, not an exhaustive
   corpus certification.
-- A future policy change must add regression coverage before promoting
-  Ogg/Vorbis probe evidence to authoritative.
+- The owner still needs final visual confirmation in AveVoice before integrating
+  the product branch into `main`.
