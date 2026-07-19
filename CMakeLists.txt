@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+enable_testing()
+
 get_filename_component(AVEMEDIABRIDGE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
 get_filename_component(FFMPEG_ROOT "${AVEMEDIABRIDGE_ROOT}/ffmpeg" ABSOLUTE)
 get_filename_component(FFMPEG_INCLUDE_DIR "${FFMPEG_ROOT}/include" ABSOLUTE)
@@ -41,6 +43,7 @@ add_library(AveMediaBridgeCore STATIC
     src/Core/AudioStats.cpp
     src/Core/MediaBridgeError.cpp
     src/Decode/AudioDecodeHelpers.cpp
+    src/Decode/AudioPresentationSlice.cpp
     src/Decode/PcmFormat.cpp
     src/Export/FfmpegWavAudioExporter.cpp
     src/Import/FfmpegAudioImporter.cpp
@@ -100,3 +103,19 @@ add_custom_command(TARGET AveMediaBridgeLabApp POST_BUILD
 )
 
 copy_ffmpeg_runtime_dlls(AveMediaBridgeLabApp)
+
+add_executable(AveMediaBridgeAudioPresentationSliceTests
+    tests/AudioPresentationSliceTests.cpp
+)
+
+target_link_libraries(AveMediaBridgeAudioPresentationSliceTests PRIVATE AveMediaBridgeCore)
+target_include_directories(AveMediaBridgeAudioPresentationSliceTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeAudioPresentationSliceTests)
+
+add_test(
+    NAME AveMediaBridgeTests.audio_presentation_slice
+    COMMAND AveMediaBridgeAudioPresentationSliceTests
+)

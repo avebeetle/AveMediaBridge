@@ -4,10 +4,12 @@
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
 #include "../Core/MediaBridgeError.hpp"
 #include "../Decode/AudioDecodeHelpers.hpp"
+#include "../Decode/AudioPresentationSlice.hpp"
 #include "../Decode/PcmFormat.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/MediaProbeService.hpp"
+#include "../Probe/PacketScan.hpp"
 #include "../Utils/JsonUtils.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -29,6 +31,7 @@
 namespace {
 
 namespace ClipDiag = AveMediaBridge::Diagnostics;
+namespace Decode = AveMediaBridge::Decode;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
 using AveMediaBridge::ffErrorString;
@@ -38,6 +41,8 @@ constexpr const wchar_t* kVersionString = L"AveMediaBridge 0.1.0 API v1";
 constexpr std::int64_t kImportProgressFrameInterval = 16 * 1024;
 constexpr std::uint32_t kDraftWaveformFramesPerBin = 128;
 constexpr std::uint32_t kDraftWaveformMaxBinsPerChunk = 64;
+constexpr std::int64_t kPresentationBudgetScanProbeSizeBytes = 4 * 1024 * 1024;
+constexpr std::int64_t kPresentationBudgetScanAnalyzeDurationUs = 3 * AV_TIME_BASE;
 constexpr const wchar_t* kFullScaleClipDiagEnvVar = L"AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG";
 constexpr const char* kFullScaleClipDiagLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_DIAG]";
 constexpr const char* kFullScaleClipResultLogPrefix = "[AVEMEDIABRIDGE_FULL_SCALE_CLIP_RESULT]";
@@ -64,6 +69,8 @@ struct StreamingImportResult {
     bool diskPreflightEstimateKnown = false;
     std::uintmax_t diskPreflightAvailableBytes = 0;
     bool canceled = false;
+    bool presentationBudgetKnown = false;
+    std::uint64_t presentationBudgetFrames = 0;
 };
 
 struct StreamingStatsAccumulator {
@@ -450,6 +457,89 @@ bool estimateDecodedBytesForPreflight(
         estimatedFrames,
         estimatedBytes,
         estimateKind);
+}
+
+std::int64_t exactFramesFromTimeBaseUnits(
+    std::int64_t units,
+    AVRational timeBase,
+    int sampleRate) {
+    if (units <= 0 ||
+        timeBase.num <= 0 ||
+        timeBase.den <= 0 ||
+        sampleRate <= 0) {
+        return 0;
+    }
+
+    const AVRational sampleTimeBase{1, sampleRate};
+    const std::int64_t candidateFrames =
+        av_rescale_q(units, timeBase, sampleTimeBase);
+    if (candidateFrames <= 0) {
+        return 0;
+    }
+    return av_compare_ts(units, timeBase, candidateFrames, sampleTimeBase) == 0
+        ? candidateFrames
+        : 0;
+}
+
+void resolveStreamingPresentationBudget(
+    StreamingImportResult& result,
+    const std::string& path,
+    const AVStream* audioStream) {
+    if (path.empty() || !audioStream || !audioStream->codecpar) {
+        return;
+    }
+
+    const AVCodecParameters* codecpar = audioStream->codecpar;
+    const int sampleRate = codecpar->sample_rate;
+    const std::int64_t streamDurationFrames =
+        exactFramesFromTimeBaseUnits(audioStream->duration, audioStream->time_base, sampleRate);
+    if (streamDurationFrames <= 0) {
+        return;
+    }
+
+    const Probe::PacketScanOptions scanOptions{
+        kPresentationBudgetScanProbeSizeBytes,
+        kPresentationBudgetScanAnalyzeDurationUs
+    };
+    const int audioStreamIndex = static_cast<int>(audioStream->index);
+    const Probe::PacketFrameCountScan packetScan =
+        Probe::scanPacketFrameCountCandidates(
+            path,
+            audioStreamIndex,
+            sampleRate,
+            codecpar->codec_id,
+            scanOptions);
+    const Probe::GaplessSkipSampleScan gaplessScan =
+        Probe::scanGaplessSkipSampleSideData(path, audioStreamIndex, scanOptions);
+
+    if (!packetScan.warning.empty() ||
+        !gaplessScan.warning.empty() ||
+        packetScan.audioPacketCount <= 0 ||
+        packetScan.packetsWithDuration != packetScan.audioPacketCount ||
+        packetScan.packetDurationSumFrames <= 0) {
+        return;
+    }
+
+    std::int64_t packetPresentationFrames = packetScan.packetDurationSumFrames;
+    if (gaplessScan.skipSamplesStart > 0) {
+        if (packetPresentationFrames <= gaplessScan.skipSamplesStart) {
+            return;
+        }
+        packetPresentationFrames -= gaplessScan.skipSamplesStart;
+    }
+    if (gaplessScan.skipSamplesEnd > 0) {
+        if (packetPresentationFrames <= gaplessScan.skipSamplesEnd) {
+            return;
+        }
+        packetPresentationFrames -= gaplessScan.skipSamplesEnd;
+    }
+
+    if (packetPresentationFrames != streamDurationFrames) {
+        return;
+    }
+
+    result.presentationBudgetKnown = true;
+    result.presentationBudgetFrames = static_cast<std::uint64_t>(streamDurationFrames);
 }
 
 std::uint64_t nonNegativeToUint64(std::int64_t value) {
@@ -848,7 +938,34 @@ int writeConvertedStreamingSamples(
     }
     analyzePreSwrFrame(diagnostic, frame, decoder);
 
-    const int outCapacity = swr_get_out_samples(swr.ctx, frame->nb_samples);
+    Decode::DecodedAudioPresentationInput presentationInput;
+    presentationInput.frameNbSamples = frame->nb_samples;
+    presentationInput.inputSampleRate = swr.sampleRate;
+    if (result.presentationBudgetKnown) {
+        const std::uint64_t writtenFrames = nonNegativeToUint64(result.framesWritten);
+        const std::uint64_t remainingFrames =
+            result.presentationBudgetFrames > writtenFrames
+                ? result.presentationBudgetFrames - writtenFrames
+                : 0;
+        presentationInput.remainingPresentationFramesKnown = true;
+        presentationInput.remainingPresentationFrames = remainingFrames;
+        const bool terminalBudgetFrame =
+            remainingFrames < static_cast<std::uint64_t>((std::max)(0, frame->nb_samples));
+        if (terminalBudgetFrame) {
+            presentationInput.frameDurationKnown = frame->duration > 0;
+            presentationInput.frameDuration = frame->duration;
+            presentationInput.frameDurationTimeBase =
+                Decode::resolveDecodedFrameDurationTimeBase(frame, decoder);
+        }
+    }
+    const Decode::DecodedAudioPresentationPlan presentationPlan =
+        Decode::resolvePresentedInputSamples(presentationInput);
+    const int inputSamples = presentationPlan.acceptedInputSamples;
+    if (inputSamples <= 0) {
+        return 0;
+    }
+
+    const int outCapacity = swr_get_out_samples(swr.ctx, inputSamples);
     if (outCapacity < 0) {
         result.error = "swr_get_out_samples failed: " + ffErrorString(outCapacity);
         return outCapacity;
@@ -866,7 +983,9 @@ int writeConvertedStreamingSamples(
     uint8_t* outData[] = { reinterpret_cast<uint8_t*>(swr.outputBuffer.data()) };
     const uint8_t* const* inData = const_cast<const uint8_t* const*>(frame->extended_data);
 
-    ret = swr_convert(swr.ctx, outData, outCapacity, inData, frame->nb_samples);
+    // Trim codec padding before swresample so it never enters filter state,
+    // committed PCM, waveform chunks, or final frame authority.
+    ret = swr_convert(swr.ctx, outData, outCapacity, inData, inputSamples);
     if (ret < 0) {
         result.error = "swr_convert failed: " + ffErrorString(ret);
         return ret;
@@ -1125,6 +1244,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             result.preflightEstimatedFrames,
             result.preflightEstimatedBytes,
             result.preflightEstimateKind);
+    resolveStreamingPresentationBudget(result, path, audioStream);
 
     std::string preflightError;
     if (!checkDiskPreflight(sessionDir, result, preflightError)) {
@@ -1152,6 +1272,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         cleanup();
         return result;
     }
+    decoderContext->pkt_timebase = audioStream->time_base;
 
     if (decoderContext->ch_layout.nb_channels <= 0 && codecpar->ch_layout.nb_channels > 0) {
         av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
