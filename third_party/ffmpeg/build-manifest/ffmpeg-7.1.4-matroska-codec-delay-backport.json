@@ -1,0 +1,100 @@
+{
+  "dependency": "FFmpeg",
+  "baseVersion": "7.1.4",
+  "baseSource": "https://ffmpeg.org/releases/ffmpeg-7.1.4.tar.xz",
+  "baseSourceSha256": "71F4AAC3573ED9060489CB62526A6C7DDA815AE10993789611ACD7BE9FA9FBF4",
+  "baseSignatureVerified": true,
+  "backportCommit": "0880458e4c27337718ca836e1193803a089fc690",
+  "backportSubject": "avformat/matroskadec: take into account priming samples in audio tracks",
+  "patch": "../patches/0880458e4c-matroska-codec-delay-skip.patch",
+  "patchSha256": "B5130FC2814CB3E04B2EF4331B687C2EB6C832A288749F479936082955995A80",
+  "patchLineCount": 130,
+  "patchAppliedCleanly": true,
+  "patchApplication": "git apply --no-index --include=libavformat/matroskadec.c",
+  "bootstrapValidatedFromCleanReleaseArchive": true,
+  "patchedFiles": [
+    "libavformat/matroskadec.c"
+  ],
+  "patchedFunctions": [
+    "mka_parse_audio"
+  ],
+  "semanticSummary": "Propagate parsed Matroska CodecDelay initial padding to the demuxer's skip-sample state.",
+  "build": {
+    "toolchain": "MSVC via FFmpeg configure under MSYS2",
+    "compiler": "Microsoft C/C++ 19.30.30709 x64",
+    "architecture": "x86_64",
+    "targetOs": "win64",
+    "buildType": "Release optimized shared libraries",
+    "shared": true,
+    "static": false,
+    "license": "LGPL-2.1-or-later",
+    "buildStartUtc": "2026-07-20T13:42:34Z",
+    "buildEndUtc": "2026-07-20T13:45:46Z",
+    "sourceDirectory": "D:/rvc/c++/DragonianVoice/ffmpeglab/versions/ffmpeg-7.1.4-matroska-codec-delay-backport",
+    "buildDirectory": "D:/rvc/c++/DragonianVoice/ffmpeglab/builds/ffmpeg-7.1.4-matroska-codec-delay-backport",
+    "installDirectory": "D:/rvc/c++/DragonianVoice/ffmpeglab/install/profile_b_ffmpeg_7_1_4_matroska_codec_delay_backport",
+    "configureCommand": "./configure --toolchain=msvc --arch=x86_64 --target-os=win64 --prefix=<install-prefix> --enable-shared --disable-static --disable-everything --disable-doc --disable-programs --disable-network --disable-avdevice --disable-avfilter --disable-swscale --disable-hwaccels --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-protocol=file --enable-demuxer=wav --enable-demuxer=mp3 --enable-demuxer=mov --enable-demuxer=matroska --enable-demuxer=nut --enable-demuxer=flac --enable-demuxer=ogg --enable-demuxer=aac --enable-demuxer=avi --enable-demuxer=aiff --enable-demuxer=au --enable-demuxer=w64 --enable-demuxer=caf --enable-demuxer=mpegts --enable-demuxer=mpegps --enable-demuxer=ac3 --enable-demuxer=eac3 --enable-demuxer=asf --enable-demuxer=flv --enable-muxer=wav --enable-decoder=pcm_s16le --enable-decoder=pcm_s24le --enable-decoder=pcm_s32le --enable-decoder=pcm_f32le --enable-decoder=pcm_f64le --enable-decoder=pcm_u8 --enable-decoder=pcm_s16be --enable-decoder=pcm_mulaw --enable-decoder=pcm_alaw --enable-decoder=mp3 --enable-decoder=mp3float --enable-decoder=aac --enable-decoder=flac --enable-decoder=vorbis --enable-decoder=opus --enable-decoder=alac --enable-decoder=mp2 --enable-decoder=ac3 --enable-decoder=eac3 --enable-decoder=wmav1 --enable-decoder=wmav2 --enable-encoder=pcm_s16le --enable-parser=aac --enable-parser=mpegaudio --enable-parser=vorbis --enable-parser=opus --enable-parser=h264 --enable-parser=mpegvideo --enable-parser=ac3"
+  },
+  "publicApi": {
+    "avVersionInfo": "7.1.4",
+    "avcodecVersion": "61.19.101",
+    "avformatVersion": "61.7.102",
+    "avutilVersion": "59.39.100",
+    "swresampleVersion": "5.3.100",
+    "configurationMatchesAcrossAvcodecAvformatAvutil": true
+  },
+  "runtimeDlls": [
+    {
+      "name": "avcodec-61.dll",
+      "bytes": 2540544,
+      "sha256": "C76771B21C31F491292A2BAAE6BB1A81F9FE483EBAA836377AB531AF07C87BD3",
+      "fileVersion": "61.19.101",
+      "productVersion": "7.1.4",
+      "peArchitecture": "x86-64"
+    },
+    {
+      "name": "avformat-61.dll",
+      "bytes": 1719296,
+      "sha256": "4925E4FFE0A64BB25AB107EA0E3041877C72EC4E30F122D7EF0A44565E71FEB3",
+      "fileVersion": "61.7.102",
+      "productVersion": "7.1.4",
+      "peArchitecture": "x86-64"
+    },
+    {
+      "name": "avutil-59.dll",
+      "bytes": 2172928,
+      "sha256": "4E55482133B2DE60A960135642AEA16A9F90B7CFC412B2232E20003515B691C3",
+      "fileVersion": "59.39.100",
+      "productVersion": "7.1.4",
+      "peArchitecture": "x86-64"
+    },
+    {
+      "name": "swresample-5.dll",
+      "bytes": 797696,
+      "sha256": "7E2E2E9701699381A0A07867E85F97A15DE535C52D64EA0B894FF157106A0501",
+      "fileVersion": "5.3.100",
+      "productVersion": "7.1.4",
+      "peArchitecture": "x86-64"
+    }
+  ],
+  "importLibraries": [
+    {
+      "name": "avcodec.lib",
+      "sha256": "73D5F90CA7D79467D81621491547B026C96D0DD8B4B4F453D517836F390615CA"
+    },
+    {
+      "name": "avformat.lib",
+      "sha256": "F1F6C5F172B7925DBB1E8EA3738EA79B64337AA53065D0E3C07222C685A09395"
+    },
+    {
+      "name": "avutil.lib",
+      "sha256": "F66E1ADE257D5217FB3E3CA2013A754569D8AB09DA39A0B99E9F644FAAE46B9C"
+    },
+    {
+      "name": "swresample.lib",
+      "sha256": "5349D4E0E3AB9CC5E3582CA1DC8F6D9923FEF2EED0F0CFF17C461D0BFF2AF2D4"
+    }
+  ],
+  "licenseFile": "../licenses/COPYING.LGPLv2.1",
+  "licenseFileSha256": "246041B6ECF9BC32D718A62C57877C78B5EB397B6467E74ED7AE2626AB189C30"
+}

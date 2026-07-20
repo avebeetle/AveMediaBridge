@@ -9,7 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 enable_testing()
 
 get_filename_component(AVEMEDIABRIDGE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
-get_filename_component(FFMPEG_ROOT "${AVEMEDIABRIDGE_ROOT}/ffmpeg" ABSOLUTE)
+set(AVEMEDIABRIDGE_FFMPEG_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/ffmpeg"
+    CACHE PATH
+    "FFmpeg headers, import libraries, and runtime DLL root")
+get_filename_component(FFMPEG_ROOT "${AVEMEDIABRIDGE_FFMPEG_ROOT}" ABSOLUTE)
 get_filename_component(FFMPEG_INCLUDE_DIR "${FFMPEG_ROOT}/include" ABSOLUTE)
 get_filename_component(FFMPEG_LIB_DIR "${FFMPEG_ROOT}/lib" ABSOLUTE)
 get_filename_component(FFMPEG_BIN_DIR "${FFMPEG_ROOT}/bin" ABSOLUTE)
@@ -136,3 +140,51 @@ add_test(
     NAME AveMediaBridgeTests.audio_presentation_evidence_scan
     COMMAND AveMediaBridgeAudioPresentationEvidenceScanTests
 )
+
+set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/10_mkv_h264_aac_stereo_48000.mkv"
+    CACHE FILEPATH
+    "External Matroska/AAC CodecDelay regression media")
+set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MASTER
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/_source/speech_40min_master_48000_stereo_f32.wav"
+    CACHE FILEPATH
+    "External exact PCM master for the Matroska CodecDelay regression")
+set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_FRAMES
+    115200000
+    CACHE STRING
+    "Expected decoded presentation frames for the CodecDelay regression media")
+set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_SKIP
+    1024
+    CACHE STRING
+    "Expected initial skip frames for the CodecDelay regression media")
+
+add_executable(AveMediaBridgeMatroskaCodecDelaySkipTests
+    tests/MatroskaCodecDelaySkipTests.cpp
+    src/Probe/PacketScan.cpp
+)
+
+target_link_libraries(AveMediaBridgeMatroskaCodecDelaySkipTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+    "${FFMPEG_LIB_DIR}/swresample.lib"
+)
+target_include_directories(AveMediaBridgeMatroskaCodecDelaySkipTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMatroskaCodecDelaySkipTests)
+
+add_test(
+    NAME AveMediaBridgeTests.matroska_codec_delay_skip
+    COMMAND AveMediaBridgeMatroskaCodecDelaySkipTests
+        "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MASTER}"
+        "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_FRAMES}"
+        "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_SKIP}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.matroska_codec_delay_skip
+    PROPERTIES SKIP_RETURN_CODE 77)
