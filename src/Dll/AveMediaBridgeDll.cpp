@@ -502,15 +502,17 @@ void resolveStreamingPresentationBudget(
         kPresentationBudgetScanAnalyzeDurationUs
     };
     const int audioStreamIndex = static_cast<int>(audioStream->index);
-    const Probe::PacketFrameCountScan packetScan =
-        Probe::scanPacketFrameCountCandidates(
+    // Resolve both presentation evidence components in one pre-decode pass
+    // without changing the existing budget acceptance rules.
+    const Probe::AudioPresentationEvidenceScan evidence =
+        Probe::scanAudioPresentationEvidence(
             path,
             audioStreamIndex,
             sampleRate,
             codecpar->codec_id,
             scanOptions);
-    const Probe::GaplessSkipSampleScan gaplessScan =
-        Probe::scanGaplessSkipSampleSideData(path, audioStreamIndex, scanOptions);
+    const Probe::PacketFrameCountScan& packetScan = evidence.packetTiming;
+    const Probe::GaplessSkipSampleScan& gaplessScan = evidence.gapless;
 
     if (!packetScan.warning.empty() ||
         !gaplessScan.warning.empty() ||

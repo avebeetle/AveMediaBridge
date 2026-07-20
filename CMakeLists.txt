@@ -119,3 +119,20 @@ add_test(
     NAME AveMediaBridgeTests.audio_presentation_slice
     COMMAND AveMediaBridgeAudioPresentationSliceTests
 )
+
+add_executable(AveMediaBridgeAudioPresentationEvidenceScanTests
+    tests/AudioPresentationEvidenceScanTests.cpp
+    src/Probe/PacketScan.cpp
+)
+
+target_link_libraries(AveMediaBridgeAudioPresentationEvidenceScanTests PRIVATE AveMediaBridgeCore)
+target_include_directories(AveMediaBridgeAudioPresentationEvidenceScanTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeAudioPresentationEvidenceScanTests)
+
+add_test(
+    NAME AveMediaBridgeTests.audio_presentation_evidence_scan
+    COMMAND AveMediaBridgeAudioPresentationEvidenceScanTests
+)

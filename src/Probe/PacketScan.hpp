@@ -2,6 +2,7 @@
 
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -44,8 +45,65 @@ struct PacketFrameCountScan {
     std::string warning;
 };
 
+struct AudioPresentationEvidenceScan {
+    PacketFrameCountScan packetTiming;
+    GaplessSkipSampleScan gapless;
+};
+
+struct PacketFrameCountObservation {
+    bool selectedAudio = false;
+    std::int64_t pts = AV_NOPTS_VALUE;
+    std::int64_t dts = AV_NOPTS_VALUE;
+    std::int64_t duration = 0;
+};
+
+class PacketFrameCountAccumulator {
+public:
+    PacketFrameCountAccumulator(int sampleRate, AVCodecID codecId, AVRational timeBase);
+
+    void observe(const PacketFrameCountObservation& packet);
+    PacketFrameCountScan finalize(std::string warning = {}) const;
+
+private:
+    int sampleRate_ = 0;
+    AVCodecID codecId_ = AV_CODEC_ID_NONE;
+    AVRational timeBase_{0, 1};
+    PacketFrameCountScan result_;
+    long double packetDurationFrames_ = 0.0L;
+    std::int64_t previousPacketPts_ = AV_NOPTS_VALUE;
+};
+
+struct GaplessSkipObservation {
+    bool selectedAudio = false;
+    const std::uint8_t* sideData = nullptr;
+    std::size_t sideDataSize = 0;
+};
+
+class GaplessSkipAccumulator {
+public:
+    GaplessSkipAccumulator(
+        std::int64_t streamInitialPadding,
+        std::int64_t streamTrailingPadding);
+
+    void observe(const GaplessSkipObservation& packet);
+    GaplessSkipSampleScan finalize(std::string warning = {}) const;
+
+private:
+    std::int64_t streamInitialPadding_ = 0;
+    std::int64_t streamTrailingPadding_ = 0;
+    GaplessSkipSampleScan result_;
+};
+
 std::int64_t mp3SamplesPerFrameForSampleRate(int sampleRate);
 std::int64_t wmav2SamplesPerFrameForSampleRate(int sampleRate);
+std::int64_t saturatingAddSkipSamples(std::int64_t current, std::uint32_t add);
+
+AudioPresentationEvidenceScan scanAudioPresentationEvidence(
+    const std::string& path,
+    int audioStreamIndex,
+    int sampleRate,
+    AVCodecID codecId,
+    PacketScanOptions options);
 
 GaplessSkipSampleScan scanGaplessSkipSampleSideData(
     const std::string& path,
