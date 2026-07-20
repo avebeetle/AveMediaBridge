@@ -46,6 +46,19 @@ Unsafe estimates may still be useful for progress UI or provisional Loading layo
 
 Coverage is always driven by real decoded chunks. The policy never creates fake silence, fake samples, or artificial right-tail audio.
 
+## Exact Packet Presentation Evidence
+
+A complete shared demux traversal may establish a stronger initial authority than rounded container duration metadata when all of the following are known in one sample domain:
+
+- every selected packet contributes a known codec-frame sample count;
+- packet and gapless accumulators both reach EOF without warnings;
+- initial skip and terminal discard come from FFmpeg/container gapless evidence;
+- checked subtraction leaves a positive presentation frame count.
+
+The resulting `exact_packet_presentation` count is the physical codec-frame sum minus authoritative leading skip and terminal discard. Raw duration-derived frames remain in `decodedSampleFramesBeforeCorrection` for provenance. Incomplete scans, unknown zero padding, conflicting evidence, and arithmetic boundary failures remain provisional.
+
+Packet timing and gapless metadata continue to use independent accumulators fed by one physical reader loop. The exact count controls the initial Loading presentation extent; codec skip is still applied only by FFmpeg during decode.
+
 ## Current Codec And Container Rules
 
 ### MP3
@@ -169,4 +182,3 @@ When extracting this policy into `src/Probe/FrameCountPolicy.hpp/.cpp`, keep the
 - final `decodedSampleFrames*` fields.
 
 Regression comparison should include every JSON field listed above for representative short and long files. A refactor is not complete if the values change without an intentional behavior-change stage.
-

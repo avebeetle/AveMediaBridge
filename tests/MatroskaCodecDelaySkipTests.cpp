@@ -1,5 +1,6 @@
 #include "include/AveMediaBridge/AveMediaBridgeApi.hpp"
 #include "src/Ffmpeg/FfmpegDeleters.hpp"
+#include "src/Probe/FrameCountPolicy.hpp"
 #include "src/Probe/PacketScan.hpp"
 
 #include <algorithm>
@@ -140,6 +141,24 @@ std::optional<double> jsonNumber(const std::string& json, const std::string& key
     }
 }
 
+std::optional<std::string> jsonString(const std::string& json, const std::string& key) {
+    const std::string token = "\"" + key + "\"";
+    const std::size_t keyAt = json.find(token);
+    if (keyAt == std::string::npos) {
+        return std::nullopt;
+    }
+    const std::size_t colon = json.find(':', keyAt + token.size());
+    const std::size_t quote = json.find('"', colon == std::string::npos ? keyAt : colon + 1);
+    if (colon == std::string::npos || quote == std::string::npos) {
+        return std::nullopt;
+    }
+    const std::size_t end = json.find('"', quote + 1);
+    if (end == std::string::npos) {
+        return std::nullopt;
+    }
+    return json.substr(quote + 1, end - quote - 1);
+}
+
 std::vector<float> readFloatFrames(
     const std::filesystem::path& path,
     std::uint64_t dataOffset,
@@ -206,11 +225,28 @@ bool expect(bool condition, const std::string& message) {
     return condition;
 }
 
+struct ProgressCapture {
+    std::uint64_t firstEstimatedTotalFrames = 0;
+};
+
+void AVEMEDIABRIDGE_CALL captureProgress(
+    const AveMediaBridgeImportProgress* progress,
+    void* userData) {
+    if (!progress || !userData) {
+        return;
+    }
+    auto& capture = *static_cast<ProgressCapture*>(userData);
+    if (capture.firstEstimatedTotalFrames == 0 && progress->estimatedTotalFrames > 0) {
+        capture.firstEstimatedTotalFrames = progress->estimatedTotalFrames;
+    }
+}
+
 int run(
     const std::filesystem::path& mediaPath,
     const std::filesystem::path& masterPath,
     std::uint64_t expectedFrames,
-    std::int64_t expectedSkip) {
+    std::int64_t expectedSkip,
+    std::uint64_t expectedRawProbeFrames) {
     AVFormatContext* rawFormat = nullptr;
     const std::string mediaUtf8 = mediaPath.u8string();
     int result = avformat_open_input(&rawFormat, mediaUtf8.c_str(), nullptr, nullptr);
@@ -252,11 +288,62 @@ int run(
         evidence.packetTiming.aacFrameCountCandidateFrames ==
             static_cast<std::int64_t>(expectedFrames) + expectedSkip,
         "physical AAC block count changed");
+    ok &= expect(evidence.packetTiming.reachedEof, "packet timing scan did not reach EOF");
+    ok &= expect(evidence.gapless.reachedEof, "gapless scan did not reach EOF");
+    ok &= expect(evidence.packetTiming.codecFrameCountKnown, "physical codec-frame count is unknown");
+    ok &= expect(evidence.packetTiming.codecFrameCountExact, "physical codec-frame count is not exact");
+    ok &= expect(
+        evidence.packetTiming.codecFrameCountFrames ==
+            static_cast<std::int64_t>(expectedFrames) + expectedSkip,
+        "generic codec-frame sample count changed");
+
+    const Probe::ExactPacketPresentationEvidence exactEvidence =
+        Probe::makeExactPacketPresentationEvidence(evidence);
+    const Probe::ExactPacketPresentationBudget exactBudget =
+        Probe::resolveExactPacketPresentationBudget(exactEvidence);
+    ok &= expect(exactEvidence.initialSkipAuthoritative, "initial skip is not authoritative");
+    ok &= expect(exactEvidence.terminalDiscardKnown, "known zero terminal discard was lost");
+    ok &= expect(exactEvidence.terminalDiscardFrames == 0, "terminal discard changed");
+    ok &= expect(exactBudget.accepted, "exact packet presentation budget was rejected");
+    ok &= expect(
+        exactBudget.presentationFrames == static_cast<std::int64_t>(expectedFrames),
+        "exact packet presentation budget changed");
 
     ScopedTempDirectory temp;
     const std::filesystem::path mediaDir = temp.path() / L"Media";
-    result = AveMediaBridge_ImportAudioToSession(mediaPath.c_str(), mediaDir.c_str());
+    const std::filesystem::path probePath = temp.path() / L"probe.json";
+    result = AveMediaBridge_ProbeToJson(mediaPath.c_str(), probePath.c_str());
+    ok &= expect(result == 0, "AveMediaBridge probe failed");
+    const std::string probeJson = result == 0 ? readText(probePath) : std::string{};
+    const auto probeFrames = jsonNumber(probeJson, "decodedSampleFrames");
+    const auto rawProbeFrames = jsonNumber(probeJson, "decodedSampleFramesBeforeCorrection");
+    const auto probeDuration = jsonNumber(probeJson, "durationSec");
+    const auto probeKind = jsonString(probeJson, "decodedSampleFramesKind");
+    const auto probeTrust = jsonString(probeJson, "decodedSampleFramesTrust");
+    const auto probeSource = jsonString(probeJson, "decodedSampleFramesSource");
+    ok &= expect(probeFrames && *probeFrames == expectedFrames, "initial probe presentation frames mismatch");
+    ok &= expect(
+        rawProbeFrames && *rawProbeFrames == expectedRawProbeFrames,
+        "raw rounded container estimate was not preserved");
+    ok &= expect(probeDuration && *probeDuration == 2400.021, "container duration metadata changed");
+    ok &= expect(probeKind && *probeKind == "exact", "probe authority kind is not exact");
+    ok &= expect(probeTrust && *probeTrust == "authoritative", "probe authority trust changed");
+    ok &= expect(
+        probeSource && *probeSource == "exact_packet_presentation",
+        "probe authority source changed");
+
+    ProgressCapture progressCapture;
+    AveMediaBridgeImportOptions importOptions{};
+    importOptions.structSize = sizeof(importOptions);
+    importOptions.inputPath = mediaPath.c_str();
+    importOptions.sessionMediaDir = mediaDir.c_str();
+    importOptions.onProgress = captureProgress;
+    importOptions.userData = &progressCapture;
+    result = AveMediaBridge_ImportAudioToSessionEx(&importOptions);
     ok &= expect(result == 0, "AveMediaBridge import failed");
+    ok &= expect(
+        progressCapture.firstEstimatedTotalFrames == expectedRawProbeFrames,
+        "disk preflight estimate unexpectedly changed presentation authority");
     if (!ok) {
         return 1;
     }
@@ -314,6 +401,9 @@ int run(
     std::cout << "matroskaCodecDelayFrames=" << codecDelayFrames
               << " skipSamplesStart=" << evidence.gapless.skipSamplesStart
               << " physicalFrames=" << evidence.packetTiming.aacFrameCountCandidateFrames
+              << " rawProbeFrames=" << expectedRawProbeFrames
+              << " initialPresentationFrames=" << (probeFrames ? *probeFrames : 0)
+              << " firstImportProgressEstimateFrames=" << progressCapture.firstEstimatedTotalFrames
               << " decodedPresentationFrames=" << expectedFrames
               << " presentationDurationSec=" << presentationDuration
               << " alignedCorrelation=" << alignedCorrelation
@@ -321,6 +411,22 @@ int run(
               << " tailCorrelation=" << tailCorrelation
               << " tailRms=" << tailRms << "\n";
     if (ok) {
+        std::cout << "[AVEMEDIABRIDGE_LOADING_PRESENTATION_EVIDENCE_DIAG]"
+                  << " packetScanReachedEof=yes"
+                  << " packetFrameCountExact=yes"
+                  << " packetFrameCount=" << evidence.packetTiming.codecFrameCountFrames
+                  << " initialSkipAuthoritative=yes"
+                  << " initialSkipSamples=" << exactEvidence.initialSkipFrames
+                  << " terminalDiscardKnown=yes"
+                  << " terminalDiscardSamples=" << exactEvidence.terminalDiscardFrames
+                  << " candidatePresentationFrames=" << exactBudget.presentationFrames
+                  << " oldBudgetAccepted=no"
+                  << " oldBudgetRejectReason=stream_duration_not_sample_exact"
+                  << " oldInitialPresentationExtent=" << expectedRawProbeFrames
+                  << " firstLoadingPresentationFrames=" << (probeFrames ? *probeFrames : 0)
+                  << " firstImportProgressEstimateFrames=" << progressCapture.firstEstimatedTotalFrames
+                  << " readyAuthoritativeFrames=" << expectedFrames << "\n";
+        std::cout << "AVEMEDIABRIDGE_MATROSKA_LOADING_READY_PRESENTATION_PARITY_OK\n";
         std::cout << "AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_SKIP_OK\n";
         return 0;
     }
@@ -330,9 +436,9 @@ int run(
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 5) {
+    if (argc != 6) {
         std::cout << "AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_SKIP_SKIPPED: "
-                     "media, master, expected frames, and expected skip are required\n";
+                     "media, master, expected frames, expected skip, and raw probe frames are required\n";
         return 77;
     }
 
@@ -349,7 +455,8 @@ int main(int argc, char** argv) {
             mediaPath,
             masterPath,
             std::stoull(argv[3]),
-            std::stoll(argv[4]));
+            std::stoll(argv[4]),
+            std::stoull(argv[5]));
     } catch (const std::exception& error) {
         std::cerr << "matroskaCodecDelaySkipTest: exception=\"" << error.what() << "\"\n";
         return 1;

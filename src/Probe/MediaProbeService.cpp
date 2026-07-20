@@ -293,7 +293,8 @@ void applyFrameCountPolicyState(FastProbeJsonDocument& document, const FrameCoun
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
     const std::string& path,
-    const AVStream* audioStream) {
+    const AVStream* audioStream,
+    bool allowExactPacketPresentationScan) {
     const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
     if (!codecpar) {
         return;
@@ -305,28 +306,64 @@ void applyFastFrameCountPolicies(
         kFastProbeAnalyzeDurationUs
     };
 
-    GaplessSkipSampleScan gaplessScan;
-    if ((codecpar->codec_id == AV_CODEC_ID_MP3 || codecpar->codec_id == AV_CODEC_ID_OPUS) &&
-        result.document.decodedSampleFramesKind != "exact") {
-        gaplessScan = scanGaplessSkipSampleSideData(
-            path,
-            static_cast<int>(audioStream->index),
-            packetScanOptions);
-        if (codecpar->codec_id == AV_CODEC_ID_MP3) {
-            applyGaplessSkipSampleCorrection(policyState, gaplessScan);
-        } else {
-            recordGaplessSkipSampleScan(policyState, gaplessScan);
-        }
-    }
+    const bool legacyGaplessScanRequired =
+        (codecpar->codec_id == AV_CODEC_ID_MP3 || codecpar->codec_id == AV_CODEC_ID_OPUS) &&
+        result.document.decodedSampleFramesKind != "exact";
+    const bool exactPacketPresentationScanRequired =
+        allowExactPacketPresentationScan &&
+        result.document.decodedSampleFramesKind != "exact" &&
+        (codecpar->initial_padding > 0 || codecpar->trailing_padding > 0);
+    const bool packetScanRequired =
+        shouldScanPacketFrameCountCandidates(policyState) ||
+        exactPacketPresentationScanRequired;
+    const bool gaplessScanRequired =
+        legacyGaplessScanRequired ||
+        exactPacketPresentationScanRequired;
 
-    if (shouldScanPacketFrameCountCandidates(policyState)) {
-        const PacketFrameCountScan packetScan =
-            scanPacketFrameCountCandidates(
+    PacketFrameCountScan packetScan;
+    GaplessSkipSampleScan gaplessScan;
+    if (packetScanRequired && gaplessScanRequired) {
+        const AudioPresentationEvidenceScan evidence =
+            scanAudioPresentationEvidence(
                 path,
                 static_cast<int>(audioStream->index),
                 policyState.selectedAudio.sampleRate,
                 codecpar->codec_id,
                 packetScanOptions);
+        packetScan = evidence.packetTiming;
+        gaplessScan = evidence.gapless;
+    } else if (packetScanRequired) {
+        packetScan = scanPacketFrameCountCandidates(
+            path,
+            static_cast<int>(audioStream->index),
+            policyState.selectedAudio.sampleRate,
+            codecpar->codec_id,
+            packetScanOptions);
+    } else if (gaplessScanRequired) {
+        gaplessScan = scanGaplessSkipSampleSideData(
+            path,
+            static_cast<int>(audioStream->index),
+            packetScanOptions);
+    }
+
+    bool exactPacketPresentationApplied = false;
+    if (exactPacketPresentationScanRequired) {
+        exactPacketPresentationApplied = applyExactPacketPresentationBudget(
+            policyState,
+            AudioPresentationEvidenceScan{packetScan, gaplessScan});
+    }
+    if (!exactPacketPresentationApplied) {
+        if (legacyGaplessScanRequired) {
+            if (codecpar->codec_id == AV_CODEC_ID_MP3) {
+                applyGaplessSkipSampleCorrection(policyState, gaplessScan);
+            } else {
+                recordGaplessSkipSampleScan(policyState, gaplessScan);
+            }
+        } else if (exactPacketPresentationScanRequired) {
+            recordGaplessSkipSampleScan(policyState, gaplessScan);
+        }
+    }
+    if (packetScanRequired) {
         applyPacketFrameCountPolicies(policyState, packetScan);
     }
 
@@ -426,7 +463,7 @@ FastProbeResult runFastProbe(const std::string& path) {
     }
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
-    applyFastFrameCountPolicies(result, path, audioStream);
+    applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
     return result;
 }
@@ -449,7 +486,9 @@ bool estimateDecodedBytesForPreflight(
     fillFastSourceInfo(estimate, formatContext);
     fillFastSelectedAudio(estimate, audioStream, nullptr);
     estimateFastDurationAndFrames(estimate, formatContext, audioStream);
-    applyFastFrameCountPolicies(estimate, path, audioStream);
+    // Loading authority is resolved by runFastProbe; disk preflight must not
+    // repeat the full packet traversal only to refine its byte estimate.
+    applyFastFrameCountPolicies(estimate, path, audioStream, false);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
     estimatedFrames = estimate.document.decodedSampleFrames;
     estimatedBytes = estimate.document.estimatedDecodedBytes;

@@ -166,7 +166,7 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
     }
 
     const AVStream* audioStream = scanContext->streams[audioStreamIndex];
-    const AVCodecParameters* codecpar = audioStream->codecpar;
+    AVCodecParameters* codecpar = audioStream->codecpar;
     const std::int64_t streamInitialPadding =
         codecpar->initial_padding > 0
             ? static_cast<std::int64_t>(codecpar->initial_padding)
@@ -201,11 +201,17 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
     while ((ret = av_read_frame(scanContext.get(), packet.get())) >= 0) {
         const bool selectedAudio = packet->stream_index == audioStreamIndex;
         if (packetTiming) {
+            // Count physical codec samples independently of a container's
+            // possibly quantized packet presentation durations.
+            const int codecFrameSamples = selectedAudio
+                ? av_get_audio_frame_duration2(codecpar, packet->size)
+                : 0;
             packetTiming->observe(PacketFrameCountObservation{
                 selectedAudio,
                 packet->pts,
                 packet->dts,
-                packet->duration
+                packet->duration,
+                codecFrameSamples
             });
         }
         if (gapless) {
@@ -229,10 +235,17 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
     if (packetTiming) {
         result.packetTiming = packetTiming->finalize(
             readError.empty() ? std::string{} : "packet frame-count scan read failed: " + readError);
+        result.packetTiming.reachedEof = readError.empty();
+        result.packetTiming.readError = !readError.empty();
+        result.packetTiming.codecFrameCountExact =
+            result.packetTiming.reachedEof &&
+            result.packetTiming.codecFrameCountKnown;
     }
     if (gapless) {
         result.gapless = gapless->finalize(
             readError.empty() ? std::string{} : "gapless side-data scan read failed: " + readError);
+        result.gapless.reachedEof = readError.empty();
+        result.gapless.readError = !readError.empty();
     }
     return result;
 }
@@ -281,6 +294,16 @@ void PacketFrameCountAccumulator::observe(const PacketFrameCountObservation& pac
     }
 
     ++result_.audioPacketCount;
+    if (packet.codecFrameSamples > 0) {
+        ++result_.packetsWithCodecFrameCount;
+        const std::int64_t samples = packet.codecFrameSamples;
+        if (result_.codecFrameCountFrames >
+            (std::numeric_limits<std::int64_t>::max)() - samples) {
+            codecFrameCountOverflow_ = true;
+        } else if (!codecFrameCountOverflow_) {
+            result_.codecFrameCountFrames += samples;
+        }
+    }
     if (packet.duration > 0) {
         ++result_.packetsWithDuration;
         packetDurationFrames_ +=
@@ -289,6 +312,19 @@ void PacketFrameCountAccumulator::observe(const PacketFrameCountObservation& pac
             static_cast<long double>(sampleRate_) /
             static_cast<long double>(timeBase_.den);
         result_.lastPacketDuration = packet.duration;
+
+        const AVRational sampleTimeBase{1, sampleRate_};
+        const std::int64_t durationFrames =
+            sampleRate_ > 0 && timeBase_.num > 0 && timeBase_.den > 0
+                ? av_rescale_q(packet.duration, timeBase_, sampleTimeBase)
+                : 0;
+        if (durationFrames > 0 &&
+            av_compare_ts(packet.duration, timeBase_, durationFrames, sampleTimeBase) == 0 &&
+            result_.sampleExactPacketDurationSumFrames <=
+                (std::numeric_limits<std::int64_t>::max)() - durationFrames) {
+            ++result_.packetsWithSampleExactDuration;
+            result_.sampleExactPacketDurationSumFrames += durationFrames;
+        }
     }
 
     const std::int64_t currentPacketPts = packetTimestamp(packet);
@@ -320,6 +356,14 @@ PacketFrameCountScan PacketFrameCountAccumulator::finalize(std::string warning) 
             ? static_cast<double>(packetDurationFrames_) /
                 static_cast<double>(result.packetsWithDuration)
             : 0.0;
+    result.codecFrameCountKnown =
+        !codecFrameCountOverflow_ &&
+        result.audioPacketCount > 0 &&
+        result.packetsWithCodecFrameCount == result.audioPacketCount &&
+        result.codecFrameCountFrames > 0;
+    if (codecFrameCountOverflow_) {
+        result.codecFrameCountFrames = 0;
+    }
     if (result.firstPacketPts != AV_NOPTS_VALUE &&
         result.lastPacketPts != AV_NOPTS_VALUE &&
         result.lastPacketPts > result.firstPacketPts) {
@@ -401,6 +445,10 @@ void GaplessSkipAccumulator::observe(const GaplessSkipObservation& packet) {
 GaplessSkipSampleScan GaplessSkipAccumulator::finalize(std::string warning) const {
     GaplessSkipSampleScan result = result_;
     result.warning = std::move(warning);
+    result.packetSkipSamplesStart = result.skipSamplesStart;
+    result.packetSkipSamplesEnd = result.skipSamplesEnd;
+    result.streamInitialPadding = streamInitialPadding_;
+    result.streamTrailingPadding = streamTrailingPadding_;
     result.skipSamplesStart = (std::max)(result.skipSamplesStart, streamInitialPadding_);
     result.skipSamplesEnd = (std::max)(result.skipSamplesEnd, streamTrailingPadding_);
     result.skipSamplesTotal = saturatingAddInt64(result.skipSamplesStart, result.skipSamplesEnd);

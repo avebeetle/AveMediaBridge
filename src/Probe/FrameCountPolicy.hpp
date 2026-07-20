@@ -42,6 +42,37 @@ struct FrameCountPolicyState {
     std::vector<std::string> warnings;
 };
 
+struct ExactPacketPresentationEvidence {
+    bool packetScanReachedEof = false;
+    bool packetScanReadError = false;
+    bool physicalFrameCountKnown = false;
+    bool physicalFrameCountExact = false;
+    std::int64_t physicalFrames = 0;
+    bool initialSkipKnown = false;
+    bool initialSkipAuthoritative = false;
+    std::int64_t initialSkipFrames = 0;
+    bool terminalDiscardKnown = false;
+    bool terminalDiscardAuthoritative = false;
+    std::int64_t terminalDiscardFrames = 0;
+    bool conflictingGaplessEvidence = false;
+};
+
+struct ExactPacketPresentationBudget {
+    bool accepted = false;
+    std::int64_t presentationFrames = 0;
+    std::string rejectionReason = "unknown";
+};
+
+ExactPacketPresentationBudget resolveExactPacketPresentationBudget(
+    const ExactPacketPresentationEvidence& evidence);
+
+ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
+    const AudioPresentationEvidenceScan& scan);
+
+bool applyExactPacketPresentationBudget(
+    FrameCountPolicyState& state,
+    const AudioPresentationEvidenceScan& scan);
+
 bool shouldScanPacketFrameCountCandidates(const FrameCountPolicyState& state);
 
 void recordGaplessSkipSampleScan(

@@ -126,6 +126,7 @@ add_test(
 
 add_executable(AveMediaBridgeAudioPresentationEvidenceScanTests
     tests/AudioPresentationEvidenceScanTests.cpp
+    src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
 )
 
@@ -157,9 +158,14 @@ set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_SKIP
     1024
     CACHE STRING
     "Expected initial skip frames for the CodecDelay regression media")
+set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_PROBE_FRAMES
+    115201008
+    CACHE STRING
+    "Expected raw rounded container frame estimate for the CodecDelay regression media")
 
 add_executable(AveMediaBridgeMatroskaCodecDelaySkipTests
     tests/MatroskaCodecDelaySkipTests.cpp
+    src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
 )
 
@@ -184,6 +190,7 @@ add_test(
         "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MASTER}"
         "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_FRAMES}"
         "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_SKIP}"
+        "${AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_EXPECTED_PROBE_FRAMES}"
 )
 set_tests_properties(
     AveMediaBridgeTests.matroska_codec_delay_skip

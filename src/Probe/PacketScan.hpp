@@ -14,11 +14,17 @@ struct PacketScanOptions {
 };
 
 struct GaplessSkipSampleScan {
+    std::int64_t packetSkipSamplesStart = 0;
+    std::int64_t packetSkipSamplesEnd = 0;
+    std::int64_t streamInitialPadding = 0;
+    std::int64_t streamTrailingPadding = 0;
     std::int64_t skipSamplesStart = 0;
     std::int64_t skipSamplesEnd = 0;
     std::int64_t skipSamplesTotal = 0;
     std::int64_t sideDataPacketCount = 0;
     std::int64_t audioPacketsScanned = 0;
+    bool reachedEof = false;
+    bool readError = false;
     std::string source = "none";
     std::string warning;
 };
@@ -36,12 +42,20 @@ struct PacketFrameCountScan {
     std::int64_t packetPtsSpanWithoutLastDurationFrames = 0;
     std::int64_t packetPtsSpanPlusLastDurationFrames = 0;
     std::int64_t packetDurationSumFrames = 0;
+    std::int64_t sampleExactPacketDurationSumFrames = 0;
+    std::int64_t packetsWithSampleExactDuration = 0;
+    std::int64_t codecFrameCountFrames = 0;
+    std::int64_t packetsWithCodecFrameCount = 0;
     std::int64_t aacFrameCountCandidateFrames = 0;
     std::int64_t mp3FrameCountCandidateFrames = 0;
     std::int64_t mp2FrameCountCandidateFrames = 0;
     std::int64_t wmav2FrameCountCandidateFrames = 0;
     double averagePacketDurationFrames = 0.0;
     bool packetPtsMonotonic = true;
+    bool codecFrameCountKnown = false;
+    bool codecFrameCountExact = false;
+    bool reachedEof = false;
+    bool readError = false;
     std::string warning;
 };
 
@@ -55,6 +69,7 @@ struct PacketFrameCountObservation {
     std::int64_t pts = AV_NOPTS_VALUE;
     std::int64_t dts = AV_NOPTS_VALUE;
     std::int64_t duration = 0;
+    int codecFrameSamples = 0;
 };
 
 class PacketFrameCountAccumulator {
@@ -71,6 +86,7 @@ private:
     PacketFrameCountScan result_;
     long double packetDurationFrames_ = 0.0L;
     std::int64_t previousPacketPts_ = AV_NOPTS_VALUE;
+    bool codecFrameCountOverflow_ = false;
 };
 
 struct GaplessSkipObservation {

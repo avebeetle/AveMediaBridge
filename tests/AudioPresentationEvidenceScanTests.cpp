@@ -1,4 +1,5 @@
 #include "../src/Ffmpeg/FfmpegDeleters.hpp"
+#include "../src/Probe/FrameCountPolicy.hpp"
 #include "../src/Probe/PacketScan.hpp"
 
 #include <algorithm>
@@ -112,23 +113,37 @@ bool packetScansEqual(
         left.packetPtsSpanWithoutLastDurationFrames == right.packetPtsSpanWithoutLastDurationFrames &&
         left.packetPtsSpanPlusLastDurationFrames == right.packetPtsSpanPlusLastDurationFrames &&
         left.packetDurationSumFrames == right.packetDurationSumFrames &&
+        left.sampleExactPacketDurationSumFrames == right.sampleExactPacketDurationSumFrames &&
+        left.packetsWithSampleExactDuration == right.packetsWithSampleExactDuration &&
+        left.codecFrameCountFrames == right.codecFrameCountFrames &&
+        left.packetsWithCodecFrameCount == right.packetsWithCodecFrameCount &&
         left.aacFrameCountCandidateFrames == right.aacFrameCountCandidateFrames &&
         left.mp3FrameCountCandidateFrames == right.mp3FrameCountCandidateFrames &&
         left.mp2FrameCountCandidateFrames == right.mp2FrameCountCandidateFrames &&
         left.wmav2FrameCountCandidateFrames == right.wmav2FrameCountCandidateFrames &&
         std::abs(left.averagePacketDurationFrames - right.averagePacketDurationFrames) <= 1e-12 &&
         left.packetPtsMonotonic == right.packetPtsMonotonic &&
+        left.codecFrameCountKnown == right.codecFrameCountKnown &&
+        left.codecFrameCountExact == right.codecFrameCountExact &&
+        left.reachedEof == right.reachedEof &&
+        left.readError == right.readError &&
         left.warning == right.warning;
 }
 
 bool gaplessScansEqual(
     const Probe::GaplessSkipSampleScan& left,
     const Probe::GaplessSkipSampleScan& right) {
-    return left.skipSamplesStart == right.skipSamplesStart &&
+    return left.packetSkipSamplesStart == right.packetSkipSamplesStart &&
+        left.packetSkipSamplesEnd == right.packetSkipSamplesEnd &&
+        left.streamInitialPadding == right.streamInitialPadding &&
+        left.streamTrailingPadding == right.streamTrailingPadding &&
+        left.skipSamplesStart == right.skipSamplesStart &&
         left.skipSamplesEnd == right.skipSamplesEnd &&
         left.skipSamplesTotal == right.skipSamplesTotal &&
         left.sideDataPacketCount == right.sideDataPacketCount &&
         left.audioPacketsScanned == right.audioPacketsScanned &&
+        left.reachedEof == right.reachedEof &&
+        left.readError == right.readError &&
         left.source == right.source &&
         left.warning == right.warning;
 }
@@ -136,21 +151,23 @@ bool gaplessScansEqual(
 void observeSelected(
     Probe::PacketFrameCountAccumulator& accumulator,
     std::int64_t pts,
-    std::int64_t duration) {
+    std::int64_t duration,
+    int codecFrameSamples = 0) {
     accumulator.observe(Probe::PacketFrameCountObservation{
         true,
         pts,
         AV_NOPTS_VALUE,
-        duration
+        duration,
+        codecFrameSamples
     });
 }
 
 void testPacketTimingAccumulator() {
     Probe::PacketFrameCountAccumulator accumulator(48000, AV_CODEC_ID_AAC, AVRational{1, 48000});
-    observeSelected(accumulator, 0, 100);
+    observeSelected(accumulator, 0, 100, 1024);
     accumulator.observe(Probe::PacketFrameCountObservation{false, 50, 50, 50});
-    observeSelected(accumulator, 100, 200);
-    observeSelected(accumulator, 300, 300);
+    observeSelected(accumulator, 100, 200, 1024);
+    observeSelected(accumulator, 300, 300, 1024);
     const Probe::PacketFrameCountScan result = accumulator.finalize();
 
     expect(result.packetCount == 4, "packet count accumulation changed");
@@ -163,6 +180,8 @@ void testPacketTimingAccumulator() {
     expect(result.lastPacketEndPts == 600, "last packet end changed");
     expect(result.packetPtsMonotonic, "monotonic PTS sequence rejected");
     expect(result.aacFrameCountCandidateFrames == 3 * 1024, "AAC candidate changed");
+    expect(result.codecFrameCountKnown, "codec frame count was not accumulated");
+    expect(result.codecFrameCountFrames == 3 * 1024, "codec frame sample sum changed");
 }
 
 void testNonMonotonicPts() {
@@ -239,6 +258,136 @@ void testOverflowAndPartialFailure() {
         partialGapless.finalize("gapless side-data scan read failed: test");
     expect(gaplessResult.audioPacketsScanned == 1, "partial gapless evidence was lost");
     expect(!gaplessResult.warning.empty(), "partial read failure did not reject gapless authority");
+}
+
+Probe::ExactPacketPresentationEvidence exactEvidenceFixture() {
+    Probe::ExactPacketPresentationEvidence evidence;
+    evidence.packetScanReachedEof = true;
+    evidence.physicalFrameCountKnown = true;
+    evidence.physicalFrameCountExact = true;
+    evidence.physicalFrames = 115201024;
+    evidence.initialSkipKnown = true;
+    evidence.initialSkipAuthoritative = true;
+    evidence.initialSkipFrames = 1024;
+    evidence.terminalDiscardKnown = true;
+    evidence.terminalDiscardAuthoritative = true;
+    return evidence;
+}
+
+void expectExactBudgetRejected(
+    Probe::ExactPacketPresentationEvidence evidence,
+    const char* message) {
+    expect(!Probe::resolveExactPacketPresentationBudget(evidence).accepted, message);
+}
+
+void testExactPacketPresentationBudget() {
+    const Probe::ExactPacketPresentationEvidence positive = exactEvidenceFixture();
+    const Probe::ExactPacketPresentationBudget accepted =
+        Probe::resolveExactPacketPresentationBudget(positive);
+    expect(accepted.accepted, "complete exact packet presentation evidence was rejected");
+    expect(accepted.presentationFrames == 115200000, "exact packet presentation arithmetic changed");
+
+    auto evidence = positive;
+    evidence.physicalFrameCountKnown = false;
+    expectExactBudgetRejected(evidence, "unknown physical frame count was accepted");
+
+    evidence = positive;
+    evidence.packetScanReachedEof = false;
+    expectExactBudgetRejected(evidence, "incomplete packet scan was accepted");
+
+    evidence = positive;
+    evidence.packetScanReadError = true;
+    expectExactBudgetRejected(evidence, "packet read error was accepted");
+
+    evidence = positive;
+    evidence.initialSkipAuthoritative = false;
+    expectExactBudgetRejected(evidence, "non-authoritative initial skip was accepted");
+
+    evidence = positive;
+    evidence.terminalDiscardKnown = false;
+    expectExactBudgetRejected(evidence, "unknown terminal discard was treated as zero");
+
+    evidence = positive;
+    evidence.initialSkipFrames = evidence.physicalFrames + 1;
+    expectExactBudgetRejected(evidence, "initial skip beyond physical frames was accepted");
+
+    evidence = positive;
+    evidence.terminalDiscardFrames = evidence.physicalFrames;
+    expectExactBudgetRejected(evidence, "terminal discard beyond remaining frames was accepted");
+
+    evidence = positive;
+    evidence.physicalFrames = (std::numeric_limits<std::int64_t>::max)();
+    evidence.initialSkipFrames = (std::numeric_limits<std::int64_t>::max)();
+    evidence.terminalDiscardFrames = 1;
+    expectExactBudgetRejected(evidence, "overflow boundary evidence was accepted");
+
+    evidence = positive;
+    evidence.conflictingGaplessEvidence = true;
+    expectExactBudgetRejected(evidence, "conflicting gapless evidence was accepted");
+
+    evidence = positive;
+    evidence.initialSkipFrames = 0;
+    evidence.terminalDiscardFrames = 0;
+    const Probe::ExactPacketPresentationBudget noPadding =
+        Probe::resolveExactPacketPresentationBudget(evidence);
+    expect(noPadding.accepted, "known zero-padding exact packet evidence was rejected");
+    expect(noPadding.presentationFrames == evidence.physicalFrames, "zero-padding frame count changed");
+
+    Probe::FrameCountPolicyState existingExact;
+    existingExact.decodedSampleFrames = 105840000;
+    existingExact.decodedSampleFramesKind = "exact";
+    existingExact.decodedSampleFramesTrust = "authoritative";
+    Probe::AudioPresentationEvidenceScan unusedScan;
+    expect(
+        !Probe::applyExactPacketPresentationBudget(existingExact, unusedScan),
+        "existing sample-exact duration authority was replaced");
+    expect(existingExact.decodedSampleFrames == 105840000, "existing exact frame count changed");
+}
+
+void testExactEvidenceDerivation() {
+    Probe::AudioPresentationEvidenceScan matroska;
+    matroska.packetTiming.audioPacketCount = 112501;
+    matroska.packetTiming.packetsWithSampleExactDuration = 112501;
+    matroska.packetTiming.sampleExactPacketDurationSumFrames = 113401008;
+    matroska.packetTiming.packetPtsSpanFrames = 115201008;
+    matroska.packetTiming.codecFrameCountFrames = 115201024;
+    matroska.packetTiming.codecFrameCountKnown = true;
+    matroska.packetTiming.codecFrameCountExact = true;
+    matroska.packetTiming.reachedEof = true;
+    matroska.gapless.audioPacketsScanned = 112501;
+    matroska.gapless.sideDataPacketCount = 1;
+    matroska.gapless.streamInitialPadding = 1024;
+    matroska.gapless.skipSamplesStart = 1024;
+    matroska.gapless.source = "packet_side_data_skip_samples_and_stream_padding";
+    matroska.gapless.reachedEof = true;
+
+    const Probe::ExactPacketPresentationEvidence matroskaEvidence =
+        Probe::makeExactPacketPresentationEvidence(matroska);
+    expect(matroskaEvidence.initialSkipFrames == 1024, "Matroska start skip evidence changed");
+    expect(matroskaEvidence.terminalDiscardFrames == 0, "rounded packet durations invented a tail trim");
+    expect(
+        Probe::resolveExactPacketPresentationBudget(matroskaEvidence).presentationFrames == 115200000,
+        "Matroska exact presentation count changed");
+
+    Probe::AudioPresentationEvidenceScan mov = matroska;
+    mov.packetTiming.audioPacketCount = 103361;
+    mov.packetTiming.packetsWithSampleExactDuration = 103361;
+    mov.packetTiming.sampleExactPacketDurationSumFrames = 105841024;
+    mov.packetTiming.packetPtsSpanFrames = 105841024;
+    mov.packetTiming.codecFrameCountFrames = 105841664;
+    mov.gapless.audioPacketsScanned = 103361;
+    const Probe::ExactPacketPresentationEvidence movEvidence =
+        Probe::makeExactPacketPresentationEvidence(mov);
+    expect(movEvidence.terminalDiscardFrames == 640, "short terminal packet duration was ignored");
+    expect(
+        Probe::resolveExactPacketPresentationBudget(movEvidence).presentationFrames == 105840000,
+        "sample-exact MOV presentation count changed");
+
+    matroska.packetTiming.reachedEof = false;
+    expect(
+        !Probe::resolveExactPacketPresentationBudget(
+             Probe::makeExactPacketPresentationEvidence(matroska)).accepted,
+        "partial real scan evidence was promoted");
 }
 
 void testWarningsAndOldApiParity(const std::filesystem::path& fixture) {
@@ -335,6 +484,8 @@ void runUnitTests() {
     testCodecCandidates();
     testGaplessAccumulator();
     testOverflowAndPartialFailure();
+    testExactPacketPresentationBudget();
+    testExactEvidenceDerivation();
 
     const std::filesystem::path fixture = writeDeterministicWaveFixture();
     try {
@@ -346,6 +497,7 @@ void runUnitTests() {
     std::filesystem::remove(fixture);
 
     std::cout << "AVEMEDIABRIDGE_COMBINED_PRESENTATION_SCAN_PARITY_OK\n";
+    std::cout << "AVEMEDIABRIDGE_EXACT_PACKET_PRESENTATION_BUDGET_OK\n";
     std::cout << "AVEMEDIABRIDGE_AUDIO_PRESENTATION_EVIDENCE_SCAN_OK\n";
 }
 
@@ -546,7 +698,7 @@ std::filesystem::path findCorpusFile(
 
 int runBenchmark(const std::filesystem::path& root) {
     const std::vector<std::filesystem::path> files = corpusFiles(root);
-    const std::array<std::string, 6> prefixes{"22_", "05_", "08_", "6. ", "06_", "02_"};
+    const std::array<std::string, 7> prefixes{"10_", "22_", "05_", "08_", "6. ", "06_", "02_"};
     for (const std::string& prefix : prefixes) {
         const std::filesystem::path path = findCorpusFile(files, prefix);
         expect(!path.empty(), "benchmark corpus file is missing");
@@ -556,7 +708,7 @@ int runBenchmark(const std::filesystem::path& root) {
         std::vector<double> packetTimes;
         std::vector<double> gaplessTimes;
         std::vector<double> combinedTimes;
-        for (int run = 0; run < 3; ++run) {
+        for (int run = 0; run < 5; ++run) {
             const std::string mediaPath = path.u8string();
             packetTimes.push_back(measureMilliseconds([&] {
                 (void)Probe::scanPacketFrameCountCandidates(
