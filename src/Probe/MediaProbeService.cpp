@@ -115,6 +115,26 @@ std::int64_t exactPcmFramesFromStreamDuration(
     return 0;
 }
 
+std::int64_t exactFramesFromSampleDomainStreamDuration(const AVStream* stream) {
+    const AVCodecParameters* codecpar = stream ? stream->codecpar : nullptr;
+    if (!stream || !codecpar || codecpar->sample_rate <= 0 ||
+        stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
+        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+        return 0;
+    }
+
+    const AVRational sampleTimeBase{1, codecpar->sample_rate};
+    if (av_cmp_q(stream->time_base, sampleTimeBase) != 0) {
+        return 0;
+    }
+    const std::int64_t frames =
+        av_rescale_q(stream->duration, stream->time_base, sampleTimeBase);
+    return frames > 0 &&
+            av_compare_ts(stream->duration, stream->time_base, frames, sampleTimeBase) == 0
+        ? frames
+        : 0;
+}
+
 void updateEstimatedDecodedBytes(FastProbeJsonDocument& document) {
     if (document.decodedSampleFrames > 0 && document.selectedAudio.channels > 0) {
         document.estimatedDecodedBytes =
@@ -309,16 +329,16 @@ void applyFastFrameCountPolicies(
     const bool legacyGaplessScanRequired =
         (codecpar->codec_id == AV_CODEC_ID_MP3 || codecpar->codec_id == AV_CODEC_ID_OPUS) &&
         result.document.decodedSampleFramesKind != "exact";
-    const bool exactPacketPresentationScanRequired =
+    const bool preliminaryPaddingRequiresExactPacketScan =
         allowExactPacketPresentationScan &&
         result.document.decodedSampleFramesKind != "exact" &&
         (codecpar->initial_padding > 0 || codecpar->trailing_padding > 0);
     const bool packetScanRequired =
         shouldScanPacketFrameCountCandidates(policyState) ||
-        exactPacketPresentationScanRequired;
+        preliminaryPaddingRequiresExactPacketScan;
     const bool gaplessScanRequired =
         legacyGaplessScanRequired ||
-        exactPacketPresentationScanRequired;
+        preliminaryPaddingRequiresExactPacketScan;
 
     PacketFrameCountScan packetScan;
     GaplessSkipSampleScan gaplessScan;
@@ -346,11 +366,20 @@ void applyFastFrameCountPolicies(
             packetScanOptions);
     }
 
+    // Resolve complete packet evidence after traversal, including padding
+    // authority that was visible only in packet side data.
+    const bool evaluateExactPacketPresentation =
+        shouldEvaluateExactPacketPresentationAfterScan(
+            policyState,
+            allowExactPacketPresentationScan,
+            packetScanRequired,
+            gaplessScanRequired);
     bool exactPacketPresentationApplied = false;
-    if (exactPacketPresentationScanRequired) {
+    if (evaluateExactPacketPresentation) {
         exactPacketPresentationApplied = applyExactPacketPresentationBudget(
             policyState,
-            AudioPresentationEvidenceScan{packetScan, gaplessScan});
+            AudioPresentationEvidenceScan{packetScan, gaplessScan},
+            exactFramesFromSampleDomainStreamDuration(audioStream));
     }
     if (!exactPacketPresentationApplied) {
         if (legacyGaplessScanRequired) {
@@ -359,7 +388,7 @@ void applyFastFrameCountPolicies(
             } else {
                 recordGaplessSkipSampleScan(policyState, gaplessScan);
             }
-        } else if (exactPacketPresentationScanRequired) {
+        } else if (preliminaryPaddingRequiresExactPacketScan) {
             recordGaplessSkipSampleScan(policyState, gaplessScan);
         }
     }

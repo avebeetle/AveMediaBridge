@@ -369,6 +369,13 @@ ExactPacketPresentationBudget resolveExactPacketPresentationBudget(
         result.rejectionReason = "empty_presentation";
         return result;
     }
+    if (evidence.independentPresentationFramesKnown &&
+        (evidence.independentPresentationFrames <= 0 ||
+         evidence.independentPresentationFrames != result.presentationFrames)) {
+        result.presentationFrames = 0;
+        result.rejectionReason = "independent_presentation_conflict";
+        return result;
+    }
     result.accepted = true;
     result.rejectionReason = "accepted";
     return result;
@@ -388,23 +395,11 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
         gapless.warning.empty() &&
         packet.audioPacketCount > 0 &&
         gapless.audioPacketsScanned == packet.audioPacketCount;
-    const bool gaplessAuthorityObserved =
+    const bool initialSkipAuthorityObserved =
         completeTraversal &&
         (gapless.sideDataPacketCount > 0 ||
          gapless.streamInitialPadding > 0 ||
          gapless.streamTrailingPadding > 0);
-
-    evidence.packetScanReachedEof = completeTraversal;
-    evidence.packetScanReadError = packet.readError || gapless.readError;
-    evidence.physicalFrameCountKnown = packet.codecFrameCountKnown;
-    evidence.physicalFrameCountExact = packet.codecFrameCountExact;
-    evidence.physicalFrames = packet.codecFrameCountFrames;
-    evidence.initialSkipKnown = gaplessAuthorityObserved;
-    evidence.initialSkipAuthoritative = gaplessAuthorityObserved;
-    evidence.initialSkipFrames = gapless.skipSamplesStart;
-    evidence.terminalDiscardKnown = gaplessAuthorityObserved;
-    evidence.terminalDiscardAuthoritative = gaplessAuthorityObserved;
-    evidence.terminalDiscardFrames = gapless.skipSamplesEnd;
 
     // A short terminal packet is authority only when every duration maps
     // exactly to samples and independently matches the packet PTS span.
@@ -413,6 +408,25 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
         packet.packetsWithSampleExactDuration == packet.audioPacketCount &&
         packet.sampleExactPacketDurationSumFrames > 0 &&
         packet.packetPtsSpanFrames == packet.sampleExactPacketDurationSumFrames;
+    const bool terminalDiscardAuthorityObserved =
+        completeTraversal &&
+        (gapless.packetSkipSamplesEnd > 0 ||
+         gapless.streamTrailingPadding > 0 ||
+         gapless.streamInitialPadding > 0 ||
+         packetDurationTimelineExact);
+
+    evidence.packetScanReachedEof = completeTraversal;
+    evidence.packetScanReadError = packet.readError || gapless.readError;
+    evidence.physicalFrameCountKnown = packet.codecFrameCountKnown;
+    evidence.physicalFrameCountExact = packet.codecFrameCountExact;
+    evidence.physicalFrames = packet.codecFrameCountFrames;
+    evidence.initialSkipKnown = initialSkipAuthorityObserved;
+    evidence.initialSkipAuthoritative = initialSkipAuthorityObserved;
+    evidence.initialSkipFrames = gapless.skipSamplesStart;
+    evidence.terminalDiscardKnown = terminalDiscardAuthorityObserved;
+    evidence.terminalDiscardAuthoritative = terminalDiscardAuthorityObserved;
+    evidence.terminalDiscardFrames = gapless.skipSamplesEnd;
+
     if (packetDurationTimelineExact && packet.codecFrameCountExact) {
         if (packet.sampleExactPacketDurationSumFrames > packet.codecFrameCountFrames) {
             evidence.conflictingGaplessEvidence = true;
@@ -435,13 +449,18 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
 
 bool applyExactPacketPresentationBudget(
     FrameCountPolicyState& state,
-    const AudioPresentationEvidenceScan& scan) {
+    const AudioPresentationEvidenceScan& scan,
+    std::int64_t independentPresentationFrames) {
     if (state.decodedSampleFramesKind == "exact") {
         return false;
     }
 
-    const ExactPacketPresentationEvidence evidence =
+    ExactPacketPresentationEvidence evidence =
         makeExactPacketPresentationEvidence(scan);
+    if (independentPresentationFrames > 0) {
+        evidence.independentPresentationFramesKnown = true;
+        evidence.independentPresentationFrames = independentPresentationFrames;
+    }
     const ExactPacketPresentationBudget budget =
         resolveExactPacketPresentationBudget(evidence);
     if (!budget.accepted) {
@@ -469,6 +488,17 @@ bool applyExactPacketPresentationBudget(
         "complete codec-frame and gapless evidence proved exact presentation frames";
     updateEstimatedDecodedBytes(state);
     return true;
+}
+
+bool shouldEvaluateExactPacketPresentationAfterScan(
+    const FrameCountPolicyState& state,
+    bool allowed,
+    bool packetScanPerformed,
+    bool gaplessScanPerformed) {
+    return allowed &&
+        state.decodedSampleFramesKind != "exact" &&
+        packetScanPerformed &&
+        gaplessScanPerformed;
 }
 
 bool shouldScanPacketFrameCountCandidates(const FrameCountPolicyState& state) {

@@ -292,6 +292,10 @@ void testExactPacketPresentationBudget() {
     expectExactBudgetRejected(evidence, "unknown physical frame count was accepted");
 
     evidence = positive;
+    evidence.physicalFrameCountExact = false;
+    expectExactBudgetRejected(evidence, "inexact physical frame count was accepted");
+
+    evidence = positive;
     evidence.packetScanReachedEof = false;
     expectExactBudgetRejected(evidence, "incomplete packet scan was accepted");
 
@@ -300,12 +304,20 @@ void testExactPacketPresentationBudget() {
     expectExactBudgetRejected(evidence, "packet read error was accepted");
 
     evidence = positive;
+    evidence.initialSkipKnown = false;
+    expectExactBudgetRejected(evidence, "unknown initial skip was accepted");
+
+    evidence = positive;
     evidence.initialSkipAuthoritative = false;
     expectExactBudgetRejected(evidence, "non-authoritative initial skip was accepted");
 
     evidence = positive;
     evidence.terminalDiscardKnown = false;
     expectExactBudgetRejected(evidence, "unknown terminal discard was treated as zero");
+
+    evidence = positive;
+    evidence.terminalDiscardAuthoritative = false;
+    expectExactBudgetRejected(evidence, "non-authoritative terminal discard was accepted");
 
     evidence = positive;
     evidence.initialSkipFrames = evidence.physicalFrames + 1;
@@ -326,6 +338,11 @@ void testExactPacketPresentationBudget() {
     expectExactBudgetRejected(evidence, "conflicting gapless evidence was accepted");
 
     evidence = positive;
+    evidence.independentPresentationFramesKnown = true;
+    evidence.independentPresentationFrames = 115200001;
+    expectExactBudgetRejected(evidence, "conflicting sample-exact stream duration was accepted");
+
+    evidence = positive;
     evidence.initialSkipFrames = 0;
     evidence.terminalDiscardFrames = 0;
     const Probe::ExactPacketPresentationBudget noPadding =
@@ -342,6 +359,99 @@ void testExactPacketPresentationBudget() {
         !Probe::applyExactPacketPresentationBudget(existingExact, unusedScan),
         "existing sample-exact duration authority was replaced");
     expect(existingExact.decodedSampleFrames == 105840000, "existing exact frame count changed");
+}
+
+Probe::AudioPresentationEvidenceScan mp4Mp3PostScanEvidenceFixture() {
+    Probe::AudioPresentationEvidenceScan scan;
+    scan.packetTiming.audioPacketCount = 91876;
+    scan.packetTiming.packetsWithDuration = 91876;
+    scan.packetTiming.packetsWithTimestamp = 91876;
+    scan.packetTiming.packetsWithSampleExactDuration = 91876;
+    scan.packetTiming.packetPtsMonotonic = true;
+    scan.packetTiming.packetPtsSpanFrames = 105841105;
+    scan.packetTiming.packetDurationSumFrames = 105841105;
+    scan.packetTiming.sampleExactPacketDurationSumFrames = 105841105;
+    scan.packetTiming.mp3FrameCountCandidateFrames = 105841152;
+    scan.packetTiming.codecFrameCountFrames = 105841152;
+    scan.packetTiming.codecFrameCountKnown = true;
+    scan.packetTiming.codecFrameCountExact = true;
+    scan.packetTiming.reachedEof = true;
+    scan.gapless.packetSkipSamplesStart = 1105;
+    scan.gapless.skipSamplesStart = 1105;
+    scan.gapless.skipSamplesTotal = 1105;
+    scan.gapless.sideDataPacketCount = 1;
+    scan.gapless.audioPacketsScanned = 91876;
+    scan.gapless.source = "packet_side_data_skip_samples";
+    scan.gapless.reachedEof = true;
+    return scan;
+}
+
+void testPostScanExactPresentationAuthority() {
+    Probe::FrameCountPolicyState state;
+    state.formatName = "mov,mp4,m4a,3gp,3g2,mj2";
+    state.selectedAudio.codecId = AV_CODEC_ID_MP3;
+    state.selectedAudio.codecName = "mp3";
+    state.selectedAudio.sampleRate = 44100;
+    state.selectedAudio.channels = 2;
+    state.decodedSampleFrames = 105840000;
+    state.decodedSampleFramesKind = "estimated";
+    state.decodedSampleFramesTrust = "unsafe_estimated";
+    state.decodedSampleFramesSource = "stream_duration_estimate";
+
+    constexpr int codecparInitialPaddingBeforeScan = 0;
+    constexpr int codecparTrailingPaddingBeforeScan = 0;
+    static_assert(codecparInitialPaddingBeforeScan == 0);
+    static_assert(codecparTrailingPaddingBeforeScan == 0);
+    expect(
+        Probe::shouldEvaluateExactPacketPresentationAfterScan(state, true, true, true),
+        "post-scan exact authority still depends on preliminary codec padding");
+
+    const Probe::AudioPresentationEvidenceScan scan = mp4Mp3PostScanEvidenceFixture();
+    const Probe::ExactPacketPresentationEvidence evidence =
+        Probe::makeExactPacketPresentationEvidence(scan);
+    expect(evidence.packetScanReachedEof, "complete post-scan traversal was lost");
+    expect(evidence.initialSkipFrames == 1105, "post-scan initial skip changed");
+    expect(evidence.terminalDiscardFrames == 47, "post-scan terminal discard changed");
+    expect(
+        Probe::applyExactPacketPresentationBudget(state, scan, 105840000),
+        "post-scan exact presentation authority was rejected");
+    expect(state.decodedSampleFrames == 105840000, "post-scan exact presentation changed");
+    expect(state.decodedSampleFramesKind == "exact", "post-scan authority kind is not exact");
+    expect(
+        state.decodedSampleFramesSource == "exact_packet_presentation",
+        "post-scan authority source changed");
+
+    Probe::applyPacketFrameCountPolicies(state, scan.packetTiming);
+    expect(
+        state.decodedSampleFrames == 105840000 &&
+            state.decodedSampleFramesSource == "exact_packet_presentation",
+        "legacy MP3 candidate replaced stronger post-scan authority");
+
+    expect(
+        !Probe::shouldEvaluateExactPacketPresentationAfterScan(state, true, true, true),
+        "existing exact authority was evaluated again");
+    state.decodedSampleFramesKind = "estimated";
+    expect(
+        !Probe::shouldEvaluateExactPacketPresentationAfterScan(state, false, true, true),
+        "disabled full scan authority was evaluated");
+    expect(
+        !Probe::shouldEvaluateExactPacketPresentationAfterScan(state, true, false, true),
+        "missing packet scan was treated as complete evidence");
+    expect(
+        !Probe::shouldEvaluateExactPacketPresentationAfterScan(state, true, true, false),
+        "missing gapless scan was treated as complete evidence");
+
+    Probe::AudioPresentationEvidenceScan oneSidedLegacy = scan;
+    oneSidedLegacy.packetTiming.packetsWithSampleExactDuration = 0;
+    oneSidedLegacy.packetTiming.sampleExactPacketDurationSumFrames = 0;
+    const Probe::ExactPacketPresentationEvidence oneSidedEvidence =
+        Probe::makeExactPacketPresentationEvidence(oneSidedLegacy);
+    expect(
+        !oneSidedEvidence.terminalDiscardKnown,
+        "one-sided legacy MP3 evidence invented terminal authority");
+    expectExactBudgetRejected(
+        oneSidedEvidence,
+        "one-sided legacy MP3 evidence was promoted to exact");
 }
 
 void testExactEvidenceDerivation() {
@@ -486,6 +596,7 @@ void runUnitTests() {
     testOverflowAndPartialFailure();
     testExactPacketPresentationBudget();
     testExactEvidenceDerivation();
+    testPostScanExactPresentationAuthority();
 
     const std::filesystem::path fixture = writeDeterministicWaveFixture();
     try {
@@ -498,6 +609,7 @@ void runUnitTests() {
 
     std::cout << "AVEMEDIABRIDGE_COMBINED_PRESENTATION_SCAN_PARITY_OK\n";
     std::cout << "AVEMEDIABRIDGE_EXACT_PACKET_PRESENTATION_BUDGET_OK\n";
+    std::cout << "AVEMEDIABRIDGE_POST_SCAN_EXACT_PRESENTATION_AUTHORITY_OK\n";
     std::cout << "AVEMEDIABRIDGE_AUDIO_PRESENTATION_EVIDENCE_SCAN_OK\n";
 }
 

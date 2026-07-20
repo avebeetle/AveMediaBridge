@@ -195,3 +195,37 @@ add_test(
 set_tests_properties(
     AveMediaBridgeTests.matroska_codec_delay_skip
     PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_MP4_MP3_PRESENTATION_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/28_mp4_h264_mp3_stereo_44100.mp4"
+    CACHE FILEPATH
+    "External MP4/MP3 post-scan presentation-authority regression media")
+
+add_executable(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests
+    tests/Mp4Mp3LoadingReadyPresentationTests.cpp
+    src/Probe/FrameCountPolicy.cpp
+    src/Probe/PacketScan.cpp
+)
+
+target_link_libraries(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+    "${FFMPEG_LIB_DIR}/swresample.lib"
+)
+target_include_directories(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.mp4_mp3_loading_ready_presentation
+    COMMAND AveMediaBridgeMp4Mp3LoadingReadyPresentationTests
+        "${AVEMEDIABRIDGE_MP4_MP3_PRESENTATION_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.mp4_mp3_loading_ready_presentation
+    PROPERTIES SKIP_RETURN_CODE 77)

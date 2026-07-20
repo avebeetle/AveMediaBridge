@@ -55,6 +55,8 @@ struct ExactPacketPresentationEvidence {
     bool terminalDiscardAuthoritative = false;
     std::int64_t terminalDiscardFrames = 0;
     bool conflictingGaplessEvidence = false;
+    bool independentPresentationFramesKnown = false;
+    std::int64_t independentPresentationFrames = 0;
 };
 
 struct ExactPacketPresentationBudget {
@@ -71,7 +73,14 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
 
 bool applyExactPacketPresentationBudget(
     FrameCountPolicyState& state,
-    const AudioPresentationEvidenceScan& scan);
+    const AudioPresentationEvidenceScan& scan,
+    std::int64_t independentPresentationFrames = 0);
+
+bool shouldEvaluateExactPacketPresentationAfterScan(
+    const FrameCountPolicyState& state,
+    bool allowed,
+    bool packetScanPerformed,
+    bool gaplessScanPerformed);
 
 bool shouldScanPacketFrameCountCandidates(const FrameCountPolicyState& state);
 

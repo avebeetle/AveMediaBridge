@@ -59,6 +59,13 @@ The resulting `exact_packet_presentation` count is the physical codec-frame sum 
 
 Packet timing and gapless metadata continue to use independent accumulators fed by one physical reader loop. The exact count controls the initial Loading presentation extent; codec skip is still applied only by FFmpeg during decode.
 
+Exact resolution is evaluated after that shared traversal whenever both evidence
+components were already collected. Preliminary codec-parameter padding may
+request the traversal, but it is not an eligibility gate after packet side data
+and sample-exact terminal duration evidence are available. Accepted exact
+authority takes precedence over legacy packet-count estimates; rejected or
+incomplete evidence retains the existing provisional and typed-reconcile paths.
+
 ## Current Codec And Container Rules
 
 ### MP3
