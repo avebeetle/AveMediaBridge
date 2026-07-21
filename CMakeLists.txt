@@ -75,6 +75,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/MediaProbeService.cpp
+    src/Probe/NutBoundedTailAuthority.cpp
     src/Probe/PacketScan.cpp
     src/Probe/PresentationBudgetPolicy.cpp
     src/Probe/ProbeJsonWriter.cpp
@@ -317,4 +318,52 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.flac_streaminfo_presentation_authority
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_EA021_NUT_PCM_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA021_nut_pcm_22050_257.nut"
+    CACHE FILEPATH
+    "External NUT/PCM 257-frame bounded-tail regression media")
+set(AVEMEDIABRIDGE_EA119_NUT_PCM_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA119_nut_pcm_192000_191999.nut"
+    CACHE FILEPATH
+    "External NUT/PCM 191999-frame bounded-tail regression media")
+set(AVEMEDIABRIDGE_EA136_NUT_PCM_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA136_nut_pcm_88200_1058537.nut"
+    CACHE FILEPATH
+    "External NUT/PCM 1058537-frame bounded-tail regression media")
+set(AVEMEDIABRIDGE_NUT_TAIL_RESEARCH_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/nut_bounded_tail_authority/fixtures"
+    CACHE PATH
+    "External read-only NUT bounded-tail failure and multistream fixtures")
+
+add_executable(AveMediaBridgeNutBoundedTailAuthorityTests
+    tests/NutBoundedTailAuthorityTests.cpp
+    src/Probe/NutBoundedTailAuthority.cpp
+)
+
+target_link_libraries(AveMediaBridgeNutBoundedTailAuthorityTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+    bcrypt
+)
+target_include_directories(AveMediaBridgeNutBoundedTailAuthorityTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeNutBoundedTailAuthorityTests)
+
+add_test(
+    NAME AveMediaBridgeTests.nut_bounded_tail_authority
+    COMMAND AveMediaBridgeNutBoundedTailAuthorityTests
+        "${AVEMEDIABRIDGE_EA021_NUT_PCM_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA119_NUT_PCM_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA136_NUT_PCM_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_NUT_TAIL_RESEARCH_FIXTURE_ROOT}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.nut_bounded_tail_authority
     PROPERTIES SKIP_RETURN_CODE 77)

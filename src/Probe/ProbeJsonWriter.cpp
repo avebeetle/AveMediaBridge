@@ -144,6 +144,17 @@ bool writeProbeJson(
          << document.gaplessAudioPacketsScanned << ",\n";
     json << "  \"estimatedDecodedBytes\": " << document.estimatedDecodedBytes << ",\n";
     json << "  \"estimatedDecodedBytesKind\": " << jsonString(document.estimatedDecodedBytesKind) << ",\n";
+    json << "  \"nutBoundedTailStatus\": " << jsonString(document.nutBoundedTailStatus) << ",\n";
+    json << "  \"nutBoundedTailReason\": " << jsonString(document.nutBoundedTailReason) << ",\n";
+    json << "  \"nutBoundedTailBudgetBytes\": " << document.nutBoundedTailBudgetBytes << ",\n";
+    json << "  \"nutBoundedTailActualReadBytes\": "
+         << document.nutBoundedTailActualReadBytes << ",\n";
+    json << "  \"nutBoundedTailMaximumBudgetOverrunBytes\": "
+         << document.nutBoundedTailMaximumBudgetOverrunBytes << ",\n";
+    json << "  \"nutBoundedTailPacketsObserved\": "
+         << document.nutBoundedTailPacketsObserved << ",\n";
+    json << "  \"nutBoundedTailReachedEof\": "
+         << (document.nutBoundedTailReachedEof ? "true" : "false") << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

@@ -43,6 +43,13 @@ struct FastProbeJsonDocument {
     std::int64_t gaplessAudioPacketsScanned = 0;
     std::int64_t estimatedDecodedBytes = 0;
     std::string estimatedDecodedBytesKind = "unknown";
+    std::string nutBoundedTailStatus = "not_eligible";
+    std::string nutBoundedTailReason = "not_eligible";
+    std::uint64_t nutBoundedTailBudgetBytes = 0;
+    std::uint64_t nutBoundedTailActualReadBytes = 0;
+    std::uint64_t nutBoundedTailMaximumBudgetOverrunBytes = 0;
+    std::uint64_t nutBoundedTailPacketsObserved = 0;
+    bool nutBoundedTailReachedEof = false;
     int probeScore = -1;
     std::vector<StreamSummary> streams;
     std::vector<std::string> warnings;

@@ -1,6 +1,7 @@
 #include "MediaProbeService.hpp"
 
 #include "FrameCountPolicy.hpp"
+#include "NutBoundedTailAuthority.hpp"
 #include "PacketScan.hpp"
 #include "PresentationBudgetPolicy.hpp"
 #include "../Core/MediaBridgeError.hpp"
@@ -244,6 +245,64 @@ void estimateFastDurationAndFrames(
     updateEstimatedDecodedBytes(document);
 }
 
+void applyNutBoundedTailAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    if (!shouldProbeNutBoundedTailAuthority(
+            path, formatContext, audioStream, strongerExactAuthority)) {
+        return;
+    }
+
+    result.nutBoundedTail = probeNutBoundedTailAuthority(
+        path, static_cast<int>(audioStream->index));
+    FastProbeJsonDocument& document = result.document;
+    document.nutBoundedTailStatus =
+        nutBoundedTailStatusName(result.nutBoundedTail.status);
+    document.nutBoundedTailReason = result.nutBoundedTail.reason;
+    document.nutBoundedTailBudgetBytes =
+        result.nutBoundedTail.hardReadBudgetBytes;
+    document.nutBoundedTailActualReadBytes =
+        result.nutBoundedTail.totalActualReadBytes;
+    document.nutBoundedTailMaximumBudgetOverrunBytes =
+        result.nutBoundedTail.maximumBudgetOverrunBytes;
+    document.nutBoundedTailPacketsObserved =
+        result.nutBoundedTail.targetPacketsObserved;
+    document.nutBoundedTailReachedEof = result.nutBoundedTail.reachedPhysicalEof;
+    if (!result.nutBoundedTail.exact()) {
+        return;
+    }
+
+    TotalPresentationEvidence evidence;
+    evidence.frames = result.nutBoundedTail.presentationFrames;
+    evidence.trust = PresentationTotalTrust::SampleExact;
+    evidence.source = PresentationTotalSource::NutBoundedTailSelectedStreamEnd;
+    evidence.domain = PresentationSampleDomain::NativeStreamSamples;
+    evidence.sampleRate = result.nutBoundedTail.sampleRate;
+    evidence.exactRescale = true;
+    evidence.validation = PresentationTotalValidation::SelfContainedMetadata;
+    result.totalPresentation = evidence;
+
+    if (evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "bounded NUT tail proves the selected-stream half-open PCM end";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod = "from_nut_bounded_tail";
+    updateEstimatedDecodedBytes(document);
+}
+
 FrameCountPolicyState makeFrameCountPolicyState(const FastProbeJsonDocument& document) {
     FrameCountPolicyState state;
     state.formatName = document.formatName;
@@ -483,6 +542,7 @@ FastProbeResult runFastProbe(const std::string& path) {
     }
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
+    applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
     return result;

@@ -19,6 +19,7 @@ enum class PresentationTotalSource {
     ExactPcmStreamDuration,
     OggEosGranule,
     FlacStreamInfoTotalSamples,
+    NutBoundedTailSelectedStreamEnd,
     ExactPacketPresentation
 };
 

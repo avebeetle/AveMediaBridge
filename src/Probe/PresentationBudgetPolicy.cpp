@@ -262,6 +262,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "ogg_eos_granule";
         case PresentationTotalSource::FlacStreamInfoTotalSamples:
             return "flac_streaminfo_total_samples";
+        case PresentationTotalSource::NutBoundedTailSelectedStreamEnd:
+            return "nut_bounded_tail_selected_stream_end";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }
