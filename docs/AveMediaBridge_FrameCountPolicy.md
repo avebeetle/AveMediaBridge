@@ -162,6 +162,18 @@ PCM stream duration in sample-frame time base can be exact:
 - source string: `exact_pcm_stream_duration`;
 - trust: `authoritative`.
 
+### FLAC STREAMINFO
+
+For FLAC in any container where FFmpeg exposes the canonical 34-byte
+STREAMINFO payload through `AVCodecParameters::extradata`, a validated positive
+`total_samples` value is sample-exact codec-level presentation evidence.
+
+The parser validates STREAMINFO sample rate and channel count against known
+codec parameters. Zero, malformed, truncated, or conflicting metadata remains
+unknown. Rounded container duration is retained as diagnostic provenance and
+does not override an independently exact STREAMINFO total. This metadata path
+does not require a packet scan or decoder open.
+
 ### CAF/ALAC
 
 CAF/ALAC remains non-authoritative when no exact no-decode candidate is available.

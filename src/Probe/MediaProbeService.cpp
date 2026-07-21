@@ -221,7 +221,10 @@ void estimateFastDurationAndFrames(
         document.frameCountPolicyReason =
             result.totalPresentation.source == PresentationTotalSource::OggEosGranule
                 ? "Ogg EOS granule provides the half-open PCM presentation end"
-                : "stream duration is authoritative in the native sample domain";
+                : result.totalPresentation.source ==
+                        PresentationTotalSource::FlacStreamInfoTotalSamples
+                    ? "FLAC STREAMINFO total_samples provides the half-open PCM presentation end"
+                    : "stream duration is authoritative in the native sample domain";
     } else if (document.durationSec > 0.0 && sampleRate > 0 && std::isfinite(document.durationSec)) {
         document.decodedSampleFrames =
             static_cast<std::int64_t>(std::llround(document.durationSec * static_cast<double>(sampleRate)));

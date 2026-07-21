@@ -77,6 +77,7 @@ struct StreamingImportResult {
     Probe::PresentationTotalSource presentationBudgetSource =
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
+    bool presentationBudgetPacketScanExecuted = false;
     std::uint64_t physicalInputFrames = 0;
     std::uint64_t acceptedInputFrames = 0;
     std::uint64_t rejectedInputFrames = 0;
@@ -487,11 +488,27 @@ void resolveStreamingPresentationBudget(
         return;
     }
 
+    Probe::StreamingPresentationBudgetInput budgetInput;
+    budgetInput.streamTotal = result.totalPresentationEvidence;
+    if (result.totalPresentationEvidence.validation ==
+        Probe::PresentationTotalValidation::SelfContainedMetadata) {
+        const Probe::StreamingPresentationBudgetDecision budget =
+            Probe::resolveStreamingPresentationBudget(budgetInput);
+        result.presentationBudgetReason = budget.rejectionReason;
+        if (budget.accepted) {
+            result.presentationBudgetKnown = true;
+            result.presentationBudgetFrames = budget.frames;
+            result.presentationBudgetSource = budget.source;
+        }
+        return;
+    }
+
     const Probe::PacketScanOptions scanOptions{
         kPresentationBudgetScanProbeSizeBytes,
         kPresentationBudgetScanAnalyzeDurationUs
     };
     const int audioStreamIndex = static_cast<int>(audioStream->index);
+    result.presentationBudgetPacketScanExecuted = true;
     // Resolve both presentation evidence components in one pre-decode pass
     // without changing the existing budget acceptance rules.
     const Probe::AudioPresentationEvidenceScan evidence =
@@ -509,8 +526,6 @@ void resolveStreamingPresentationBudget(
     const Probe::ExactPacketPresentationBudget exactPacketBudget =
         Probe::resolveExactPacketPresentationBudget(exactPacketEvidence);
 
-    Probe::StreamingPresentationBudgetInput budgetInput;
-    budgetInput.streamTotal = result.totalPresentationEvidence;
     if (exactPacketBudget.accepted) {
         budgetInput.exactPacketTotal.frames =
             static_cast<std::uint64_t>(exactPacketBudget.presentationFrames);
@@ -1731,6 +1746,11 @@ bool writeStreamingMetadataJson(
          << jsonString(Probe::presentationTotalSourceName(result.totalPresentationEvidence.source)) << ",\n";
     json << "    \"sampleDomain\": "
          << jsonString(Probe::presentationSampleDomainName(result.totalPresentationEvidence.domain)) << ",\n";
+    json << "    \"validation\": "
+         << jsonString(Probe::presentationTotalValidationName(
+                result.totalPresentationEvidence.validation)) << ",\n";
+    json << "    \"packetScanExecuted\": "
+         << (result.presentationBudgetPacketScanExecuted ? "true" : "false") << ",\n";
     json << "    \"physicalInputFrames\": " << result.physicalInputFrames << ",\n";
     json << "    \"acceptedInputFrames\": " << result.acceptedInputFrames << ",\n";
     json << "    \"rejectedInputFrames\": " << result.rejectedInputFrames << ",\n";

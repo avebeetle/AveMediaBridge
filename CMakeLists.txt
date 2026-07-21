@@ -72,6 +72,7 @@ target_link_libraries(AveMediaBridgeCore
 add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
+    src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/MediaProbeService.cpp
     src/Probe/PacketScan.cpp
@@ -246,6 +247,7 @@ set(AVEMEDIABRIDGE_GOLDEN06_VORBIS_TEST_MEDIA
 
 add_executable(AveMediaBridgeExactTotalPresentationBudgetTests
     tests/ExactTotalPresentationBudgetTests.cpp
+    src/Probe/FlacStreamInfo.cpp
     src/Probe/PresentationBudgetPolicy.cpp
 )
 
@@ -269,4 +271,50 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.exact_total_presentation_budget
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_EA020_FLAC_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA020_mka_flac_16000_257.mka"
+    CACHE FILEPATH
+    "External MKA/FLAC 257-frame STREAMINFO regression media")
+set(AVEMEDIABRIDGE_EA069_FLAC_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA069_mka_flac_48000_102400.mka"
+    CACHE FILEPATH
+    "External MKA/FLAC 102400-frame STREAMINFO regression media")
+set(AVEMEDIABRIDGE_EA085_FLAC_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA085_mka_flac_48000_103423.mka"
+    CACHE FILEPATH
+    "External MKA/FLAC 103423-frame STREAMINFO regression media")
+set(AVEMEDIABRIDGE_EA094_FLAC_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/pcm_lossless/EA094_mka_flac_48000_28801023.mka"
+    CACHE FILEPATH
+    "External MKA/FLAC long STREAMINFO regression media")
+
+add_executable(AveMediaBridgeFlacStreamInfoPresentationAuthorityTests
+    tests/FlacStreamInfoPresentationAuthorityTests.cpp
+    src/Probe/FlacStreamInfo.cpp
+    src/Probe/PresentationBudgetPolicy.cpp
+)
+
+target_link_libraries(AveMediaBridgeFlacStreamInfoPresentationAuthorityTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    bcrypt
+)
+target_include_directories(AveMediaBridgeFlacStreamInfoPresentationAuthorityTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeFlacStreamInfoPresentationAuthorityTests)
+
+add_test(
+    NAME AveMediaBridgeTests.flac_streaminfo_presentation_authority
+    COMMAND AveMediaBridgeFlacStreamInfoPresentationAuthorityTests
+        "${AVEMEDIABRIDGE_EA020_FLAC_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA069_FLAC_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA085_FLAC_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA094_FLAC_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.flac_streaminfo_presentation_authority
     PROPERTIES SKIP_RETURN_CODE 77)

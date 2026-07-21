@@ -1,5 +1,7 @@
 #include "PresentationBudgetPolicy.hpp"
 
+#include "FlacStreamInfo.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <string_view>
@@ -88,35 +90,63 @@ bool checkedPacketPresentation(
 
 }  // namespace
 
+TotalPresentationEvidence reconcileTotalPresentationEvidence(
+    const TotalPresentationEvidence& sourceSpecific,
+    const TotalPresentationEvidence& streamDuration) noexcept {
+    const bool sourceExact = validExactTotal(sourceSpecific);
+    const bool durationExact = validExactTotal(streamDuration);
+    if (sourceExact && durationExact) {
+        TotalPresentationEvidence result = sourceSpecific;
+        result.conflict =
+            sourceSpecific.domain != streamDuration.domain ||
+            sourceSpecific.sampleRate != streamDuration.sampleRate ||
+            sourceSpecific.frames != streamDuration.frames;
+        return result;
+    }
+    if (sourceExact) {
+        return sourceSpecific;
+    }
+    return streamDuration;
+}
+
 TotalPresentationEvidence makeStreamTotalPresentationEvidence(
     const AVFormatContext* formatContext,
     const AVStream* audioStream) noexcept {
     TotalPresentationEvidence result;
     const AVCodecParameters* codecpar = audioStream ? audioStream->codecpar : nullptr;
-    if (!codecpar || codecpar->sample_rate <= 0) {
+    if (!codecpar) {
         return result;
     }
 
+    TotalPresentationEvidence sourceSpecific;
+    const FlacStreamInfoResult flac = parseFlacStreamInfo(codecpar);
+    if (flac.valid()) {
+        sourceSpecific.frames = flac.totalSamples;
+        sourceSpecific.trust = PresentationTotalTrust::SampleExact;
+        sourceSpecific.source = PresentationTotalSource::FlacStreamInfoTotalSamples;
+        sourceSpecific.domain = PresentationSampleDomain::NativeStreamSamples;
+        sourceSpecific.sampleRate = flac.sampleRate;
+        sourceSpecific.exactRescale = true;
+        sourceSpecific.validation = PresentationTotalValidation::SelfContainedMetadata;
+    }
+
     std::uint64_t frames = 0;
-    if (!exactNativeFrames(
+    if (exactNativeFrames(
             audioStream->duration,
             audioStream->time_base,
             codecpar->sample_rate,
             frames)) {
-        return result;
+        result.frames = frames;
+        result.sampleRate = codecpar->sample_rate;
+        result.domain = PresentationSampleDomain::NativeStreamSamples;
+        result.exactRescale = true;
+        result.trust = PresentationTotalTrust::Estimated;
+        result.source = PresentationTotalSource::StreamDurationEstimate;
     }
 
-    result.frames = frames;
-    result.sampleRate = codecpar->sample_rate;
-    result.domain = PresentationSampleDomain::NativeStreamSamples;
-    result.exactRescale = true;
-    result.trust = PresentationTotalTrust::Estimated;
-    result.source = PresentationTotalSource::StreamDurationEstimate;
-
-    if (isPcmCodec(codecpar->codec_id)) {
+    if (result.exactRescale && isPcmCodec(codecpar->codec_id)) {
         result.trust = PresentationTotalTrust::SampleExact;
         result.source = PresentationTotalSource::ExactPcmStreamDuration;
-        return result;
     }
 
     // The Ogg demuxer derives a Vorbis stream duration from the final-page
@@ -125,21 +155,16 @@ TotalPresentationEvidence makeStreamTotalPresentationEvidence(
         formatContext && formatContext->iformat &&
         formatListContains(formatContext->iformat->name, "ogg") &&
         codecpar->codec_id == AV_CODEC_ID_VORBIS;
-    if (oggVorbisGranule) {
+    if (result.exactRescale && oggVorbisGranule) {
         result.trust = PresentationTotalTrust::SampleExact;
         result.source = PresentationTotalSource::OggEosGranule;
     }
-    return result;
+    return reconcileTotalPresentationEvidence(sourceSpecific, result);
 }
 
 StreamingPresentationBudgetDecision resolveStreamingPresentationBudget(
     const StreamingPresentationBudgetInput& input) {
     StreamingPresentationBudgetDecision result;
-    if (!input.scanReachedEof || input.scanReadError) {
-        result.rejectionReason = "packet_scan_incomplete";
-        return result;
-    }
-
     const bool streamExact = validExactTotal(input.streamTotal);
     const bool packetExact = validExactTotal(input.exactPacketTotal);
     if ((input.streamTotal.trust == PresentationTotalTrust::SampleExact &&
@@ -153,6 +178,20 @@ StreamingPresentationBudgetDecision resolveStreamingPresentationBudget(
         (input.streamTotal.sampleRate != input.exactPacketTotal.sampleRate ||
          input.streamTotal.frames != input.exactPacketTotal.frames)) {
         result.rejectionReason = "authoritative_total_conflict";
+        return result;
+    }
+
+    if (streamExact &&
+        input.streamTotal.validation == PresentationTotalValidation::SelfContainedMetadata) {
+        result.accepted = true;
+        result.frames = input.streamTotal.frames;
+        result.source = input.streamTotal.source;
+        result.rejectionReason = "accepted_self_contained_sample_exact_total";
+        return result;
+    }
+
+    if (!input.scanReachedEof || input.scanReadError) {
+        result.rejectionReason = "packet_scan_incomplete";
         return result;
     }
 
@@ -221,6 +260,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "exact_pcm_stream_duration";
         case PresentationTotalSource::OggEosGranule:
             return "ogg_eos_granule";
+        case PresentationTotalSource::FlacStreamInfoTotalSamples:
+            return "flac_streaminfo_total_samples";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }
@@ -235,6 +276,17 @@ const char* presentationSampleDomainName(PresentationSampleDomain domain) noexce
             return "native_stream_samples";
     }
     return "unknown";
+}
+
+const char* presentationTotalValidationName(
+    PresentationTotalValidation validation) noexcept {
+    switch (validation) {
+        case PresentationTotalValidation::PacketCrossCheckRequired:
+            return "packet_cross_check_required";
+        case PresentationTotalValidation::SelfContainedMetadata:
+            return "self_contained_metadata";
+    }
+    return "packet_cross_check_required";
 }
 
 }  // namespace AveMediaBridge::Probe

@@ -18,12 +18,18 @@ enum class PresentationTotalSource {
     StreamDurationEstimate,
     ExactPcmStreamDuration,
     OggEosGranule,
+    FlacStreamInfoTotalSamples,
     ExactPacketPresentation
 };
 
 enum class PresentationSampleDomain {
     Unknown,
     NativeStreamSamples
+};
+
+enum class PresentationTotalValidation {
+    PacketCrossCheckRequired,
+    SelfContainedMetadata
 };
 
 struct TotalPresentationEvidence {
@@ -34,6 +40,8 @@ struct TotalPresentationEvidence {
     int sampleRate = 0;
     bool exactRescale = false;
     bool conflict = false;
+    PresentationTotalValidation validation =
+        PresentationTotalValidation::PacketCrossCheckRequired;
 };
 
 struct StreamingPresentationBudgetInput {
@@ -62,6 +70,10 @@ TotalPresentationEvidence makeStreamTotalPresentationEvidence(
     const AVFormatContext* formatContext,
     const AVStream* audioStream) noexcept;
 
+TotalPresentationEvidence reconcileTotalPresentationEvidence(
+    const TotalPresentationEvidence& sourceSpecific,
+    const TotalPresentationEvidence& streamDuration) noexcept;
+
 StreamingPresentationBudgetDecision resolveStreamingPresentationBudget(
     const StreamingPresentationBudgetInput& input);
 
@@ -72,5 +84,6 @@ std::uint64_t remainingPresentationInputFrames(
 const char* presentationTotalTrustName(PresentationTotalTrust trust) noexcept;
 const char* presentationTotalSourceName(PresentationTotalSource source) noexcept;
 const char* presentationSampleDomainName(PresentationSampleDomain domain) noexcept;
+const char* presentationTotalValidationName(PresentationTotalValidation validation) noexcept;
 
 }  // namespace AveMediaBridge::Probe
