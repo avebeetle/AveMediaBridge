@@ -8,8 +8,10 @@
 #include "../Decode/PcmFormat.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
+#include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/PacketScan.hpp"
+#include "../Probe/PresentationBudgetPolicy.hpp"
 #include "../Utils/JsonUtils.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -69,8 +71,17 @@ struct StreamingImportResult {
     bool diskPreflightEstimateKnown = false;
     std::uintmax_t diskPreflightAvailableBytes = 0;
     bool canceled = false;
+    Probe::TotalPresentationEvidence totalPresentationEvidence;
     bool presentationBudgetKnown = false;
     std::uint64_t presentationBudgetFrames = 0;
+    Probe::PresentationTotalSource presentationBudgetSource =
+        Probe::PresentationTotalSource::None;
+    std::string presentationBudgetReason = "not_evaluated";
+    std::uint64_t physicalInputFrames = 0;
+    std::uint64_t acceptedInputFrames = 0;
+    std::uint64_t rejectedInputFrames = 0;
+    std::uint64_t producedOutputFrames = 0;
+    std::uint64_t flushOutputFrames = 0;
 };
 
 struct StreamingStatsAccumulator {
@@ -459,31 +470,10 @@ bool estimateDecodedBytesForPreflight(
         estimateKind);
 }
 
-std::int64_t exactFramesFromTimeBaseUnits(
-    std::int64_t units,
-    AVRational timeBase,
-    int sampleRate) {
-    if (units <= 0 ||
-        timeBase.num <= 0 ||
-        timeBase.den <= 0 ||
-        sampleRate <= 0) {
-        return 0;
-    }
-
-    const AVRational sampleTimeBase{1, sampleRate};
-    const std::int64_t candidateFrames =
-        av_rescale_q(units, timeBase, sampleTimeBase);
-    if (candidateFrames <= 0) {
-        return 0;
-    }
-    return av_compare_ts(units, timeBase, candidateFrames, sampleTimeBase) == 0
-        ? candidateFrames
-        : 0;
-}
-
 void resolveStreamingPresentationBudget(
     StreamingImportResult& result,
     const std::string& path,
+    const AVFormatContext* formatContext,
     const AVStream* audioStream) {
     if (path.empty() || !audioStream || !audioStream->codecpar) {
         return;
@@ -491,9 +481,9 @@ void resolveStreamingPresentationBudget(
 
     const AVCodecParameters* codecpar = audioStream->codecpar;
     const int sampleRate = codecpar->sample_rate;
-    const std::int64_t streamDurationFrames =
-        exactFramesFromTimeBaseUnits(audioStream->duration, audioStream->time_base, sampleRate);
-    if (streamDurationFrames <= 0) {
+    result.totalPresentationEvidence =
+        Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
+    if (result.totalPresentationEvidence.trust == Probe::PresentationTotalTrust::Unknown) {
         return;
     }
 
@@ -514,34 +504,46 @@ void resolveStreamingPresentationBudget(
     const Probe::PacketFrameCountScan& packetScan = evidence.packetTiming;
     const Probe::GaplessSkipSampleScan& gaplessScan = evidence.gapless;
 
-    if (!packetScan.warning.empty() ||
-        !gaplessScan.warning.empty() ||
-        packetScan.audioPacketCount <= 0 ||
-        packetScan.packetsWithDuration != packetScan.audioPacketCount ||
-        packetScan.packetDurationSumFrames <= 0) {
-        return;
-    }
+    const Probe::ExactPacketPresentationEvidence exactPacketEvidence =
+        Probe::makeExactPacketPresentationEvidence(evidence);
+    const Probe::ExactPacketPresentationBudget exactPacketBudget =
+        Probe::resolveExactPacketPresentationBudget(exactPacketEvidence);
 
-    std::int64_t packetPresentationFrames = packetScan.packetDurationSumFrames;
-    if (gaplessScan.skipSamplesStart > 0) {
-        if (packetPresentationFrames <= gaplessScan.skipSamplesStart) {
-            return;
-        }
-        packetPresentationFrames -= gaplessScan.skipSamplesStart;
+    Probe::StreamingPresentationBudgetInput budgetInput;
+    budgetInput.streamTotal = result.totalPresentationEvidence;
+    if (exactPacketBudget.accepted) {
+        budgetInput.exactPacketTotal.frames =
+            static_cast<std::uint64_t>(exactPacketBudget.presentationFrames);
+        budgetInput.exactPacketTotal.trust = Probe::PresentationTotalTrust::SampleExact;
+        budgetInput.exactPacketTotal.source =
+            Probe::PresentationTotalSource::ExactPacketPresentation;
+        budgetInput.exactPacketTotal.domain =
+            Probe::PresentationSampleDomain::NativeStreamSamples;
+        budgetInput.exactPacketTotal.sampleRate = sampleRate;
+        budgetInput.exactPacketTotal.exactRescale = true;
     }
-    if (gaplessScan.skipSamplesEnd > 0) {
-        if (packetPresentationFrames <= gaplessScan.skipSamplesEnd) {
-            return;
-        }
-        packetPresentationFrames -= gaplessScan.skipSamplesEnd;
-    }
+    budgetInput.scanReachedEof =
+        packetScan.reachedEof && gaplessScan.reachedEof;
+    budgetInput.scanReadError =
+        packetScan.readError || gaplessScan.readError ||
+        !packetScan.warning.empty() || !gaplessScan.warning.empty();
+    budgetInput.packetDurationsComplete =
+        packetScan.audioPacketCount > 0 &&
+        packetScan.packetsWithDuration == packetScan.audioPacketCount;
+    budgetInput.packetDurationArithmeticValid =
+        packetScan.packetDurationArithmeticValid;
+    budgetInput.packetDurationSumFrames = packetScan.packetDurationSumFrames;
+    budgetInput.initialSkipFrames = gaplessScan.skipSamplesStart;
+    budgetInput.terminalDiscardFrames = gaplessScan.skipSamplesEnd;
 
-    if (packetPresentationFrames != streamDurationFrames) {
-        return;
+    const Probe::StreamingPresentationBudgetDecision budget =
+        Probe::resolveStreamingPresentationBudget(budgetInput);
+    result.presentationBudgetReason = budget.rejectionReason;
+    if (budget.accepted) {
+        result.presentationBudgetKnown = true;
+        result.presentationBudgetFrames = budget.frames;
+        result.presentationBudgetSource = budget.source;
     }
-
-    result.presentationBudgetKnown = true;
-    result.presentationBudgetFrames = static_cast<std::uint64_t>(streamDurationFrames);
 }
 
 std::uint64_t nonNegativeToUint64(std::int64_t value) {
@@ -922,6 +924,19 @@ bool addWrittenFrames(StreamingImportResult& result, int frameCount, std::string
     return true;
 }
 
+bool addUnsignedFrames(
+    std::uint64_t& destination,
+    std::uint64_t frames,
+    const char* counterName,
+    std::string& error) {
+    if (destination > (std::numeric_limits<std::uint64_t>::max)() - frames) {
+        error = std::string("streaming import ") + counterName + " overflow";
+        return false;
+    }
+    destination += frames;
+    return true;
+}
+
 int writeConvertedStreamingSamples(
     StreamingSwrState& swr,
     const AVFrame* frame,
@@ -944,11 +959,9 @@ int writeConvertedStreamingSamples(
     presentationInput.frameNbSamples = frame->nb_samples;
     presentationInput.inputSampleRate = swr.sampleRate;
     if (result.presentationBudgetKnown) {
-        const std::uint64_t writtenFrames = nonNegativeToUint64(result.framesWritten);
-        const std::uint64_t remainingFrames =
-            result.presentationBudgetFrames > writtenFrames
-                ? result.presentationBudgetFrames - writtenFrames
-                : 0;
+        const std::uint64_t remainingFrames = Probe::remainingPresentationInputFrames(
+            result.presentationBudgetFrames,
+            result.acceptedInputFrames);
         presentationInput.remainingPresentationFramesKnown = true;
         presentationInput.remainingPresentationFrames = remainingFrames;
         const bool terminalBudgetFrame =
@@ -963,6 +976,20 @@ int writeConvertedStreamingSamples(
     const Decode::DecodedAudioPresentationPlan presentationPlan =
         Decode::resolvePresentedInputSamples(presentationInput);
     const int inputSamples = presentationPlan.acceptedInputSamples;
+    std::string countError;
+    if (!addUnsignedFrames(
+            result.physicalInputFrames,
+            static_cast<std::uint64_t>(presentationPlan.physicalInputSamples),
+            "physical input frame count",
+            countError) ||
+        !addUnsignedFrames(
+            result.rejectedInputFrames,
+            static_cast<std::uint64_t>(presentationPlan.trimmedTailSamples),
+            "rejected input frame count",
+            countError)) {
+        result.error = countError;
+        return AVERROR(EOVERFLOW);
+    }
     if (inputSamples <= 0) {
         return 0;
     }
@@ -992,11 +1019,25 @@ int writeConvertedStreamingSamples(
         result.error = "swr_convert failed: " + ffErrorString(ret);
         return ret;
     }
+    if (!addUnsignedFrames(
+            result.acceptedInputFrames,
+            static_cast<std::uint64_t>(inputSamples),
+            "accepted input frame count",
+            countError) ||
+        !addUnsignedFrames(
+            result.producedOutputFrames,
+            static_cast<std::uint64_t>(ret),
+            "produced output frame count",
+            countError)) {
+        result.error = countError;
+        return AVERROR(EOVERFLOW);
+    }
     if (ret == 0) {
         return 0;
     }
 
-    const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+    const std::size_t writtenSamples =
+        static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
     analyzePostSwrSamples(diagnostic, swr.outputBuffer.data(), ret, swr.channels);
     const std::size_t writtenBytes = writtenSamples * sizeof(float);
     output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
@@ -1008,7 +1049,6 @@ int writeConvertedStreamingSamples(
 
     stats.addSamples(swr.outputBuffer.data(), writtenSamples);
     const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
-    std::string countError;
     if (!addWrittenFrames(result, ret, countError)) {
         result.error = countError;
         return AVERROR(EOVERFLOW);
@@ -1069,7 +1109,22 @@ int flushStreamingSwr(
             break;
         }
 
-        const std::size_t writtenSamples = static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
+        std::string countError;
+        if (!addUnsignedFrames(
+                result.producedOutputFrames,
+                static_cast<std::uint64_t>(ret),
+                "produced output frame count",
+                countError) ||
+            !addUnsignedFrames(
+                result.flushOutputFrames,
+                static_cast<std::uint64_t>(ret),
+                "flush output frame count",
+                countError)) {
+            result.error = countError;
+            return AVERROR(EOVERFLOW);
+        }
+        const std::size_t writtenSamples =
+            static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
         analyzePostSwrSamples(diagnostic, swr.outputBuffer.data(), ret, swr.channels);
         const std::size_t writtenBytes = writtenSamples * sizeof(float);
         output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
@@ -1081,7 +1136,6 @@ int flushStreamingSwr(
 
         stats.addSamples(swr.outputBuffer.data(), writtenSamples);
         const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
-        std::string countError;
         if (!addWrittenFrames(result, ret, countError)) {
             result.error = countError;
             return AVERROR(EOVERFLOW);
@@ -1246,7 +1300,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             result.preflightEstimatedFrames,
             result.preflightEstimatedBytes,
             result.preflightEstimateKind);
-    resolveStreamingPresentationBudget(result, path, audioStream);
+    resolveStreamingPresentationBudget(result, path, formatContext, audioStream);
 
     std::string preflightError;
     if (!checkDiskPreflight(sessionDir, result, preflightError)) {
@@ -1365,6 +1419,13 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
 
     ret = flushStreamingSwr(swr, output, stats, result, callbacks, &fullScaleDiagnostic);
     if (ret < 0) {
+        cleanup();
+        return result;
+    }
+    if (result.presentationBudgetKnown &&
+        (result.acceptedInputFrames > result.presentationBudgetFrames ||
+         nonNegativeToUint64(result.framesWritten) > result.presentationBudgetFrames)) {
+        result.error = "streaming presentation budget was exceeded";
         cleanup();
         return result;
     }
@@ -1658,6 +1719,25 @@ bool writeStreamingMetadataJson(
     json << "  \"decodeReport\": ";
     writeDecodeReportJson(json, result.decode, "  ");
     json << ",\n";
+    json << "  \"presentationBudget\": {\n";
+    json << "    \"known\": " << (result.presentationBudgetKnown ? "true" : "false") << ",\n";
+    json << "    \"frames\": " << result.presentationBudgetFrames << ",\n";
+    json << "    \"source\": "
+         << jsonString(Probe::presentationTotalSourceName(result.presentationBudgetSource)) << ",\n";
+    json << "    \"reason\": " << jsonString(result.presentationBudgetReason) << ",\n";
+    json << "    \"evidenceTrust\": "
+         << jsonString(Probe::presentationTotalTrustName(result.totalPresentationEvidence.trust)) << ",\n";
+    json << "    \"evidenceSource\": "
+         << jsonString(Probe::presentationTotalSourceName(result.totalPresentationEvidence.source)) << ",\n";
+    json << "    \"sampleDomain\": "
+         << jsonString(Probe::presentationSampleDomainName(result.totalPresentationEvidence.domain)) << ",\n";
+    json << "    \"physicalInputFrames\": " << result.physicalInputFrames << ",\n";
+    json << "    \"acceptedInputFrames\": " << result.acceptedInputFrames << ",\n";
+    json << "    \"rejectedInputFrames\": " << result.rejectedInputFrames << ",\n";
+    json << "    \"producedOutputFrames\": " << result.producedOutputFrames << ",\n";
+    json << "    \"flushOutputFrames\": " << result.flushOutputFrames << ",\n";
+    json << "    \"writtenOutputFrames\": " << result.framesWritten << "\n";
+    json << "  },\n";
     json << "  \"audio\": {\n";
     json << "    \"sampleRate\": " << result.sampleRate << ",\n";
     json << "    \"channels\": " << result.channels << ",\n";

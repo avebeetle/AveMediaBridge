@@ -75,6 +75,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/FrameCountPolicy.cpp
     src/Probe/MediaProbeService.cpp
     src/Probe/PacketScan.cpp
+    src/Probe/PresentationBudgetPolicy.cpp
     src/Probe/ProbeJsonWriter.cpp
     src/Utils/JsonUtils.cpp
 )
@@ -228,4 +229,44 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.mp4_mp3_loading_ready_presentation
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_EA102_VORBIS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/vorbis/EA102_ogg_vorbis_48000_63.ogg"
+    CACHE FILEPATH
+    "External 63-frame Ogg Vorbis exact-total regression media")
+set(AVEMEDIABRIDGE_EA120_VORBIS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/vorbis/EA120_ogg_vorbis_11025_1023.ogg"
+    CACHE FILEPATH
+    "External 1023-frame Ogg Vorbis exact-total regression media")
+set(AVEMEDIABRIDGE_GOLDEN06_VORBIS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/06_ogg_vorbis_stereo_44100.ogg"
+    CACHE FILEPATH
+    "External long Ogg Vorbis Golden regression media")
+
+add_executable(AveMediaBridgeExactTotalPresentationBudgetTests
+    tests/ExactTotalPresentationBudgetTests.cpp
+    src/Probe/PresentationBudgetPolicy.cpp
+)
+
+target_link_libraries(AveMediaBridgeExactTotalPresentationBudgetTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    bcrypt
+)
+target_include_directories(AveMediaBridgeExactTotalPresentationBudgetTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeExactTotalPresentationBudgetTests)
+
+add_test(
+    NAME AveMediaBridgeTests.exact_total_presentation_budget
+    COMMAND AveMediaBridgeExactTotalPresentationBudgetTests
+        "${AVEMEDIABRIDGE_EA102_VORBIS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA120_VORBIS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_GOLDEN06_VORBIS_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.exact_total_presentation_budget
     PROPERTIES SKIP_RETURN_CODE 77)

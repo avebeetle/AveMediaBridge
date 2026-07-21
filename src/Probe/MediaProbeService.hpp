@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PresentationBudgetPolicy.hpp"
 #include "ProbeJsonWriter.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
@@ -11,6 +12,7 @@ namespace AveMediaBridge::Probe {
 
 struct FastProbeResult {
     FastProbeJsonDocument document;
+    TotalPresentationEvidence totalPresentation;
     bool streamInfoFound = false;
 };
 

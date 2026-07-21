@@ -52,6 +52,7 @@ struct PacketFrameCountScan {
     std::int64_t wmav2FrameCountCandidateFrames = 0;
     double averagePacketDurationFrames = 0.0;
     bool packetPtsMonotonic = true;
+    bool packetDurationArithmeticValid = false;
     bool codecFrameCountKnown = false;
     bool codecFrameCountExact = false;
     bool reachedEof = false;
@@ -86,6 +87,7 @@ private:
     PacketFrameCountScan result_;
     long double packetDurationFrames_ = 0.0L;
     std::int64_t previousPacketPts_ = AV_NOPTS_VALUE;
+    bool packetDurationArithmeticValid_ = true;
     bool codecFrameCountOverflow_ = false;
 };
 

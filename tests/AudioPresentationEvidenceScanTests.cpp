@@ -113,6 +113,7 @@ bool packetScansEqual(
         left.packetPtsSpanWithoutLastDurationFrames == right.packetPtsSpanWithoutLastDurationFrames &&
         left.packetPtsSpanPlusLastDurationFrames == right.packetPtsSpanPlusLastDurationFrames &&
         left.packetDurationSumFrames == right.packetDurationSumFrames &&
+        left.packetDurationArithmeticValid == right.packetDurationArithmeticValid &&
         left.sampleExactPacketDurationSumFrames == right.sampleExactPacketDurationSumFrames &&
         left.packetsWithSampleExactDuration == right.packetsWithSampleExactDuration &&
         left.codecFrameCountFrames == right.codecFrameCountFrames &&
@@ -174,6 +175,7 @@ void testPacketTimingAccumulator() {
     expect(result.audioPacketCount == 3, "audio packet count accumulation changed");
     expect(result.packetsWithDuration == 3, "duration packet count changed");
     expect(result.packetDurationSumFrames == 600, "packet duration sum changed");
+    expect(result.packetDurationArithmeticValid, "valid packet duration arithmetic was rejected");
     expect(result.averagePacketDurationFrames == 200.0, "packet duration average changed");
     expect(result.firstPacketPts == 0, "first packet PTS changed");
     expect(result.lastPacketPts == 300, "last packet PTS changed");
@@ -192,6 +194,21 @@ void testNonMonotonicPts() {
     expect(!result.packetPtsMonotonic, "non-monotonic PTS sequence accepted");
     expect(result.firstPacketPts == 90, "minimum first PTS changed");
     expect(result.lastPacketPts == 100, "maximum last PTS changed");
+}
+
+void testWrappedPacketDurationIsDiagnosticOnly() {
+    Probe::PacketFrameCountAccumulator accumulator(
+        48000, AV_CODEC_ID_VORBIS, AVRational{1, 48000});
+    observeSelected(accumulator, 0, 128);
+    observeSelected(accumulator, 128, 4294967231LL);
+    const Probe::PacketFrameCountScan result = accumulator.finalize();
+
+    expect(
+        result.packetDurationSumFrames == 4294967359LL,
+        "wrapped packet duration diagnostic sum changed");
+    expect(
+        !result.packetDurationArithmeticValid,
+        "wrapped packet duration was promoted as validation authority");
 }
 
 void testCodecCandidates() {
@@ -591,6 +608,7 @@ void runUnitTests() {
 
     testPacketTimingAccumulator();
     testNonMonotonicPts();
+    testWrappedPacketDurationIsDiagnosticOnly();
     testCodecCandidates();
     testGaplessAccumulator();
     testOverflowAndPartialFailure();

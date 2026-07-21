@@ -2,6 +2,7 @@
 
 #include "FrameCountPolicy.hpp"
 #include "PacketScan.hpp"
+#include "PresentationBudgetPolicy.hpp"
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
@@ -88,31 +89,6 @@ double secondsFromStreamDuration(const AVStream* stream) {
     }
 
     return static_cast<double>(stream->duration) * av_q2d(stream->time_base);
-}
-
-std::int64_t exactPcmFramesFromStreamDuration(
-    const AVStream* stream,
-    const AVCodecParameters* codecpar) {
-    if (!stream || !codecpar || !isPcmCodec(codecpar->codec_id) || codecpar->sample_rate <= 0 ||
-        stream->duration == AV_NOPTS_VALUE || stream->duration <= 0 ||
-        stream->time_base.num <= 0 || stream->time_base.den <= 0) {
-        return 0;
-    }
-
-    if (stream->time_base.num == 1 && stream->time_base.den == codecpar->sample_rate) {
-        return stream->duration;
-    }
-
-    const long double frames =
-        static_cast<long double>(stream->duration) *
-        static_cast<long double>(stream->time_base.num) *
-        static_cast<long double>(codecpar->sample_rate) /
-        static_cast<long double>(stream->time_base.den);
-    const auto rounded = static_cast<std::int64_t>(std::llround(frames));
-    if (rounded > 0 && std::fabs(frames - static_cast<long double>(rounded)) < 0.000001L) {
-        return rounded;
-    }
-    return 0;
 }
 
 std::int64_t exactFramesFromSampleDomainStreamDuration(const AVStream* stream) {
@@ -206,12 +182,20 @@ void estimateFastDurationAndFrames(
     FastProbeJsonDocument& document = result.document;
     const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
     const double streamSeconds = secondsFromStreamDuration(audioStream);
-    const std::int64_t exactPcmFrames = exactPcmFramesFromStreamDuration(audioStream, codecpar);
+    result.totalPresentation = makeStreamTotalPresentationEvidence(formatContext, audioStream);
+    const bool sampleExactTotal =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const std::int64_t exactPresentationFrames =
+        sampleExactTotal &&
+            result.totalPresentation.frames <=
+                static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())
+        ? static_cast<std::int64_t>(result.totalPresentation.frames)
+        : 0;
 
     if (streamSeconds > 0.0) {
         document.durationSec = streamSeconds;
         document.durationEstimationMethod = "from_stream";
-        document.durationKind = exactPcmFrames > 0 ? "exact" : "estimated";
+        document.durationKind = exactPresentationFrames > 0 ? "exact" : "estimated";
     } else if (formatContext && formatContext->duration != AV_NOPTS_VALUE && formatContext->duration > 0) {
         document.durationSec = static_cast<double>(formatContext->duration) / static_cast<double>(AV_TIME_BASE);
         document.durationEstimationMethod = "from_pts";
@@ -228,12 +212,16 @@ void estimateFastDurationAndFrames(
     }
 
     const int sampleRate = codecpar ? codecpar->sample_rate : 0;
-    if (exactPcmFrames > 0) {
-        document.decodedSampleFrames = exactPcmFrames;
+    if (exactPresentationFrames > 0) {
+        document.decodedSampleFrames = exactPresentationFrames;
         document.decodedSampleFramesKind = "exact";
         document.decodedSampleFramesTrust = "authoritative";
-        document.decodedSampleFramesSource = "exact_pcm_stream_duration";
-        document.frameCountPolicyReason = "PCM stream duration is in sample frames";
+        document.decodedSampleFramesSource =
+            presentationTotalSourceName(result.totalPresentation.source);
+        document.frameCountPolicyReason =
+            result.totalPresentation.source == PresentationTotalSource::OggEosGranule
+                ? "Ogg EOS granule provides the half-open PCM presentation end"
+                : "stream duration is authoritative in the native sample domain";
     } else if (document.durationSec > 0.0 && sampleRate > 0 && std::isfinite(document.durationSec)) {
         document.decodedSampleFrames =
             static_cast<std::int64_t>(std::llround(document.durationSec * static_cast<double>(sampleRate)));

@@ -306,6 +306,12 @@ void PacketFrameCountAccumulator::observe(const PacketFrameCountObservation& pac
     }
     if (packet.duration > 0) {
         ++result_.packetsWithDuration;
+        if (packet.duration > (std::numeric_limits<std::int32_t>::max)()) {
+            // Some demuxers expose a wrapped negative terminal duration
+            // through an unsigned 32-bit intermediate. It remains useful as
+            // a diagnostic, but cannot validate presentation arithmetic.
+            packetDurationArithmeticValid_ = false;
+        }
         packetDurationFrames_ +=
             static_cast<long double>(packet.duration) *
             static_cast<long double>(timeBase_.num) *
@@ -351,6 +357,11 @@ PacketFrameCountScan PacketFrameCountAccumulator::finalize(std::string warning) 
     PacketFrameCountScan result = result_;
     result.warning = std::move(warning);
     result.packetDurationSumFrames = roundedFramesFromLongDouble(packetDurationFrames_);
+    result.packetDurationArithmeticValid =
+        packetDurationArithmeticValid_ &&
+        result.audioPacketCount > 0 &&
+        result.packetsWithDuration == result.audioPacketCount &&
+        result.packetDurationSumFrames >= 0;
     result.averagePacketDurationFrames =
         result.packetsWithDuration > 0
             ? static_cast<double>(packetDurationFrames_) /
