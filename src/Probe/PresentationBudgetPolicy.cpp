@@ -292,6 +292,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "matroska_aac_sequential_presentation";
         case PresentationTotalSource::Mp4Mp3SampleEditTablePresentation:
             return "mp4_mp3_sample_edit_table_presentation";
+        case PresentationTotalSource::AdtsAacSequentialPresentation:
+            return "adts_aac_sequential_presentation";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }

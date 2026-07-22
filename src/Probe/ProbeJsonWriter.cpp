@@ -384,6 +384,91 @@ bool writeProbeJson(
     json << "  \"matroskaAacSequentialLateFallback\": "
          << (document.matroskaAacSequentialLateFallback ? "true" : "false")
          << ",\n";
+    json << "  \"adtsAacSequentialEligible\": "
+         << (document.adtsAacSequentialEligible ? "true" : "false") << ",\n";
+    json << "  \"adtsAacSequentialEntered\": "
+         << (document.adtsAacSequentialEntered ? "true" : "false") << ",\n";
+    json << "  \"adtsAacSequentialStatus\": "
+         << jsonString(document.adtsAacSequentialStatus) << ",\n";
+    json << "  \"adtsAacSequentialReason\": "
+         << jsonString(document.adtsAacSequentialReason) << ",\n";
+    json << "  \"adtsAacSequentialMpegId\": "
+         << document.adtsAacSequentialMpegId << ",\n";
+    json << "  \"adtsAacSequentialAudioObjectType\": "
+         << document.adtsAacSequentialAudioObjectType << ",\n";
+    json << "  \"adtsAacSequentialSampleRate\": "
+         << document.adtsAacSequentialSampleRate << ",\n";
+    json << "  \"adtsAacSequentialChannels\": "
+         << document.adtsAacSequentialChannels << ",\n";
+    json << "  \"adtsAacSequentialChannelConfiguration\": "
+         << document.adtsAacSequentialChannelConfiguration << ",\n";
+    json << "  \"adtsAacSequentialProtectionAbsent\": "
+         << (document.adtsAacSequentialProtectionAbsent ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialFrameCount\": "
+         << document.adtsAacSequentialFrameCount << ",\n";
+    json << "  \"adtsAacSequentialRawDataBlockCount\": "
+         << document.adtsAacSequentialRawDataBlockCount << ",\n";
+    json << "  \"adtsAacSequentialSamplesPerRawDataBlock\": "
+         << document.adtsAacSequentialSamplesPerRawDataBlock << ",\n";
+    json << "  \"adtsAacSequentialPhysicalFrames\": "
+         << document.adtsAacSequentialPhysicalFrames << ",\n";
+    json << "  \"adtsAacSequentialPresentationFrames\": "
+         << document.adtsAacSequentialPresentationFrames << ",\n";
+    json << "  \"adtsAacSequentialFileSizeBytes\": "
+         << document.adtsAacSequentialFileSizeBytes << ",\n";
+    json << "  \"adtsAacSequentialFileIndex\": "
+         << document.adtsAacSequentialFileIndex << ",\n";
+    json << "  \"adtsAacSequentialLastWriteTime100ns\": "
+         << document.adtsAacSequentialLastWriteTime100ns << ",\n";
+    json << "  \"adtsAacSequentialVolumeSerialNumber\": "
+         << document.adtsAacSequentialVolumeSerialNumber << ",\n";
+    json << "  \"adtsAacSequentialBytesReturned\": "
+         << document.adtsAacSequentialBytesReturned << ",\n";
+    json << "  \"adtsAacSequentialUniqueBytes\": "
+         << document.adtsAacSequentialUniqueBytes << ",\n";
+    json << "  \"adtsAacSequentialDuplicateBytes\": "
+         << document.adtsAacSequentialDuplicateBytes << ",\n";
+    json << "  \"adtsAacSequentialReadCalls\": "
+         << document.adtsAacSequentialReadCalls << ",\n";
+    json << "  \"adtsAacSequentialSeekCallsAfterOpen\": "
+         << document.adtsAacSequentialSeekCallsAfterOpen << ",\n";
+    json << "  \"adtsAacSequentialMaximumFrameBytes\": "
+         << document.adtsAacSequentialMaximumFrameBytes << ",\n";
+    json << "  \"adtsAacSequentialScanDurationUs\": "
+         << document.adtsAacSequentialScanDurationUs << ",\n";
+    json << "  \"adtsAacSequentialMaximumWorkingBufferBytes\": "
+         << document.adtsAacSequentialMaximumWorkingBufferBytes << ",\n";
+    json << "  \"adtsAacSequentialReachedPhysicalEof\": "
+         << (document.adtsAacSequentialReachedPhysicalEof ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialFrameBoundariesValid\": "
+         << (document.adtsAacSequentialFrameBoundariesValid ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialConfigurationContinuous\": "
+         << (document.adtsAacSequentialConfigurationContinuous ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialOutputDomainValidated\": "
+         << (document.adtsAacSequentialOutputDomainValidated ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialCheckedArithmeticValid\": "
+         << (document.adtsAacSequentialCheckedArithmeticValid ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialFileIdentityStable\": "
+         << (document.adtsAacSequentialFileIdentityStable ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialGenericScanEntered\": "
+         << (document.adtsAacSequentialGenericScanEntered ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialGenericScanSkipped\": "
+         << (document.adtsAacSequentialGenericScanSkipped ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialPossibleDoublePass\": "
+         << (document.adtsAacSequentialPossibleDoublePass ? "true" : "false")
+         << ",\n";
+    json << "  \"adtsAacSequentialLateFallback\": "
+         << (document.adtsAacSequentialLateFallback ? "true" : "false")
+         << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

@@ -72,6 +72,7 @@ target_link_libraries(AveMediaBridgeCore
 add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
+    src/Probe/AdtsAacSequentialPresentation.cpp
     src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/AacAudioSpecificConfig.cpp
@@ -537,4 +538,57 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.matroska_aac_sequential_presentation
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_GOLDEN05_ADTS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/04_aac_adts_stereo_44100.aac"
+    CACHE FILEPATH
+    "External long standalone ADTS AAC regression media")
+set(AVEMEDIABRIDGE_EA034_ADTS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/aac/EA034_adts_aac_48000_10241.aac"
+    CACHE FILEPATH
+    "External ADTS AAC 12288-frame regression media")
+set(AVEMEDIABRIDGE_EA099_ADTS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/aac/EA099_adts_aac_48000_47.aac"
+    CACHE FILEPATH
+    "External short ADTS AAC regression media")
+set(AVEMEDIABRIDGE_EA109_ADTS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/aac/EA109_adts_aac_16000_1023.aac"
+    CACHE FILEPATH
+    "External low-rate ADTS AAC regression media")
+set(AVEMEDIABRIDGE_EA125_ADTS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/aac/EA125_adts_aac_8000_102353.aac"
+    CACHE FILEPATH
+    "External long low-rate ADTS AAC regression media")
+
+add_executable(AveMediaBridgeAdtsAacSequentialPresentationTests
+    tests/AdtsAacSequentialPresentationTests.cpp
+    src/Probe/AdtsAacSequentialPresentation.cpp
+)
+target_link_libraries(AveMediaBridgeAdtsAacSequentialPresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+target_include_directories(AveMediaBridgeAdtsAacSequentialPresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeAdtsAacSequentialPresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.adts_aac_sequential_presentation
+    COMMAND AveMediaBridgeAdtsAacSequentialPresentationTests
+        "${AVEMEDIABRIDGE_GOLDEN05_ADTS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA034_ADTS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA099_ADTS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA109_ADTS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA125_ADTS_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA034_ADTS_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.adts_aac_sequential_presentation
     PROPERTIES SKIP_RETURN_CODE 77)

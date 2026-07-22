@@ -8,6 +8,7 @@
 #include "../Decode/PcmFormat.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
+#include "../Probe/AdtsAacSequentialPresentation.hpp"
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
@@ -93,6 +94,11 @@ struct StreamingImportResult {
     bool oggOpusSequentialAuthorityReused = false;
     bool genericOggOpusFullScanEntered = false;
     bool duplicatePresentationScanEntered = false;
+    Probe::AdtsAacSequentialHandoffResult adtsAacSequentialHandoff;
+    bool adtsAacSequentialHandoffAttempted = false;
+    bool adtsAacSequentialAuthorityReused = false;
+    bool genericAdtsAacFullScanEntered = false;
+    bool adtsAacPossibleDoublePass = false;
     std::uint64_t physicalInputFrames = 0;
     std::uint64_t acceptedInputFrames = 0;
     std::uint64_t rejectedInputFrames = 0;
@@ -540,6 +546,30 @@ void resolveStreamingPresentationBudget(
                 !result.totalPresentationEvidence.conflict;
         }
     }
+    const bool standaloneAdtsAac =
+        formatContext && formatContext->iformat && formatContext->iformat->name &&
+        std::string(formatContext->iformat->name) == "aac" &&
+        codecpar->codec_id == AV_CODEC_ID_AAC;
+    if (standaloneAdtsAac &&
+        result.totalPresentationEvidence.trust !=
+            Probe::PresentationTotalTrust::SampleExact) {
+        result.adtsAacSequentialHandoffAttempted = true;
+        result.adtsAacSequentialHandoff =
+            Probe::readAdtsAacSequentialPresentationHandoff(
+                sessionDir / L"probe.json",
+                path,
+                formatContext,
+                audioStream,
+                result.totalPresentationEvidence);
+        if (result.adtsAacSequentialHandoff.accepted()) {
+            result.totalPresentationEvidence =
+                Probe::reconcileTotalPresentationEvidence(
+                    result.adtsAacSequentialHandoff.evidence,
+                    result.totalPresentationEvidence);
+            result.adtsAacSequentialAuthorityReused =
+                !result.totalPresentationEvidence.conflict;
+        }
+    }
     const bool mp4Mp3 =
         formatContext && formatContext->iformat && formatContext->iformat->name &&
         std::string(formatContext->iformat->name).find("mov") != std::string::npos &&
@@ -627,8 +657,13 @@ void resolveStreamingPresentationBudget(
         (result.mp4Mp3SampleTableAuthorityReused ||
          result.mp4Mp3SampleTableDirectProbeAttempted);
     result.genericOggOpusFullScanEntered = standaloneOggOpus;
+    result.genericAdtsAacFullScanEntered = standaloneAdtsAac;
+    result.adtsAacPossibleDoublePass =
+        standaloneAdtsAac &&
+        result.adtsAacSequentialHandoff.presentation.bytesReturned > 0;
     result.duplicatePresentationScanEntered =
-        standaloneOggOpus && result.oggOpusSequentialAuthorityReused;
+        (standaloneOggOpus && result.oggOpusSequentialAuthorityReused) ||
+        (standaloneAdtsAac && result.adtsAacSequentialAuthorityReused);
     // Resolve both presentation evidence components in one pre-decode pass
     // without changing the existing budget acceptance rules.
     const Probe::AudioPresentationEvidenceScan evidence =
@@ -1922,6 +1957,31 @@ bool writeStreamingMetadataJson(
          << result.oggOpusSequentialHandoff.presentation.readCalls << ",\n";
     json << "    \"oggOpusSequentialScanDurationUs\": "
          << result.oggOpusSequentialHandoff.presentation.scanDurationUs << ",\n";
+    json << "    \"adtsAacSequentialHandoffAttempted\": "
+         << (result.adtsAacSequentialHandoffAttempted ? "true" : "false")
+         << ",\n";
+    json << "    \"adtsAacSequentialHandoffStatus\": "
+         << jsonString(Probe::adtsAacSequentialHandoffStatusName(
+                result.adtsAacSequentialHandoff.status)) << ",\n";
+    json << "    \"adtsAacSequentialHandoffReason\": "
+         << jsonString(Probe::adtsAacSequentialReasonName(
+                result.adtsAacSequentialHandoff.reason)) << ",\n";
+    json << "    \"adtsAacSequentialAuthorityReused\": "
+         << (result.adtsAacSequentialAuthorityReused ? "true" : "false")
+         << ",\n";
+    json << "    \"genericAdtsAacFullScanEntered\": "
+         << (result.genericAdtsAacFullScanEntered ? "true" : "false")
+         << ",\n";
+    json << "    \"adtsAacPossibleDoublePass\": "
+         << (result.adtsAacPossibleDoublePass ? "true" : "false") << ",\n";
+    json << "    \"adtsAacSequentialPresentationFrames\": "
+         << result.adtsAacSequentialHandoff.presentation.presentationFrames << ",\n";
+    json << "    \"adtsAacSequentialBytesReturned\": "
+         << result.adtsAacSequentialHandoff.presentation.bytesReturned << ",\n";
+    json << "    \"adtsAacSequentialReadCalls\": "
+         << result.adtsAacSequentialHandoff.presentation.readCalls << ",\n";
+    json << "    \"adtsAacSequentialScanDurationUs\": "
+         << result.adtsAacSequentialHandoff.presentation.scanDurationUs << ",\n";
     json << "    \"physicalInputFrames\": " << result.physicalInputFrames << ",\n";
     json << "    \"acceptedInputFrames\": " << result.acceptedInputFrames << ",\n";
     json << "    \"rejectedInputFrames\": " << result.rejectedInputFrames << ",\n";

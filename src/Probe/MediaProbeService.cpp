@@ -1,5 +1,6 @@
 #include "MediaProbeService.hpp"
 
+#include "AdtsAacSequentialPresentation.hpp"
 #include "FrameCountPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
 #include "Mp4Mp3SampleEditTablePresentation.hpp"
@@ -807,6 +808,125 @@ void applyMatroskaAacSequentialPresentationAuthority(
     updateEstimatedDecodedBytes(document);
 }
 
+void copyAdtsAacSequentialDiagnostics(
+    FastProbeJsonDocument& document,
+    const AdtsAacSequentialPresentationResult& scan) {
+    document.adtsAacSequentialStatus = adtsAacSequentialStatusName(scan.status);
+    document.adtsAacSequentialReason = adtsAacSequentialReasonName(scan.reason);
+    document.adtsAacSequentialMpegId = scan.mpegId;
+    document.adtsAacSequentialAudioObjectType = scan.audioObjectType;
+    document.adtsAacSequentialSampleRate = scan.sampleRate;
+    document.adtsAacSequentialChannels = scan.channels;
+    document.adtsAacSequentialChannelConfiguration = scan.channelConfiguration;
+    document.adtsAacSequentialProtectionAbsent = scan.protectionAbsent;
+    document.adtsAacSequentialFrameCount = scan.frameCount;
+    document.adtsAacSequentialRawDataBlockCount = scan.rawDataBlockCount;
+    document.adtsAacSequentialSamplesPerRawDataBlock = scan.samplesPerRawDataBlock;
+    document.adtsAacSequentialPhysicalFrames = scan.physicalFrames;
+    document.adtsAacSequentialPresentationFrames = scan.presentationFrames;
+    document.adtsAacSequentialFileSizeBytes = scan.fileSizeBytes;
+    document.adtsAacSequentialFileIndex = scan.fileIndex;
+    document.adtsAacSequentialLastWriteTime100ns = scan.lastWriteTime100ns;
+    document.adtsAacSequentialVolumeSerialNumber = scan.volumeSerialNumber;
+    document.adtsAacSequentialBytesReturned = scan.bytesReturned;
+    document.adtsAacSequentialUniqueBytes = scan.uniqueBytes;
+    document.adtsAacSequentialDuplicateBytes = scan.duplicateBytes;
+    document.adtsAacSequentialReadCalls = scan.readCalls;
+    document.adtsAacSequentialSeekCallsAfterOpen = scan.seekCallsAfterOpen;
+    document.adtsAacSequentialMaximumFrameBytes = scan.maximumFrameBytes;
+    document.adtsAacSequentialScanDurationUs = scan.scanDurationUs;
+    document.adtsAacSequentialMaximumWorkingBufferBytes =
+        scan.maximumWorkingBufferBytes;
+    document.adtsAacSequentialReachedPhysicalEof = scan.reachedPhysicalEof;
+    document.adtsAacSequentialFrameBoundariesValid = scan.frameBoundariesValid;
+    document.adtsAacSequentialConfigurationContinuous = scan.configurationContinuous;
+    document.adtsAacSequentialOutputDomainValidated = scan.outputDomainValidated;
+    document.adtsAacSequentialCheckedArithmeticValid = scan.checkedArithmeticValid;
+    document.adtsAacSequentialFileIdentityStable = scan.fileIdentityStable;
+    document.adtsAacSequentialLateFallback =
+        scan.status == AdtsAacSequentialStatus::UnsupportedLate ||
+        ((scan.status == AdtsAacSequentialStatus::Conflict ||
+         scan.status == AdtsAacSequentialStatus::InvalidMedia ||
+          scan.status == AdtsAacSequentialStatus::IoError) &&
+         scan.frameCount > 0);
+}
+
+void applyAdtsAacSequentialPresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const AVCodecParameters* codecpar =
+        audioStream ? audioStream->codecpar : nullptr;
+    if (!codecpar) {
+        return;
+    }
+    const FrameCountPolicyState policyState =
+        makeFrameCountPolicyState(result.document);
+    const bool wouldRequireGenericPacketScan =
+        result.document.decodedSampleFramesKind != "exact" &&
+        (shouldScanPacketFrameCountCandidates(policyState) ||
+         codecpar->initial_padding > 0 || codecpar->trailing_padding > 0);
+    if (!wouldRequireGenericPacketScan) {
+        return;
+    }
+
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const AdtsAacSequentialEligibility eligibility =
+        evaluateAdtsAacSequentialEligibility(
+            path, formatContext, audioStream, strongerExactAuthority);
+    FastProbeJsonDocument& document = result.document;
+    document.adtsAacSequentialEligible = eligibility.eligible;
+    if (!eligibility.eligible) {
+        document.adtsAacSequentialReason =
+            adtsAacSequentialReasonName(eligibility.reason);
+        return;
+    }
+
+    document.adtsAacSequentialEntered = true;
+    result.adtsAacSequentialPresentation =
+        probeAdtsAacSequentialPresentation(path, eligibility.selected);
+    copyAdtsAacSequentialDiagnostics(
+        document, result.adtsAacSequentialPresentation);
+    if (!result.adtsAacSequentialPresentation.exact()) {
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeAdtsAacSequentialTotalPresentationEvidence(
+            result.adtsAacSequentialPresentation);
+    evidence = reconcileTotalPresentationEvidence(evidence, result.totalPresentation);
+    if (evidence.conflict) {
+        result.adtsAacSequentialPresentation.status =
+            AdtsAacSequentialStatus::Conflict;
+        result.adtsAacSequentialPresentation.reason =
+            AdtsAacSequentialReason::ExactAuthorityConflict;
+        copyAdtsAacSequentialDiagnostics(
+            document, result.adtsAacSequentialPresentation);
+        return;
+    }
+    if (evidence.frames == 0 || evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "validated sequential ADTS AAC frame inventory proves the presentation end";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod =
+        "from_adts_aac_sequential_presentation";
+    document.adtsAacSequentialGenericScanSkipped = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
     const std::string& path,
@@ -860,6 +980,17 @@ void applyFastFrameCountPolicies(
         result.document.matroskaAacSequentialGenericScanSkipped = false;
         result.document.matroskaAacSequentialPossibleDoublePass =
             result.document.matroskaAacSequentialEntered;
+    }
+    const bool genericAdtsAacScan =
+        codecpar->codec_id == AV_CODEC_ID_AAC &&
+        result.document.formatName == "aac" &&
+        (packetScanRequired || gaplessScanRequired);
+    if (genericAdtsAacScan) {
+        result.document.adtsAacSequentialGenericScanEntered = true;
+        result.document.adtsAacSequentialGenericScanSkipped = false;
+        result.document.adtsAacSequentialPossibleDoublePass =
+            result.document.adtsAacSequentialEntered &&
+            result.document.adtsAacSequentialLateFallback;
     }
     const bool genericMp4Mp3Scan =
         codecpar->codec_id == AV_CODEC_ID_MP3 &&
@@ -1046,6 +1177,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     applyOggOpusSequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);
     applyMatroskaAacSequentialPresentationAuthority(
+        result, path, formatContext.get(), audioStream);
+    applyAdtsAacSequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
