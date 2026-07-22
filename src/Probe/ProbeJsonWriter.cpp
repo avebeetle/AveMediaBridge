@@ -144,6 +144,35 @@ bool writeProbeJson(
          << document.gaplessAudioPacketsScanned << ",\n";
     json << "  \"estimatedDecodedBytes\": " << document.estimatedDecodedBytes << ",\n";
     json << "  \"estimatedDecodedBytesKind\": " << jsonString(document.estimatedDecodedBytesKind) << ",\n";
+    json << "  \"mp3HeaderPresentationStatus\": "
+         << jsonString(document.mp3HeaderPresentationStatus) << ",\n";
+    json << "  \"mp3HeaderPresentationReason\": "
+         << jsonString(document.mp3HeaderPresentationReason) << ",\n";
+    json << "  \"mp3HeaderType\": " << jsonString(document.mp3HeaderType) << ",\n";
+    json << "  \"mp3HeaderEncoderProfile\": "
+         << jsonString(document.mp3HeaderEncoderProfile) << ",\n";
+    json << "  \"mp3HeaderBudgetBytes\": " << document.mp3HeaderBudgetBytes << ",\n";
+    json << "  \"mp3HeaderActualReadBytes\": " << document.mp3HeaderActualReadBytes << ",\n";
+    json << "  \"mp3HeaderUniqueBytesRead\": " << document.mp3HeaderUniqueBytesRead << ",\n";
+    json << "  \"mp3HeaderMaximumBudgetOverrunBytes\": "
+         << document.mp3HeaderMaximumBudgetOverrunBytes << ",\n";
+    json << "  \"mp3HeaderReadCalls\": " << document.mp3HeaderReadCalls << ",\n";
+    json << "  \"mp3HeaderSeekCalls\": " << document.mp3HeaderSeekCalls << ",\n";
+    json << "  \"mp3HeaderMaximumOffsetReached\": "
+         << document.mp3HeaderMaximumOffsetReached << ",\n";
+    json << "  \"mp3HeaderPhysicalFrameCount\": "
+         << document.mp3HeaderPhysicalFrameCount << ",\n";
+    json << "  \"mp3HeaderSamplesPerFrame\": " << document.mp3HeaderSamplesPerFrame << ",\n";
+    json << "  \"mp3HeaderPhysicalSampleTotal\": "
+         << document.mp3HeaderPhysicalSampleTotal << ",\n";
+    json << "  \"mp3HeaderInitialPresentationSkip\": "
+         << document.mp3HeaderInitialPresentationSkip << ",\n";
+    json << "  \"mp3HeaderTerminalPresentationPadding\": "
+         << document.mp3HeaderTerminalPresentationPadding << ",\n";
+    json << "  \"mp3HeaderPresentationFrames\": "
+         << document.mp3HeaderPresentationFrames << ",\n";
+    json << "  \"mp3HeaderFullScanSkipped\": "
+         << (document.mp3HeaderFullScanSkipped ? "true" : "false") << ",\n";
     json << "  \"nutBoundedTailStatus\": " << jsonString(document.nutBoundedTailStatus) << ",\n";
     json << "  \"nutBoundedTailReason\": " << jsonString(document.nutBoundedTailReason) << ",\n";
     json << "  \"nutBoundedTailBudgetBytes\": " << document.nutBoundedTailBudgetBytes << ",\n";

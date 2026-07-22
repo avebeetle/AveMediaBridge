@@ -1,6 +1,7 @@
 #include "MediaProbeService.hpp"
 
 #include "FrameCountPolicy.hpp"
+#include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "PacketScan.hpp"
 #include "PresentationBudgetPolicy.hpp"
@@ -303,6 +304,86 @@ void applyNutBoundedTailAuthority(
     updateEstimatedDecodedBytes(document);
 }
 
+void applyMp3HeaderPresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    if (!shouldProbeMp3HeaderPresentation(
+            formatContext, audioStream, strongerExactAuthority)) {
+        return;
+    }
+
+    result.mp3HeaderPresentation = probeMp3HeaderPresentation(path);
+    FastProbeJsonDocument& document = result.document;
+    const Mp3HeaderPresentationResult& header = result.mp3HeaderPresentation;
+    document.mp3HeaderPresentationStatus =
+        mp3HeaderPresentationStatusName(header.status);
+    document.mp3HeaderPresentationReason = header.reason;
+    document.mp3HeaderType = mp3HeaderTypeName(header.headerType);
+    document.mp3HeaderEncoderProfile = header.encoderProfile;
+    document.mp3HeaderBudgetBytes = header.hardReadBudgetBytes;
+    document.mp3HeaderActualReadBytes = header.totalActualReadBytes;
+    document.mp3HeaderUniqueBytesRead = header.uniqueBytesRead;
+    document.mp3HeaderMaximumBudgetOverrunBytes =
+        header.maximumBudgetOverrunBytes;
+    document.mp3HeaderReadCalls = header.readCallCount;
+    document.mp3HeaderSeekCalls = header.seekCallCount;
+    document.mp3HeaderMaximumOffsetReached = header.maximumOffsetReached;
+    document.mp3HeaderPhysicalFrameCount = header.physicalFrameCount;
+    document.mp3HeaderSamplesPerFrame = header.samplesPerFrame;
+    document.mp3HeaderPhysicalSampleTotal = header.physicalSampleTotal;
+    document.mp3HeaderInitialPresentationSkip = header.initialPresentationSkip;
+    document.mp3HeaderTerminalPresentationPadding =
+        header.terminalPresentationPadding;
+    document.mp3HeaderPresentationFrames = header.presentationFrames;
+    if (!header.exact()) {
+        return;
+    }
+    if (!mp3HeaderPresentationMatchesStream(header, audioStream)) {
+        result.mp3HeaderPresentation.status =
+            Mp3HeaderPresentationStatus::Conflict;
+        result.mp3HeaderPresentation.reason =
+            "validated_header_conflicts_with_selected_stream_parameters";
+        document.mp3HeaderPresentationStatus = "conflict";
+        document.mp3HeaderPresentationReason = result.mp3HeaderPresentation.reason;
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeMp3HeaderTotalPresentationEvidence(header);
+    evidence = reconcileTotalPresentationEvidence(evidence, result.totalPresentation);
+    if (evidence.conflict) {
+        result.mp3HeaderPresentation.status =
+            Mp3HeaderPresentationStatus::Conflict;
+        result.mp3HeaderPresentation.reason =
+            "validated_header_conflicts_with_independent_exact_total";
+        document.mp3HeaderPresentationStatus = "conflict";
+        document.mp3HeaderPresentationReason = result.mp3HeaderPresentation.reason;
+        return;
+    }
+    if (evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "validated standalone MP3 header provides exact gapless presentation";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod = "from_mp3_validated_header";
+    document.mp3HeaderFullScanSkipped = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 FrameCountPolicyState makeFrameCountPolicyState(const FastProbeJsonDocument& document) {
     FrameCountPolicyState state;
     state.formatName = document.formatName;
@@ -379,13 +460,18 @@ void applyFastFrameCountPolicies(
     const bool legacyGaplessScanRequired =
         (codecpar->codec_id == AV_CODEC_ID_MP3 || codecpar->codec_id == AV_CODEC_ID_OPUS) &&
         result.document.decodedSampleFramesKind != "exact";
+    const bool standaloneMp3Fallback =
+        legacyGaplessScanRequired &&
+        result.document.formatName == "mp3" &&
+        codecpar->codec_id == AV_CODEC_ID_MP3;
     const bool preliminaryPaddingRequiresExactPacketScan =
         allowExactPacketPresentationScan &&
         result.document.decodedSampleFramesKind != "exact" &&
         (codecpar->initial_padding > 0 || codecpar->trailing_padding > 0);
     const bool packetScanRequired =
         shouldScanPacketFrameCountCandidates(policyState) ||
-        preliminaryPaddingRequiresExactPacketScan;
+        preliminaryPaddingRequiresExactPacketScan ||
+        standaloneMp3Fallback;
     const bool gaplessScanRequired =
         legacyGaplessScanRequired ||
         preliminaryPaddingRequiresExactPacketScan;
@@ -429,7 +515,8 @@ void applyFastFrameCountPolicies(
         exactPacketPresentationApplied = applyExactPacketPresentationBudget(
             policyState,
             AudioPresentationEvidenceScan{packetScan, gaplessScan},
-            exactFramesFromSampleDomainStreamDuration(audioStream));
+            exactFramesFromSampleDomainStreamDuration(audioStream),
+            standaloneMp3Fallback);
     }
     if (!exactPacketPresentationApplied) {
         if (legacyGaplessScanRequired) {
@@ -447,6 +534,20 @@ void applyFastFrameCountPolicies(
     }
 
     applyFrameCountPolicyState(result.document, policyState);
+    if (policyState.decodedSampleFramesKind == "exact" &&
+        policyState.decodedSampleFramesSource == "exact_packet_presentation" &&
+        policyState.decodedSampleFrames > 0) {
+        result.totalPresentation.frames =
+            static_cast<std::uint64_t>(policyState.decodedSampleFrames);
+        result.totalPresentation.trust = PresentationTotalTrust::SampleExact;
+        result.totalPresentation.source = PresentationTotalSource::ExactPacketPresentation;
+        result.totalPresentation.domain = PresentationSampleDomain::NativeStreamSamples;
+        result.totalPresentation.sampleRate = policyState.selectedAudio.sampleRate;
+        result.totalPresentation.exactRescale = true;
+        result.totalPresentation.conflict = false;
+        result.totalPresentation.validation =
+            PresentationTotalValidation::SelfContainedMetadata;
+    }
 }
 
 void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audioStream) {
@@ -542,6 +643,7 @@ FastProbeResult runFastProbe(const std::string& path) {
     }
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
+    applyMp3HeaderPresentationAuthority(result, path, formatContext.get(), audioStream);
     applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PresentationBudgetPolicy.hpp"
+#include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "ProbeJsonWriter.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
@@ -14,6 +15,7 @@ namespace AveMediaBridge::Probe {
 struct FastProbeResult {
     FastProbeJsonDocument document;
     TotalPresentationEvidence totalPresentation;
+    Mp3HeaderPresentationResult mp3HeaderPresentation;
     NutBoundedTailProbeResult nutBoundedTail;
     bool streamInfoFound = false;
 };

@@ -75,6 +75,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/MediaProbeService.cpp
+    src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
     src/Probe/PacketScan.cpp
     src/Probe/PresentationBudgetPolicy.cpp
@@ -366,4 +367,49 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.nut_bounded_tail_authority
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_MP3_HEADER_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/mp3_header_authority/fixtures"
+    CACHE PATH
+    "External read-only MP3 header-authority research fixtures")
+set(AVEMEDIABRIDGE_REAL_MP3_HEADER_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/02_mp3_stereo_44100.mp3"
+    CACHE FILEPATH
+    "External real 40-minute standalone MP3 regression media")
+set(AVEMEDIABRIDGE_NO_XING_MP3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_MP3_HEADER_FIXTURE_ROOT}/no_xing.mp3"
+    CACHE FILEPATH
+    "External standalone MP3 full-scan fallback regression media")
+
+add_executable(AveMediaBridgeMp3HeaderPresentationAuthorityTests
+    tests/Mp3HeaderPresentationAuthorityTests.cpp
+    src/Probe/Mp3HeaderPresentation.cpp
+)
+
+target_link_libraries(AveMediaBridgeMp3HeaderPresentationAuthorityTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+    bcrypt
+)
+target_include_directories(AveMediaBridgeMp3HeaderPresentationAuthorityTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMp3HeaderPresentationAuthorityTests)
+
+add_test(
+    NAME AveMediaBridgeTests.mp3_header_presentation_authority
+    COMMAND AveMediaBridgeMp3HeaderPresentationAuthorityTests
+        "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1"
+        "${AVEMEDIABRIDGE_MP3_HEADER_FIXTURE_ROOT}"
+        "${AVEMEDIABRIDGE_REAL_MP3_HEADER_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_NO_XING_MP3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_MP4_MP3_PRESENTATION_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.mp3_header_presentation_authority
     PROPERTIES SKIP_RETURN_CODE 77)

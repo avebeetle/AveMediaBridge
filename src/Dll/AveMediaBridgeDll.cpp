@@ -10,6 +10,7 @@
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
+#include "../Probe/Mp3HeaderPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
 #include "../Probe/PresentationBudgetPolicy.hpp"
 #include "../Utils/JsonUtils.hpp"
@@ -484,6 +485,22 @@ void resolveStreamingPresentationBudget(
     const int sampleRate = codecpar->sample_rate;
     result.totalPresentationEvidence =
         Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
+    const bool strongerExactAuthority =
+        result.totalPresentationEvidence.trust ==
+            Probe::PresentationTotalTrust::SampleExact;
+    const bool standaloneMp3 = Probe::shouldProbeMp3HeaderPresentation(
+        formatContext, audioStream, false);
+    if (Probe::shouldProbeMp3HeaderPresentation(
+            formatContext, audioStream, strongerExactAuthority)) {
+        const Probe::Mp3HeaderPresentationResult header =
+            Probe::probeMp3HeaderPresentation(path);
+        if (Probe::mp3HeaderPresentationMatchesStream(header, audioStream)) {
+            result.totalPresentationEvidence =
+                Probe::reconcileTotalPresentationEvidence(
+                    Probe::makeMp3HeaderTotalPresentationEvidence(header),
+                    result.totalPresentationEvidence);
+        }
+    }
     if (result.totalPresentationEvidence.trust == Probe::PresentationTotalTrust::Unknown) {
         return;
     }
@@ -522,7 +539,7 @@ void resolveStreamingPresentationBudget(
     const Probe::GaplessSkipSampleScan& gaplessScan = evidence.gapless;
 
     const Probe::ExactPacketPresentationEvidence exactPacketEvidence =
-        Probe::makeExactPacketPresentationEvidence(evidence);
+        Probe::makeExactPacketPresentationEvidence(evidence, standaloneMp3);
     const Probe::ExactPacketPresentationBudget exactPacketBudget =
         Probe::resolveExactPacketPresentationBudget(exactPacketEvidence);
 

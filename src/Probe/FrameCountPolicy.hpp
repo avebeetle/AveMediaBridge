@@ -69,12 +69,14 @@ ExactPacketPresentationBudget resolveExactPacketPresentationBudget(
     const ExactPacketPresentationEvidence& evidence);
 
 ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
-    const AudioPresentationEvidenceScan& scan);
+    const AudioPresentationEvidenceScan& scan,
+    bool zeroTrimAuthoritativeWhenAbsent = false);
 
 bool applyExactPacketPresentationBudget(
     FrameCountPolicyState& state,
     const AudioPresentationEvidenceScan& scan,
-    std::int64_t independentPresentationFrames = 0);
+    std::int64_t independentPresentationFrames = 0,
+    bool zeroTrimAuthoritativeWhenAbsent = false);
 
 bool shouldEvaluateExactPacketPresentationAfterScan(
     const FrameCountPolicyState& state,

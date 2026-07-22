@@ -1,6 +1,7 @@
 #include "PresentationBudgetPolicy.hpp"
 
 #include "FlacStreamInfo.hpp"
+#include "Mp3HeaderPresentation.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -162,6 +163,25 @@ TotalPresentationEvidence makeStreamTotalPresentationEvidence(
     return reconcileTotalPresentationEvidence(sourceSpecific, result);
 }
 
+TotalPresentationEvidence makeMp3HeaderTotalPresentationEvidence(
+    const Mp3HeaderPresentationResult& result) noexcept {
+    TotalPresentationEvidence evidence;
+    if (!result.exact() || result.presentationFrames == 0 || result.sampleRate <= 0 ||
+        result.trust != PresentationTotalTrust::SampleExact ||
+        result.source != PresentationTotalSource::Mp3ValidatedHeaderPresentation ||
+        result.domain != PresentationSampleDomain::NativeStreamSamples) {
+        return evidence;
+    }
+    evidence.frames = result.presentationFrames;
+    evidence.trust = result.trust;
+    evidence.source = result.source;
+    evidence.domain = result.domain;
+    evidence.sampleRate = result.sampleRate;
+    evidence.exactRescale = true;
+    evidence.validation = PresentationTotalValidation::SelfContainedMetadata;
+    return evidence;
+}
+
 StreamingPresentationBudgetDecision resolveStreamingPresentationBudget(
     const StreamingPresentationBudgetInput& input) {
     StreamingPresentationBudgetDecision result;
@@ -264,6 +284,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "flac_streaminfo_total_samples";
         case PresentationTotalSource::NutBoundedTailSelectedStreamEnd:
             return "nut_bounded_tail_selected_stream_end";
+        case PresentationTotalSource::Mp3ValidatedHeaderPresentation:
+            return "mp3_validated_header_presentation";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }

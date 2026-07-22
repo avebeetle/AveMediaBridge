@@ -382,7 +382,8 @@ ExactPacketPresentationBudget resolveExactPacketPresentationBudget(
 }
 
 ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
-    const AudioPresentationEvidenceScan& scan) {
+    const AudioPresentationEvidenceScan& scan,
+    bool zeroTrimAuthoritativeWhenAbsent) {
     ExactPacketPresentationEvidence evidence;
     const PacketFrameCountScan& packet = scan.packetTiming;
     const GaplessSkipSampleScan& gapless = scan.gapless;
@@ -395,7 +396,7 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
         gapless.warning.empty() &&
         packet.audioPacketCount > 0 &&
         gapless.audioPacketsScanned == packet.audioPacketCount;
-    const bool initialSkipAuthorityObserved =
+    const bool explicitGaplessAuthorityObserved =
         completeTraversal &&
         (gapless.sideDataPacketCount > 0 ||
          gapless.streamInitialPadding > 0 ||
@@ -408,12 +409,22 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
         packet.packetsWithSampleExactDuration == packet.audioPacketCount &&
         packet.sampleExactPacketDurationSumFrames > 0 &&
         packet.packetPtsSpanFrames == packet.sampleExactPacketDurationSumFrames;
+    const bool exactZeroTrimProved =
+        zeroTrimAuthoritativeWhenAbsent &&
+        completeTraversal &&
+        !explicitGaplessAuthorityObserved &&
+        packetDurationTimelineExact &&
+        packet.codecFrameCountExact &&
+        packet.codecFrameCountFrames == packet.sampleExactPacketDurationSumFrames;
+    const bool initialSkipAuthorityObserved =
+        explicitGaplessAuthorityObserved || exactZeroTrimProved;
     const bool terminalDiscardAuthorityObserved =
         completeTraversal &&
         (gapless.packetSkipSamplesEnd > 0 ||
          gapless.streamTrailingPadding > 0 ||
          gapless.streamInitialPadding > 0 ||
-         packetDurationTimelineExact);
+         packetDurationTimelineExact ||
+         exactZeroTrimProved);
 
     evidence.packetScanReachedEof = completeTraversal;
     evidence.packetScanReadError = packet.readError || gapless.readError;
@@ -450,13 +461,15 @@ ExactPacketPresentationEvidence makeExactPacketPresentationEvidence(
 bool applyExactPacketPresentationBudget(
     FrameCountPolicyState& state,
     const AudioPresentationEvidenceScan& scan,
-    std::int64_t independentPresentationFrames) {
+    std::int64_t independentPresentationFrames,
+    bool zeroTrimAuthoritativeWhenAbsent) {
     if (state.decodedSampleFramesKind == "exact") {
         return false;
     }
 
     ExactPacketPresentationEvidence evidence =
-        makeExactPacketPresentationEvidence(scan);
+        makeExactPacketPresentationEvidence(
+            scan, zeroTrimAuthoritativeWhenAbsent);
     if (independentPresentationFrames > 0) {
         evidence.independentPresentationFramesKnown = true;
         evidence.independentPresentationFrames = independentPresentationFrames;

@@ -7,6 +7,8 @@
 
 namespace AveMediaBridge::Probe {
 
+struct Mp3HeaderPresentationResult;
+
 enum class PresentationTotalTrust {
     Unknown,
     Estimated,
@@ -20,6 +22,7 @@ enum class PresentationTotalSource {
     OggEosGranule,
     FlacStreamInfoTotalSamples,
     NutBoundedTailSelectedStreamEnd,
+    Mp3ValidatedHeaderPresentation,
     ExactPacketPresentation
 };
 
@@ -70,6 +73,9 @@ struct StreamingPresentationBudgetDecision {
 TotalPresentationEvidence makeStreamTotalPresentationEvidence(
     const AVFormatContext* formatContext,
     const AVStream* audioStream) noexcept;
+
+TotalPresentationEvidence makeMp3HeaderTotalPresentationEvidence(
+    const Mp3HeaderPresentationResult& result) noexcept;
 
 TotalPresentationEvidence reconcileTotalPresentationEvidence(
     const TotalPresentationEvidence& sourceSpecific,
