@@ -2,6 +2,7 @@
 
 #include "FrameCountPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
+#include "Mp4Mp3SampleEditTablePresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
@@ -386,6 +387,140 @@ void applyMp3HeaderPresentationAuthority(
     updateEstimatedDecodedBytes(document);
 }
 
+void copyMp4Mp3SampleTableDiagnostics(
+    FastProbeJsonDocument& document,
+    const Mp4Mp3SampleEditTablePresentationResult& table) {
+    document.mp4Mp3SampleTableStatus = mp4Mp3SampleTableStatusName(table.status);
+    document.mp4Mp3SampleTableReason = mp4Mp3SampleTableReasonName(table.reason);
+    document.mp4Mp3SampleTableSelectedTrackId = table.selectedTrackId;
+    document.mp4Mp3SampleTableSampleRate = table.sampleRate;
+    document.mp4Mp3SampleTableChannels = table.channels;
+    document.mp4Mp3SampleTableSelectedSamples = table.selectedSampleCount;
+    document.mp4Mp3SampleTableSamplesPerMp3Frame = table.samplesPerMp3Frame;
+    document.mp4Mp3SampleTablePhysicalFrames = table.physicalFrames;
+    document.mp4Mp3SampleTableInitialSkip = table.initialSkipFrames;
+    document.mp4Mp3SampleTableTerminalDiscard = table.terminalDiscardFrames;
+    document.mp4Mp3SampleTableEditedMediaEnd = table.editedMediaEnd;
+    document.mp4Mp3SampleTablePresentationFrames = table.presentationFrames;
+    document.mp4Mp3SampleTableMovieTimescale = table.movieTimescale;
+    document.mp4Mp3SampleTableMediaTimescale = table.mediaTimescale;
+    document.mp4Mp3SampleTableEditMediaStart = table.editMediaStart;
+    document.mp4Mp3SampleTableEditPresentationFrames = table.editPresentationFrames;
+    document.mp4Mp3SampleTableFileSizeBytes = table.fileSizeBytes;
+    document.mp4Mp3SampleTableFileIndex = table.fileIndex;
+    document.mp4Mp3SampleTableLastWriteTime100ns = table.lastWriteTime100ns;
+    document.mp4Mp3SampleTableVolumeSerialNumber = table.volumeSerialNumber;
+    document.mp4Mp3SampleTableBudgetBytes = table.hardReadBudgetBytes;
+    document.mp4Mp3SampleTableBytesReturned = table.bytesReturned;
+    document.mp4Mp3SampleTableUniqueBytes = table.uniqueBytes;
+    document.mp4Mp3SampleTableDuplicateBytes = table.duplicateBytes;
+    document.mp4Mp3SampleTableMaximumBudgetOverrunBytes =
+        table.maximumBudgetOverrunBytes;
+    document.mp4Mp3SampleTableReadCalls = table.readCalls;
+    document.mp4Mp3SampleTableSeekCalls = table.seekCalls;
+    document.mp4Mp3SampleTableMaximumOffsetReached = table.maximumOffsetReached;
+    document.mp4Mp3SampleTableScanDurationUs = table.scanDurationUs;
+    document.mp4Mp3SampleTableMaximumWorkingBufferBytes =
+        table.maximumWorkingBufferBytes;
+    document.mp4Mp3SampleTableBoxesParsed = table.boxesParsed;
+    document.mp4Mp3SampleTableEntriesParsed = table.tableEntriesParsed;
+    document.mp4Mp3SampleTableSelectedChunks = table.selectedChunks;
+    document.mp4Mp3SampleTableMoovOffset = table.moovOffset;
+    document.mp4Mp3SampleTableMoovSize = table.moovSize;
+    document.mp4Mp3SampleTableMoovAtHead = table.moovAtHead;
+    document.mp4Mp3SampleTableMoovAtTail = table.moovAtTail;
+    document.mp4Mp3SampleTableSampleInventoryValid = table.sampleInventoryValid;
+    document.mp4Mp3SampleTableChunkMappingValid = table.chunkMappingValid;
+    document.mp4Mp3SampleTableChunkRangesInsideMdat = table.chunkRangesInsideMdat;
+    document.mp4Mp3SampleTableEditListValid = table.editListValid;
+    document.mp4Mp3SampleTableMp3ProfileValid = table.mp3ProfileValid;
+    document.mp4Mp3SampleTableCheckedArithmeticValid = table.checkedArithmeticValid;
+}
+
+void applyMp4Mp3SampleEditTablePresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const Mp4Mp3SampleTableEligibility eligibility =
+        evaluateMp4Mp3SampleTableEligibility(
+            path, formatContext, audioStream, strongerExactAuthority);
+    FastProbeJsonDocument& document = result.document;
+    document.mp4Mp3SampleTableEligible = eligibility.eligible;
+    document.mp4Mp3SampleTableReason =
+        mp4Mp3SampleTableReasonName(eligibility.reason);
+    if (!eligibility.eligible) {
+        return;
+    }
+
+    document.mp4Mp3SampleTableEntered = true;
+    result.mp4Mp3SampleEditTablePresentation =
+        probeMp4Mp3SampleEditTablePresentation(path, eligibility);
+    copyMp4Mp3SampleTableDiagnostics(
+        document, result.mp4Mp3SampleEditTablePresentation);
+    if (!result.mp4Mp3SampleEditTablePresentation.exact()) {
+        return;
+    }
+    if (!mp4Mp3SampleTableMatchesStream(
+            result.mp4Mp3SampleEditTablePresentation, audioStream)) {
+        result.mp4Mp3SampleEditTablePresentation.status =
+            Mp4Mp3SampleTableStatus::Conflict;
+        result.mp4Mp3SampleEditTablePresentation.reason =
+            Mp4Mp3SampleTableReason::IndependentExactAuthorityConflict;
+        copyMp4Mp3SampleTableDiagnostics(
+            document, result.mp4Mp3SampleEditTablePresentation);
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeMp4Mp3SampleTableTotalPresentationEvidence(
+            result.mp4Mp3SampleEditTablePresentation);
+    evidence = reconcileTotalPresentationEvidence(evidence, result.totalPresentation);
+    const auto& table = result.mp4Mp3SampleEditTablePresentation;
+    constexpr std::uint64_t maxDiagnosticFrames =
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)());
+    if (evidence.conflict ||
+        evidence.frames > maxDiagnosticFrames ||
+        table.physicalFrames > maxDiagnosticFrames ||
+        table.initialSkipFrames > maxDiagnosticFrames ||
+        table.terminalDiscardFrames > maxDiagnosticFrames ||
+        table.initialSkipFrames > maxDiagnosticFrames - table.terminalDiscardFrames) {
+        result.mp4Mp3SampleEditTablePresentation.status =
+            Mp4Mp3SampleTableStatus::Conflict;
+        result.mp4Mp3SampleEditTablePresentation.reason =
+            Mp4Mp3SampleTableReason::IndependentExactAuthorityConflict;
+        copyMp4Mp3SampleTableDiagnostics(
+            document, result.mp4Mp3SampleEditTablePresentation);
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.decodedSampleFramesBeforeGaplessCorrection =
+        static_cast<std::int64_t>(table.physicalFrames);
+    document.skipSamplesStart = static_cast<std::int64_t>(table.initialSkipFrames);
+    document.skipSamplesEnd = static_cast<std::int64_t>(table.terminalDiscardFrames);
+    document.skipSamplesTotal = document.skipSamplesStart + document.skipSamplesEnd;
+    document.gaplessCorrectedDecodedSampleFrames =
+        static_cast<std::int64_t>(evidence.frames);
+    document.gaplessCorrectionApplied = document.skipSamplesTotal > 0;
+    document.gaplessCorrectionSource =
+        "mp4_mp3_sample_edit_table_presentation";
+    document.frameCountPolicyReason =
+        "validated selected MP3 sample and edit tables prove exact presentation";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod = "from_mp4_mp3_sample_edit_tables";
+    document.mp4Mp3SampleTableGenericScanSkipped = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 void copyOggOpusSequentialDiagnostics(
     FastProbeJsonDocument& document,
     const OggOpusSequentialPresentationResult& scan) {
@@ -726,6 +861,16 @@ void applyFastFrameCountPolicies(
         result.document.matroskaAacSequentialPossibleDoublePass =
             result.document.matroskaAacSequentialEntered;
     }
+    const bool genericMp4Mp3Scan =
+        codecpar->codec_id == AV_CODEC_ID_MP3 &&
+        result.document.formatName.find("mov") != std::string::npos &&
+        (packetScanRequired || gaplessScanRequired);
+    if (genericMp4Mp3Scan) {
+        result.document.mp4Mp3SampleTableGenericScanEntered = true;
+        result.document.mp4Mp3SampleTableGenericScanSkipped = false;
+        result.document.mp4Mp3SampleTablePossibleDoublePass =
+            result.document.mp4Mp3SampleTableEntered;
+    }
 
     PacketFrameCountScan packetScan;
     GaplessSkipSampleScan gaplessScan;
@@ -895,6 +1040,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
     applyMp3HeaderPresentationAuthority(result, path, formatContext.get(), audioStream);
+    applyMp4Mp3SampleEditTablePresentationAuthority(
+        result, path, formatContext.get(), audioStream);
     applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
     applyOggOpusSequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);

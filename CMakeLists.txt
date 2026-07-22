@@ -78,6 +78,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/EbmlSequentialReader.cpp
     src/Probe/MatroskaAacSequentialPresentation.cpp
     src/Probe/MediaProbeService.cpp
+    src/Probe/Mp4Mp3SampleEditTablePresentation.cpp
     src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
     src/Probe/OggOpusSequentialPresentation.cpp
@@ -416,6 +417,40 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.mp3_header_presentation_authority
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_MP4_MP3_SAMPLE_TABLE_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/mp4_mp3_sample_table_authority/fixtures"
+    CACHE PATH
+    "External read-only MP4/MP3 sample/edit-table research fixtures")
+
+add_executable(AveMediaBridgeMp4Mp3SampleEditTablePresentationTests
+    tests/Mp4Mp3SampleEditTablePresentationTests.cpp
+    src/Probe/Mp4Mp3SampleEditTablePresentation.cpp
+)
+target_link_libraries(AveMediaBridgeMp4Mp3SampleEditTablePresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+target_include_directories(AveMediaBridgeMp4Mp3SampleEditTablePresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMp4Mp3SampleEditTablePresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.mp4_mp3_sample_edit_table_presentation
+    COMMAND AveMediaBridgeMp4Mp3SampleEditTablePresentationTests
+        "${AVEMEDIABRIDGE_MP4_MP3_SAMPLE_TABLE_FIXTURE_ROOT}"
+        "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1"
+        "${AVEMEDIABRIDGE_MP4_MP3_PRESENTATION_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.mp4_mp3_sample_edit_table_presentation
     PROPERTIES SKIP_RETURN_CODE 77)
 
 set(AVEMEDIABRIDGE_OGG_OPUS_SEQUENTIAL_FIXTURE_ROOT

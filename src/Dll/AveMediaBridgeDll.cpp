@@ -10,6 +10,7 @@
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
+#include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
 #include "../Probe/Mp3HeaderPresentation.hpp"
 #include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
@@ -80,6 +81,13 @@ struct StreamingImportResult {
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
     bool presentationBudgetPacketScanExecuted = false;
+    Probe::Mp4Mp3SampleTableHandoffResult mp4Mp3SampleTableHandoff;
+    Probe::Mp4Mp3SampleEditTablePresentationResult mp4Mp3SampleTablePresentation;
+    bool mp4Mp3SampleTableHandoffAttempted = false;
+    bool mp4Mp3SampleTableAuthorityReused = false;
+    bool mp4Mp3SampleTableDirectProbeAttempted = false;
+    bool genericMp4Mp3FullScanEntered = false;
+    bool mp4Mp3PossibleDoublePass = false;
     Probe::OggOpusSequentialHandoffResult oggOpusSequentialHandoff;
     bool oggOpusSequentialHandoffAttempted = false;
     bool oggOpusSequentialAuthorityReused = false;
@@ -532,6 +540,63 @@ void resolveStreamingPresentationBudget(
                 !result.totalPresentationEvidence.conflict;
         }
     }
+    const bool mp4Mp3 =
+        formatContext && formatContext->iformat && formatContext->iformat->name &&
+        std::string(formatContext->iformat->name).find("mov") != std::string::npos &&
+        codecpar->codec_id == AV_CODEC_ID_MP3;
+    if (mp4Mp3 &&
+        result.totalPresentationEvidence.trust !=
+            Probe::PresentationTotalTrust::SampleExact) {
+        const std::filesystem::path probeDocument = sessionDir / L"probe.json";
+        std::error_code existsError;
+        const bool probeDocumentExists =
+            std::filesystem::is_regular_file(probeDocument, existsError) &&
+            !existsError;
+        if (probeDocumentExists) {
+            result.mp4Mp3SampleTableHandoffAttempted = true;
+            result.mp4Mp3SampleTableHandoff =
+                Probe::readMp4Mp3SampleTablePresentationHandoff(
+                    probeDocument,
+                    path,
+                    formatContext,
+                    audioStream,
+                    result.totalPresentationEvidence);
+            result.mp4Mp3SampleTablePresentation =
+                result.mp4Mp3SampleTableHandoff.presentation;
+            if (result.mp4Mp3SampleTableHandoff.accepted()) {
+                result.totalPresentationEvidence =
+                    Probe::reconcileTotalPresentationEvidence(
+                        result.mp4Mp3SampleTableHandoff.evidence,
+                        result.totalPresentationEvidence);
+                result.mp4Mp3SampleTableAuthorityReused =
+                    !result.totalPresentationEvidence.conflict;
+            }
+        } else {
+            const Probe::Mp4Mp3SampleTableEligibility eligibility =
+                Probe::evaluateMp4Mp3SampleTableEligibility(
+                    path, formatContext, audioStream, false);
+            if (eligibility.eligible) {
+                result.mp4Mp3SampleTableDirectProbeAttempted = true;
+                result.mp4Mp3SampleTablePresentation =
+                    Probe::probeMp4Mp3SampleEditTablePresentation(
+                        path, eligibility);
+                if (Probe::mp4Mp3SampleTableMatchesStream(
+                        result.mp4Mp3SampleTablePresentation,
+                        audioStream)) {
+                    result.totalPresentationEvidence =
+                        Probe::reconcileTotalPresentationEvidence(
+                            Probe::makeMp4Mp3SampleTableTotalPresentationEvidence(
+                                result.mp4Mp3SampleTablePresentation),
+                            result.totalPresentationEvidence);
+                    result.mp4Mp3SampleTableAuthorityReused =
+                        !result.totalPresentationEvidence.conflict &&
+                        result.totalPresentationEvidence.source ==
+                            Probe::PresentationTotalSource::
+                                Mp4Mp3SampleEditTablePresentation;
+                }
+            }
+        }
+    }
     if (result.totalPresentationEvidence.trust == Probe::PresentationTotalTrust::Unknown) {
         return;
     }
@@ -557,6 +622,10 @@ void resolveStreamingPresentationBudget(
     };
     const int audioStreamIndex = static_cast<int>(audioStream->index);
     result.presentationBudgetPacketScanExecuted = true;
+    result.genericMp4Mp3FullScanEntered = mp4Mp3;
+    result.mp4Mp3PossibleDoublePass = mp4Mp3 &&
+        (result.mp4Mp3SampleTableAuthorityReused ||
+         result.mp4Mp3SampleTableDirectProbeAttempted);
     result.genericOggOpusFullScanEntered = standaloneOggOpus;
     result.duplicatePresentationScanEntered =
         standaloneOggOpus && result.oggOpusSequentialAuthorityReused;
@@ -1803,6 +1872,34 @@ bool writeStreamingMetadataJson(
                 result.totalPresentationEvidence.validation)) << ",\n";
     json << "    \"packetScanExecuted\": "
          << (result.presentationBudgetPacketScanExecuted ? "true" : "false") << ",\n";
+    json << "    \"mp4Mp3SampleTableHandoffAttempted\": "
+         << (result.mp4Mp3SampleTableHandoffAttempted ? "true" : "false") << ",\n";
+    json << "    \"mp4Mp3SampleTableHandoffStatus\": "
+         << jsonString(Probe::mp4Mp3SampleTableHandoffStatusName(
+                result.mp4Mp3SampleTableHandoff.status)) << ",\n";
+    json << "    \"mp4Mp3SampleTableHandoffReason\": "
+         << jsonString(Probe::mp4Mp3SampleTableReasonName(
+                result.mp4Mp3SampleTableHandoff.reason)) << ",\n";
+    json << "    \"mp4Mp3SampleTableAuthorityReused\": "
+         << (result.mp4Mp3SampleTableAuthorityReused ? "true" : "false") << ",\n";
+    json << "    \"mp4Mp3SampleTableDirectProbeAttempted\": "
+         << (result.mp4Mp3SampleTableDirectProbeAttempted ? "true" : "false") << ",\n";
+    json << "    \"mp4Mp3SampleTableStatus\": "
+         << jsonString(Probe::mp4Mp3SampleTableStatusName(
+                result.mp4Mp3SampleTablePresentation.status)) << ",\n";
+    json << "    \"mp4Mp3SampleTableReason\": "
+         << jsonString(Probe::mp4Mp3SampleTableReasonName(
+                result.mp4Mp3SampleTablePresentation.reason)) << ",\n";
+    json << "    \"mp4Mp3SampleTablePresentationFrames\": "
+         << result.mp4Mp3SampleTablePresentation.presentationFrames << ",\n";
+    json << "    \"mp4Mp3SampleTableBytesReturned\": "
+         << result.mp4Mp3SampleTablePresentation.bytesReturned << ",\n";
+    json << "    \"mp4Mp3SampleTableScanDurationUs\": "
+         << result.mp4Mp3SampleTablePresentation.scanDurationUs << ",\n";
+    json << "    \"genericMp4Mp3FullScanEntered\": "
+         << (result.genericMp4Mp3FullScanEntered ? "true" : "false") << ",\n";
+    json << "    \"mp4Mp3PossibleDoublePass\": "
+         << (result.mp4Mp3PossibleDoublePass ? "true" : "false") << ",\n";
     json << "    \"oggOpusSequentialHandoffAttempted\": "
          << (result.oggOpusSequentialHandoffAttempted ? "true" : "false") << ",\n";
     json << "    \"oggOpusSequentialHandoffStatus\": "

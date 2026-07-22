@@ -25,6 +25,7 @@ enum class PresentationTotalSource {
     Mp3ValidatedHeaderPresentation,
     OggOpusSequentialPresentation,
     MatroskaAacSequentialPresentation,
+    Mp4Mp3SampleEditTablePresentation,
     ExactPacketPresentation
 };
 

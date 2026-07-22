@@ -2,6 +2,7 @@
 
 #include "PresentationBudgetPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
+#include "Mp4Mp3SampleEditTablePresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
@@ -21,6 +22,7 @@ struct FastProbeResult {
     NutBoundedTailProbeResult nutBoundedTail;
     OggOpusSequentialPresentationResult oggOpusSequentialPresentation;
     MatroskaAacSequentialPresentationResult matroskaAacSequentialPresentation;
+    Mp4Mp3SampleEditTablePresentationResult mp4Mp3SampleEditTablePresentation;
     bool streamInfoFound = false;
 };
 

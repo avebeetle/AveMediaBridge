@@ -93,6 +93,24 @@ std::optional<std::string> jsonString(const std::string& json, const std::string
         : std::optional<std::string>{json.substr(quote + 1, end - quote - 1)};
 }
 
+std::optional<bool> jsonBool(const std::string& json, const std::string& key) {
+    const std::string token = "\"" + key + "\"";
+    std::size_t cursor = json.find(token);
+    cursor = cursor == std::string::npos
+        ? cursor
+        : json.find(':', cursor + token.size());
+    cursor = cursor == std::string::npos
+        ? cursor
+        : json.find_first_not_of(" \t\r\n", cursor + 1);
+    if (cursor != std::string::npos && json.compare(cursor, 4, "true") == 0) {
+        return true;
+    }
+    if (cursor != std::string::npos && json.compare(cursor, 5, "false") == 0) {
+        return false;
+    }
+    return std::nullopt;
+}
+
 std::vector<float> readTailFrames(
     const std::filesystem::path& path,
     std::uint64_t totalFrames,
@@ -199,8 +217,9 @@ int run(const std::filesystem::path& mediaPath) {
     ok &= expect(legacyCandidate == 105840047, "legacy candidate changed");
 
     ScopedTempDirectory temp;
-    const std::filesystem::path probePath = temp.path() / L"probe.json";
     const std::filesystem::path mediaDir = temp.path() / L"Media";
+    std::filesystem::create_directories(mediaDir);
+    const std::filesystem::path probePath = mediaDir / L"probe.json";
     result = AveMediaBridge_ProbeToJson(mediaPath.c_str(), probePath.c_str());
     ok &= expect(result == 0, "AveMediaBridge probe failed");
     const std::string probeJson = result == 0 ? readText(probePath) : std::string{};
@@ -209,15 +228,21 @@ int run(const std::filesystem::path& mediaPath) {
     const auto probeSource = jsonString(probeJson, "decodedSampleFramesSource");
     const auto probeSkipStart = jsonNumber(probeJson, "skipSamplesStart");
     const auto probeSkipEnd = jsonNumber(probeJson, "skipSamplesEnd");
+    const auto sampleTableStatus = jsonString(probeJson, "mp4Mp3SampleTableStatus");
+    const auto genericScanEntered = jsonBool(probeJson, "mp4Mp3SampleTableGenericScanEntered");
+    const auto genericScanSkipped = jsonBool(probeJson, "mp4Mp3SampleTableGenericScanSkipped");
     ok &= expect(
         probeFrames && *probeFrames == expectedPresentationFrames,
         "initial Loading extent is not exact");
     ok &= expect(probeKind && *probeKind == "exact", "probe authority kind is not exact");
     ok &= expect(
-        probeSource && *probeSource == "exact_packet_presentation",
-        "legacy candidate retained precedence");
+        probeSource && *probeSource == "mp4_mp3_sample_edit_table_presentation",
+        "sample/edit-table authority did not take precedence");
     ok &= expect(probeSkipStart && *probeSkipStart == expectedInitialSkip, "probe start skip changed");
     ok &= expect(probeSkipEnd && *probeSkipEnd == expectedTerminalDiscard, "probe tail discard changed");
+    ok &= expect(sampleTableStatus && *sampleTableStatus == "exact", "sample-table proof is not exact");
+    ok &= expect(genericScanEntered && !*genericScanEntered, "generic MP4/MP3 scan still entered");
+    ok &= expect(genericScanSkipped && *genericScanSkipped, "generic MP4/MP3 scan was not skipped");
 
     ProgressCapture progress;
     AveMediaBridgeImportOptions options{};
@@ -233,9 +258,14 @@ int run(const std::filesystem::path& mediaPath) {
     }
 
     const std::string audioInfo = readText(mediaDir / L"audio_info.json");
+    const std::string metadata = readText(mediaDir / L"metadata.json");
     const auto readyFrames = jsonNumber(audioInfo, "frames");
     const auto reopenFrames = jsonNumber(readText(mediaDir / L"audio_info.json"), "frames");
     const std::filesystem::path pcmPath = mediaDir / L"original_f32.bin";
+    const auto budgetSource = jsonString(metadata, "source");
+    const auto packetScanExecuted = jsonBool(metadata, "packetScanExecuted");
+    const auto handoffAccepted = jsonString(metadata, "mp4Mp3SampleTableHandoffStatus");
+    const auto authorityReused = jsonBool(metadata, "mp4Mp3SampleTableAuthorityReused");
     ok &= expect(
         readyFrames && *readyFrames == expectedPresentationFrames,
         "Ready frame authority changed");
@@ -246,6 +276,15 @@ int run(const std::filesystem::path& mediaPath) {
         std::filesystem::file_size(pcmPath) ==
             static_cast<std::uint64_t>(expectedPresentationFrames) * channels * sizeof(float),
         "final PCM byte count changed");
+    ok &= expect(
+        budgetSource && *budgetSource == "mp4_mp3_sample_edit_table_presentation",
+        "streaming presentation budget did not use sample-table authority");
+    ok &= expect(packetScanExecuted && !*packetScanExecuted,
+                 "import repeated the generic packet scan");
+    ok &= expect(handoffAccepted && *handoffAccepted == "accepted",
+                 "probe-to-import handoff was not accepted");
+    ok &= expect(authorityReused && *authorityReused,
+                 "import did not reuse the exact probe authority");
 
     const std::vector<float> lastValidFrames = readTailFrames(
         pcmPath, expectedPresentationFrames, expectedTerminalDiscard, channels);
@@ -257,7 +296,8 @@ int run(const std::filesystem::path& mediaPath) {
 
     std::cout << "preliminaryInitialPadding=" << preliminaryInitialPadding
               << " preliminaryTrailingPadding=" << preliminaryTrailingPadding
-              << " combinedScanExecuted=yes"
+              << " oracleCombinedScanExecuted=yes"
+              << " productCombinedScanExecuted=no"
               << " physicalFrames=" << scan.packetTiming.codecFrameCountFrames
               << " initialSkip=" << exactEvidence.initialSkipFrames
               << " terminalDiscard=" << exactEvidence.terminalDiscardFrames
