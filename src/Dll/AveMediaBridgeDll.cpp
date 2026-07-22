@@ -11,6 +11,7 @@
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp3HeaderPresentation.hpp"
+#include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
 #include "../Probe/PresentationBudgetPolicy.hpp"
 #include "../Utils/JsonUtils.hpp"
@@ -79,6 +80,11 @@ struct StreamingImportResult {
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
     bool presentationBudgetPacketScanExecuted = false;
+    Probe::OggOpusSequentialHandoffResult oggOpusSequentialHandoff;
+    bool oggOpusSequentialHandoffAttempted = false;
+    bool oggOpusSequentialAuthorityReused = false;
+    bool genericOggOpusFullScanEntered = false;
+    bool duplicatePresentationScanEntered = false;
     std::uint64_t physicalInputFrames = 0;
     std::uint64_t acceptedInputFrames = 0;
     std::uint64_t rejectedInputFrames = 0;
@@ -475,6 +481,7 @@ bool estimateDecodedBytesForPreflight(
 void resolveStreamingPresentationBudget(
     StreamingImportResult& result,
     const std::string& path,
+    const std::filesystem::path& sessionDir,
     const AVFormatContext* formatContext,
     const AVStream* audioStream) {
     if (path.empty() || !audioStream || !audioStream->codecpar) {
@@ -498,7 +505,31 @@ void resolveStreamingPresentationBudget(
             result.totalPresentationEvidence =
                 Probe::reconcileTotalPresentationEvidence(
                     Probe::makeMp3HeaderTotalPresentationEvidence(header),
+            result.totalPresentationEvidence);
+        }
+    }
+    const bool standaloneOggOpus =
+        formatContext && formatContext->iformat && formatContext->iformat->name &&
+        std::string(formatContext->iformat->name) == "ogg" &&
+        codecpar->codec_id == AV_CODEC_ID_OPUS;
+    if (standaloneOggOpus &&
+        result.totalPresentationEvidence.trust !=
+            Probe::PresentationTotalTrust::SampleExact) {
+        result.oggOpusSequentialHandoffAttempted = true;
+        result.oggOpusSequentialHandoff =
+            Probe::readOggOpusSequentialPresentationHandoff(
+                sessionDir / L"probe.json",
+                path,
+                formatContext,
+                audioStream,
+                result.totalPresentationEvidence);
+        if (result.oggOpusSequentialHandoff.accepted()) {
+            result.totalPresentationEvidence =
+                Probe::reconcileTotalPresentationEvidence(
+                    result.oggOpusSequentialHandoff.evidence,
                     result.totalPresentationEvidence);
+            result.oggOpusSequentialAuthorityReused =
+                !result.totalPresentationEvidence.conflict;
         }
     }
     if (result.totalPresentationEvidence.trust == Probe::PresentationTotalTrust::Unknown) {
@@ -526,6 +557,9 @@ void resolveStreamingPresentationBudget(
     };
     const int audioStreamIndex = static_cast<int>(audioStream->index);
     result.presentationBudgetPacketScanExecuted = true;
+    result.genericOggOpusFullScanEntered = standaloneOggOpus;
+    result.duplicatePresentationScanEntered =
+        standaloneOggOpus && result.oggOpusSequentialAuthorityReused;
     // Resolve both presentation evidence components in one pre-decode pass
     // without changing the existing budget acceptance rules.
     const Probe::AudioPresentationEvidenceScan evidence =
@@ -1332,7 +1366,8 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             result.preflightEstimatedFrames,
             result.preflightEstimatedBytes,
             result.preflightEstimateKind);
-    resolveStreamingPresentationBudget(result, path, formatContext, audioStream);
+    resolveStreamingPresentationBudget(
+        result, path, sessionDir, formatContext, audioStream);
 
     std::string preflightError;
     if (!checkDiskPreflight(sessionDir, result, preflightError)) {
@@ -1768,6 +1803,28 @@ bool writeStreamingMetadataJson(
                 result.totalPresentationEvidence.validation)) << ",\n";
     json << "    \"packetScanExecuted\": "
          << (result.presentationBudgetPacketScanExecuted ? "true" : "false") << ",\n";
+    json << "    \"oggOpusSequentialHandoffAttempted\": "
+         << (result.oggOpusSequentialHandoffAttempted ? "true" : "false") << ",\n";
+    json << "    \"oggOpusSequentialHandoffStatus\": "
+         << jsonString(Probe::oggOpusSequentialHandoffStatusName(
+                result.oggOpusSequentialHandoff.status)) << ",\n";
+    json << "    \"oggOpusSequentialHandoffReason\": "
+         << jsonString(Probe::oggOpusSequentialHandoffReasonName(
+                result.oggOpusSequentialHandoff.reason)) << ",\n";
+    json << "    \"oggOpusSequentialAuthorityReused\": "
+         << (result.oggOpusSequentialAuthorityReused ? "true" : "false") << ",\n";
+    json << "    \"genericOggOpusFullScanEntered\": "
+         << (result.genericOggOpusFullScanEntered ? "true" : "false") << ",\n";
+    json << "    \"duplicatePresentationScanEntered\": "
+         << (result.duplicatePresentationScanEntered ? "true" : "false") << ",\n";
+    json << "    \"oggOpusSequentialPresentationFrames\": "
+         << result.oggOpusSequentialHandoff.presentation.presentationFrames << ",\n";
+    json << "    \"oggOpusSequentialBytesReturned\": "
+         << result.oggOpusSequentialHandoff.presentation.bytesReturned << ",\n";
+    json << "    \"oggOpusSequentialReadCalls\": "
+         << result.oggOpusSequentialHandoff.presentation.readCalls << ",\n";
+    json << "    \"oggOpusSequentialScanDurationUs\": "
+         << result.oggOpusSequentialHandoff.presentation.scanDurationUs << ",\n";
     json << "    \"physicalInputFrames\": " << result.physicalInputFrames << ",\n";
     json << "    \"acceptedInputFrames\": " << result.acceptedInputFrames << ",\n";
     json << "    \"rejectedInputFrames\": " << result.rejectedInputFrames << ",\n";

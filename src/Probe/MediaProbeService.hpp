@@ -3,6 +3,7 @@
 #include "PresentationBudgetPolicy.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
+#include "OggOpusSequentialPresentation.hpp"
 #include "ProbeJsonWriter.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
@@ -17,6 +18,7 @@ struct FastProbeResult {
     TotalPresentationEvidence totalPresentation;
     Mp3HeaderPresentationResult mp3HeaderPresentation;
     NutBoundedTailProbeResult nutBoundedTail;
+    OggOpusSequentialPresentationResult oggOpusSequentialPresentation;
     bool streamInfoFound = false;
 };
 

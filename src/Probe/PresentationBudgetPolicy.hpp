@@ -23,6 +23,7 @@ enum class PresentationTotalSource {
     FlacStreamInfoTotalSamples,
     NutBoundedTailSelectedStreamEnd,
     Mp3ValidatedHeaderPresentation,
+    OggOpusSequentialPresentation,
     ExactPacketPresentation
 };
 

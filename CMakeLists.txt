@@ -77,6 +77,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/MediaProbeService.cpp
     src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
+    src/Probe/OggOpusSequentialPresentation.cpp
     src/Probe/PacketScan.cpp
     src/Probe/PresentationBudgetPolicy.cpp
     src/Probe/ProbeJsonWriter.cpp
@@ -412,4 +413,43 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.mp3_header_presentation_authority
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_OGG_OPUS_SEQUENTIAL_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/ogg_opus_sequential_exact_scan/fixtures"
+    CACHE PATH
+    "External read-only Ogg Opus sequential-authority research fixtures")
+set(AVEMEDIABRIDGE_GOLDEN07_OPUS_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/07_ogg_opus_stereo_48000.opus"
+    CACHE FILEPATH
+    "External long Ogg Opus sequential-authority regression media")
+
+add_executable(AveMediaBridgeOggOpusSequentialPresentationTests
+    tests/OggOpusSequentialPresentationTests.cpp
+    src/Probe/OggOpusSequentialPresentation.cpp
+)
+
+target_link_libraries(AveMediaBridgeOggOpusSequentialPresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+target_include_directories(AveMediaBridgeOggOpusSequentialPresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeOggOpusSequentialPresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.ogg_opus_sequential_presentation
+    COMMAND AveMediaBridgeOggOpusSequentialPresentationTests
+        "${AVEMEDIABRIDGE_OGG_OPUS_SEQUENTIAL_FIXTURE_ROOT}"
+        "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1"
+        "${AVEMEDIABRIDGE_GOLDEN07_OPUS_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.ogg_opus_sequential_presentation
     PROPERTIES SKIP_RETURN_CODE 77)

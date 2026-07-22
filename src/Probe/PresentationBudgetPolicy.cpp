@@ -286,6 +286,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "nut_bounded_tail_selected_stream_end";
         case PresentationTotalSource::Mp3ValidatedHeaderPresentation:
             return "mp3_validated_header_presentation";
+        case PresentationTotalSource::OggOpusSequentialPresentation:
+            return "ogg_opus_sequential_presentation";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }

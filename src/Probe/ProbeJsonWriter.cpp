@@ -184,6 +184,77 @@ bool writeProbeJson(
          << document.nutBoundedTailPacketsObserved << ",\n";
     json << "  \"nutBoundedTailReachedEof\": "
          << (document.nutBoundedTailReachedEof ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialEligible\": "
+         << (document.oggOpusSequentialEligible ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialEntered\": "
+         << (document.oggOpusSequentialEntered ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialStatus\": "
+         << jsonString(document.oggOpusSequentialStatus) << ",\n";
+    json << "  \"oggOpusSequentialReason\": "
+         << jsonString(document.oggOpusSequentialReason) << ",\n";
+    json << "  \"oggOpusSequentialSelectedSerial\": "
+         << document.oggOpusSequentialSelectedSerial << ",\n";
+    json << "  \"oggOpusSequentialPreSkip\": "
+         << document.oggOpusSequentialPreSkip << ",\n";
+    json << "  \"oggOpusSequentialPhysicalPacketFrames\": "
+         << document.oggOpusSequentialPhysicalPacketFrames << ",\n";
+    json << "  \"oggOpusSequentialLastPacketDuration\": "
+         << document.oggOpusSequentialLastPacketDuration << ",\n";
+    json << "  \"oggOpusSequentialEosGranule\": "
+         << document.oggOpusSequentialEosGranule << ",\n";
+    json << "  \"oggOpusSequentialTerminalDiscard\": "
+         << document.oggOpusSequentialTerminalDiscard << ",\n";
+    json << "  \"oggOpusSequentialPresentationFrames\": "
+         << document.oggOpusSequentialPresentationFrames << ",\n";
+    json << "  \"oggOpusSequentialFileSizeBytes\": "
+         << document.oggOpusSequentialFileSizeBytes << ",\n";
+    json << "  \"oggOpusSequentialFileIndex\": "
+         << document.oggOpusSequentialFileIndex << ",\n";
+    json << "  \"oggOpusSequentialLastWriteTime100ns\": "
+         << document.oggOpusSequentialLastWriteTime100ns << ",\n";
+    json << "  \"oggOpusSequentialVolumeSerialNumber\": "
+         << document.oggOpusSequentialVolumeSerialNumber << ",\n";
+    json << "  \"oggOpusSequentialBytesReturned\": "
+         << document.oggOpusSequentialBytesReturned << ",\n";
+    json << "  \"oggOpusSequentialUniqueBytes\": "
+         << document.oggOpusSequentialUniqueBytes << ",\n";
+    json << "  \"oggOpusSequentialDuplicateBytes\": "
+         << document.oggOpusSequentialDuplicateBytes << ",\n";
+    json << "  \"oggOpusSequentialReadCalls\": "
+         << document.oggOpusSequentialReadCalls << ",\n";
+    json << "  \"oggOpusSequentialSeekCallsAfterOpen\": "
+         << document.oggOpusSequentialSeekCallsAfterOpen << ",\n";
+    json << "  \"oggOpusSequentialScanDurationUs\": "
+         << document.oggOpusSequentialScanDurationUs << ",\n";
+    json << "  \"oggOpusSequentialPagesParsed\": "
+         << document.oggOpusSequentialPagesParsed << ",\n";
+    json << "  \"oggOpusSequentialSelectedPages\": "
+         << document.oggOpusSequentialSelectedPages << ",\n";
+    json << "  \"oggOpusSequentialSelectedAudioPackets\": "
+         << document.oggOpusSequentialSelectedAudioPackets << ",\n";
+    json << "  \"oggOpusSequentialMaximumPacketBytes\": "
+         << document.oggOpusSequentialMaximumPacketBytes << ",\n";
+    json << "  \"oggOpusSequentialMaximumWorkingBufferBytes\": "
+         << document.oggOpusSequentialMaximumWorkingBufferBytes << ",\n";
+    json << "  \"oggOpusSequentialReachedEof\": "
+         << (document.oggOpusSequentialReachedEof ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialAllPageCrcValid\": "
+         << (document.oggOpusSequentialAllPageCrcValid ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialSelectedSequenceContinuous\": "
+         << (document.oggOpusSequentialSelectedSequenceContinuous ? "true" : "false")
+         << ",\n";
+    json << "  \"oggOpusSequentialPacketContinuityValid\": "
+         << (document.oggOpusSequentialPacketContinuityValid ? "true" : "false")
+         << ",\n";
+    json << "  \"oggOpusSequentialFinalGranuleInPacketInterval\": "
+         << (document.oggOpusSequentialFinalGranuleInPacketInterval ? "true" : "false")
+         << ",\n";
+    json << "  \"oggOpusSequentialGenericScanEntered\": "
+         << (document.oggOpusSequentialGenericScanEntered ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialGenericScanSkipped\": "
+         << (document.oggOpusSequentialGenericScanSkipped ? "true" : "false") << ",\n";
+    json << "  \"oggOpusSequentialPossibleDoublePass\": "
+         << (document.oggOpusSequentialPossibleDoublePass ? "true" : "false") << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

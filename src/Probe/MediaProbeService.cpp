@@ -3,6 +3,7 @@
 #include "FrameCountPolicy.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
+#include "OggOpusSequentialPresentation.hpp"
 #include "PacketScan.hpp"
 #include "PresentationBudgetPolicy.hpp"
 #include "../Core/MediaBridgeError.hpp"
@@ -384,6 +385,102 @@ void applyMp3HeaderPresentationAuthority(
     updateEstimatedDecodedBytes(document);
 }
 
+void copyOggOpusSequentialDiagnostics(
+    FastProbeJsonDocument& document,
+    const OggOpusSequentialPresentationResult& scan) {
+    document.oggOpusSequentialStatus = oggOpusSequentialStatusName(scan.status);
+    document.oggOpusSequentialReason = oggOpusSequentialReasonName(scan.reason);
+    document.oggOpusSequentialSelectedSerial = scan.selectedSerial;
+    document.oggOpusSequentialPreSkip = scan.preSkip;
+    document.oggOpusSequentialPhysicalPacketFrames = scan.physicalPacketFrames;
+    document.oggOpusSequentialLastPacketDuration = scan.lastPacketDuration;
+    document.oggOpusSequentialEosGranule = scan.eosGranule;
+    document.oggOpusSequentialTerminalDiscard = scan.terminalDiscard;
+    document.oggOpusSequentialPresentationFrames = scan.presentationFrames;
+    document.oggOpusSequentialFileSizeBytes = scan.fileSizeBytes;
+    document.oggOpusSequentialFileIndex = scan.fileIndex;
+    document.oggOpusSequentialLastWriteTime100ns = scan.lastWriteTime100ns;
+    document.oggOpusSequentialVolumeSerialNumber = scan.volumeSerialNumber;
+    document.oggOpusSequentialBytesReturned = scan.bytesReturned;
+    document.oggOpusSequentialUniqueBytes = scan.uniqueBytes;
+    document.oggOpusSequentialDuplicateBytes = scan.duplicateBytes;
+    document.oggOpusSequentialReadCalls = scan.readCalls;
+    document.oggOpusSequentialSeekCallsAfterOpen = scan.seekCallsAfterOpen;
+    document.oggOpusSequentialScanDurationUs = scan.scanDurationUs;
+    document.oggOpusSequentialPagesParsed = scan.pagesParsed;
+    document.oggOpusSequentialSelectedPages = scan.selectedPages;
+    document.oggOpusSequentialSelectedAudioPackets = scan.selectedAudioPackets;
+    document.oggOpusSequentialMaximumPacketBytes = scan.maximumPacketBytes;
+    document.oggOpusSequentialMaximumWorkingBufferBytes = scan.maximumWorkingBufferBytes;
+    document.oggOpusSequentialReachedEof = scan.reachedPhysicalEof;
+    document.oggOpusSequentialAllPageCrcValid = scan.allPageCrcValid;
+    document.oggOpusSequentialSelectedSequenceContinuous =
+        scan.selectedSequenceContinuous;
+    document.oggOpusSequentialPacketContinuityValid = scan.packetContinuityValid;
+    document.oggOpusSequentialFinalGranuleInPacketInterval =
+        scan.finalGranuleInPacketInterval;
+}
+
+void applyOggOpusSequentialPresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const OggOpusSequentialEligibility eligibility =
+        evaluateOggOpusSequentialEligibility(
+            path, formatContext, audioStream, strongerExactAuthority);
+    FastProbeJsonDocument& document = result.document;
+    document.oggOpusSequentialEligible = eligibility.eligible;
+    if (!eligibility.eligible) {
+        document.oggOpusSequentialReason =
+            oggOpusSequentialReasonName(eligibility.reason);
+        return;
+    }
+
+    document.oggOpusSequentialEntered = true;
+    result.oggOpusSequentialPresentation =
+        probeOggOpusSequentialPresentation(path, eligibility.selected);
+    copyOggOpusSequentialDiagnostics(
+        document, result.oggOpusSequentialPresentation);
+    if (!result.oggOpusSequentialPresentation.exact()) {
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeOggOpusSequentialTotalPresentationEvidence(
+            result.oggOpusSequentialPresentation);
+    evidence = reconcileTotalPresentationEvidence(evidence, result.totalPresentation);
+    if (evidence.conflict) {
+        result.oggOpusSequentialPresentation.status =
+            OggOpusSequentialStatus::Conflict;
+        result.oggOpusSequentialPresentation.reason =
+            OggOpusSequentialReason::IndependentExactAuthorityConflict;
+        copyOggOpusSequentialDiagnostics(
+            document, result.oggOpusSequentialPresentation);
+        return;
+    }
+    if (evidence.frames == 0 || evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "validated sequential Ogg Opus continuity proves the presentation end";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod = "from_ogg_opus_sequential_presentation";
+    document.oggOpusSequentialGenericScanSkipped = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 FrameCountPolicyState makeFrameCountPolicyState(const FastProbeJsonDocument& document) {
     FrameCountPolicyState state;
     state.formatName = document.formatName;
@@ -475,6 +572,16 @@ void applyFastFrameCountPolicies(
     const bool gaplessScanRequired =
         legacyGaplessScanRequired ||
         preliminaryPaddingRequiresExactPacketScan;
+    const bool genericOggOpusScan =
+        codecpar->codec_id == AV_CODEC_ID_OPUS &&
+        result.document.formatName == "ogg" &&
+        (packetScanRequired || gaplessScanRequired);
+    if (genericOggOpusScan) {
+        result.document.oggOpusSequentialGenericScanEntered = true;
+        result.document.oggOpusSequentialGenericScanSkipped = false;
+        result.document.oggOpusSequentialPossibleDoublePass =
+            result.document.oggOpusSequentialEntered;
+    }
 
     PacketFrameCountScan packetScan;
     GaplessSkipSampleScan gaplessScan;
@@ -645,6 +752,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
     applyMp3HeaderPresentationAuthority(result, path, formatContext.get(), audioStream);
     applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
+    applyOggOpusSequentialPresentationAuthority(
+        result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
     return result;
