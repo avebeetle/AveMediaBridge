@@ -1,6 +1,7 @@
 #include "MediaProbeService.hpp"
 
 #include "FrameCountPolicy.hpp"
+#include "MatroskaAacSequentialPresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
@@ -538,6 +539,139 @@ void applyFrameCountPolicyState(FastProbeJsonDocument& document, const FrameCoun
     document.warnings = state.warnings;
 }
 
+void copyMatroskaAacSequentialDiagnostics(
+    FastProbeJsonDocument& document,
+    const MatroskaAacSequentialPresentationResult& scan) {
+    document.matroskaAacSequentialStatus =
+        matroskaAacSequentialStatusName(scan.status);
+    document.matroskaAacSequentialReason =
+        matroskaAacSequentialReasonName(scan.reason);
+    document.matroskaAacSequentialTrackNumber = scan.trackNumber;
+    document.matroskaAacSequentialTrackUid = scan.trackUid;
+    document.matroskaAacSequentialAacObjectType = scan.aacObjectType;
+    document.matroskaAacSequentialSampleRate = scan.sampleRate;
+    document.matroskaAacSequentialChannels = scan.channels;
+    document.matroskaAacSequentialSamplesPerAccessUnit =
+        scan.samplesPerAccessUnit;
+    document.matroskaAacSequentialSelectedAccessUnits =
+        scan.selectedAccessUnits;
+    document.matroskaAacSequentialPhysicalFrames = scan.physicalFrames;
+    document.matroskaAacSequentialCodecDelayNs =
+        scan.codecDelayNanoseconds;
+    document.matroskaAacSequentialInitialSkipFrames =
+        scan.initialSkipFrames;
+    document.matroskaAacSequentialDiscardPaddingNs =
+        scan.finalDiscardPaddingNanoseconds;
+    document.matroskaAacSequentialTerminalDiscardFrames =
+        scan.terminalDiscardFrames;
+    document.matroskaAacSequentialPresentationFrames =
+        scan.presentationFrames;
+    document.matroskaAacSequentialFileSizeBytes = scan.fileSizeBytes;
+    document.matroskaAacSequentialBytesReturned = scan.bytesReturned;
+    document.matroskaAacSequentialReadCalls = scan.readCalls;
+    document.matroskaAacSequentialScanDurationUs = scan.scanDurationUs;
+    document.matroskaAacSequentialMaximumWorkingBufferBytes =
+        scan.maximumWorkingBufferBytes;
+    document.matroskaAacSequentialElementsParsed = scan.elementsParsed;
+    document.matroskaAacSequentialClustersParsed = scan.clustersParsed;
+    document.matroskaAacSequentialSelectedBlocks = scan.selectedBlocks;
+    document.matroskaAacSequentialSelectedLaces = scan.selectedLaces;
+    document.matroskaAacSequentialReachedEof = scan.reachedPhysicalEof;
+    document.matroskaAacSequentialReachedSegmentEnd =
+        scan.reachedSegmentEnd;
+    document.matroskaAacSequentialTrackMappingValid =
+        scan.selectedTrackMappingValid;
+    document.matroskaAacSequentialTimestampContinuityValid =
+        scan.timestampContinuityValid;
+    document.matroskaAacSequentialAllRelevantCrcValid =
+        scan.allRelevantCrcValid;
+    document.matroskaAacSequentialCheckedArithmeticValid =
+        scan.checkedArithmeticValid;
+    document.matroskaAacSequentialLateFallback =
+        scan.status == MatroskaAacSequentialStatus::UnsupportedLate;
+}
+
+void applyMatroskaAacSequentialPresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const AVCodecParameters* codecpar =
+        audioStream ? audioStream->codecpar : nullptr;
+    if (!codecpar) {
+        return;
+    }
+
+    const FrameCountPolicyState policyState =
+        makeFrameCountPolicyState(result.document);
+    const bool wouldRequireGenericPacketScan =
+        result.document.decodedSampleFramesKind != "exact" &&
+        (shouldScanPacketFrameCountCandidates(policyState) ||
+         codecpar->initial_padding > 0 ||
+         codecpar->trailing_padding > 0);
+    if (!wouldRequireGenericPacketScan) {
+        return;
+    }
+
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const MatroskaAacSequentialEligibility eligibility =
+        evaluateMatroskaAacSequentialEligibility(
+            path, formatContext, audioStream, strongerExactAuthority);
+    FastProbeJsonDocument& document = result.document;
+    document.matroskaAacSequentialEligible = eligibility.eligible;
+    if (!eligibility.eligible) {
+        document.matroskaAacSequentialReason =
+            matroskaAacSequentialReasonName(eligibility.reason);
+        return;
+    }
+
+    document.matroskaAacSequentialEntered = true;
+    result.matroskaAacSequentialPresentation =
+        probeMatroskaAacSequentialPresentation(path, eligibility.selected);
+    copyMatroskaAacSequentialDiagnostics(
+        document, result.matroskaAacSequentialPresentation);
+    if (!result.matroskaAacSequentialPresentation.exact()) {
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeMatroskaAacSequentialTotalPresentationEvidence(
+            result.matroskaAacSequentialPresentation);
+    evidence = reconcileTotalPresentationEvidence(
+        evidence, result.totalPresentation);
+    if (evidence.conflict) {
+        result.matroskaAacSequentialPresentation.status =
+            MatroskaAacSequentialStatus::Conflict;
+        result.matroskaAacSequentialPresentation.reason =
+            MatroskaAacSequentialReason::IndependentExactAuthorityConflict;
+        copyMatroskaAacSequentialDiagnostics(
+            document, result.matroskaAacSequentialPresentation);
+        return;
+    }
+    if (evidence.frames == 0 || evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource =
+        presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "validated sequential Matroska AAC selected-track continuity "
+        "proves the presentation end";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod =
+        "from_matroska_aac_sequential_presentation";
+    document.matroskaAacSequentialGenericScanSkipped = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
     const std::string& path,
@@ -581,6 +715,16 @@ void applyFastFrameCountPolicies(
         result.document.oggOpusSequentialGenericScanSkipped = false;
         result.document.oggOpusSequentialPossibleDoublePass =
             result.document.oggOpusSequentialEntered;
+    }
+    const bool genericMatroskaAacScan =
+        codecpar->codec_id == AV_CODEC_ID_AAC &&
+        result.document.formatName.find("matroska") != std::string::npos &&
+        (packetScanRequired || gaplessScanRequired);
+    if (genericMatroskaAacScan) {
+        result.document.matroskaAacSequentialGenericScanEntered = true;
+        result.document.matroskaAacSequentialGenericScanSkipped = false;
+        result.document.matroskaAacSequentialPossibleDoublePass =
+            result.document.matroskaAacSequentialEntered;
     }
 
     PacketFrameCountScan packetScan;
@@ -753,6 +897,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     applyMp3HeaderPresentationAuthority(result, path, formatContext.get(), audioStream);
     applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
     applyOggOpusSequentialPresentationAuthority(
+        result, path, formatContext.get(), audioStream);
+    applyMatroskaAacSequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);

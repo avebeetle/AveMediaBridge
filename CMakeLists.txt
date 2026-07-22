@@ -74,6 +74,9 @@ add_library(AveMediaBridge SHARED
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
+    src/Probe/AacAudioSpecificConfig.cpp
+    src/Probe/EbmlSequentialReader.cpp
+    src/Probe/MatroskaAacSequentialPresentation.cpp
     src/Probe/MediaProbeService.cpp
     src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
@@ -452,4 +455,51 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.ogg_opus_sequential_presentation
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_MATROSKA_AAC_RESEARCH_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/matroska_aac_exact_authority/fixtures"
+    CACHE PATH
+    "External read-only Matroska AAC exact-authority research fixtures")
+set(AVEMEDIABRIDGE_MATROSKA_AAC_IMPLEMENTATION_FIXTURE_ROOT
+    "${AVEMEDIABRIDGE_ROOT}/../ffmpeglab/research/matroska_aac_sequential_exact_scan_fix/fixtures"
+    CACHE PATH
+    "External read-only Matroska AAC implementation fixtures")
+set(AVEMEDIABRIDGE_GOLDEN10_AAC_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_tests_40min_speech/10_mkv_h264_aac_stereo_48000.mkv"
+    CACHE FILEPATH
+    "External long Matroska AAC regression media")
+
+add_executable(AveMediaBridgeMatroskaAacSequentialPresentationTests
+    tests/MatroskaAacSequentialPresentationTests.cpp
+    src/Probe/AacAudioSpecificConfig.cpp
+    src/Probe/EbmlSequentialReader.cpp
+    src/Probe/MatroskaAacSequentialPresentation.cpp
+    src/Probe/PresentationBudgetPolicy.cpp
+    src/Probe/FlacStreamInfo.cpp
+)
+target_link_libraries(AveMediaBridgeMatroskaAacSequentialPresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+target_include_directories(AveMediaBridgeMatroskaAacSequentialPresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMatroskaAacSequentialPresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.matroska_aac_sequential_presentation
+    COMMAND AveMediaBridgeMatroskaAacSequentialPresentationTests
+        "${AVEMEDIABRIDGE_MATROSKA_AAC_RESEARCH_FIXTURE_ROOT}"
+        "${AVEMEDIABRIDGE_MATROSKA_AAC_IMPLEMENTATION_FIXTURE_ROOT}"
+        "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1"
+        "${AVEMEDIABRIDGE_GOLDEN10_AAC_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.matroska_aac_sequential_presentation
     PROPERTIES SKIP_RETURN_CODE 77)

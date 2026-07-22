@@ -24,6 +24,7 @@ enum class PresentationTotalSource {
     NutBoundedTailSelectedStreamEnd,
     Mp3ValidatedHeaderPresentation,
     OggOpusSequentialPresentation,
+    MatroskaAacSequentialPresentation,
     ExactPacketPresentation
 };
 

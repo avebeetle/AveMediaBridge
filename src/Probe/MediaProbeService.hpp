@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PresentationBudgetPolicy.hpp"
+#include "MatroskaAacSequentialPresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
@@ -19,6 +20,7 @@ struct FastProbeResult {
     Mp3HeaderPresentationResult mp3HeaderPresentation;
     NutBoundedTailProbeResult nutBoundedTail;
     OggOpusSequentialPresentationResult oggOpusSequentialPresentation;
+    MatroskaAacSequentialPresentationResult matroskaAacSequentialPresentation;
     bool streamInfoFound = false;
 };
 

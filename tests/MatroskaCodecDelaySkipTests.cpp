@@ -316,20 +316,19 @@ int run(
     ok &= expect(result == 0, "AveMediaBridge probe failed");
     const std::string probeJson = result == 0 ? readText(probePath) : std::string{};
     const auto probeFrames = jsonNumber(probeJson, "decodedSampleFrames");
-    const auto rawProbeFrames = jsonNumber(probeJson, "decodedSampleFramesBeforeCorrection");
     const auto probeDuration = jsonNumber(probeJson, "durationSec");
     const auto probeKind = jsonString(probeJson, "decodedSampleFramesKind");
     const auto probeTrust = jsonString(probeJson, "decodedSampleFramesTrust");
     const auto probeSource = jsonString(probeJson, "decodedSampleFramesSource");
     ok &= expect(probeFrames && *probeFrames == expectedFrames, "initial probe presentation frames mismatch");
     ok &= expect(
-        rawProbeFrames && *rawProbeFrames == expectedRawProbeFrames,
-        "raw rounded container estimate was not preserved");
-    ok &= expect(probeDuration && *probeDuration == 2400.021, "container duration metadata changed");
+        probeDuration && std::fabs(*probeDuration - 2400.0) < 0.000001,
+        "exact presentation duration changed");
     ok &= expect(probeKind && *probeKind == "exact", "probe authority kind is not exact");
     ok &= expect(probeTrust && *probeTrust == "authoritative", "probe authority trust changed");
     ok &= expect(
-        probeSource && *probeSource == "exact_packet_presentation",
+        probeSource &&
+            *probeSource == "matroska_aac_sequential_presentation",
         "probe authority source changed");
 
     ProgressCapture progressCapture;

@@ -255,6 +255,87 @@ bool writeProbeJson(
          << (document.oggOpusSequentialGenericScanSkipped ? "true" : "false") << ",\n";
     json << "  \"oggOpusSequentialPossibleDoublePass\": "
          << (document.oggOpusSequentialPossibleDoublePass ? "true" : "false") << ",\n";
+    json << "  \"matroskaAacSequentialEligible\": "
+         << (document.matroskaAacSequentialEligible ? "true" : "false") << ",\n";
+    json << "  \"matroskaAacSequentialEntered\": "
+         << (document.matroskaAacSequentialEntered ? "true" : "false") << ",\n";
+    json << "  \"matroskaAacSequentialStatus\": "
+         << jsonString(document.matroskaAacSequentialStatus) << ",\n";
+    json << "  \"matroskaAacSequentialReason\": "
+         << jsonString(document.matroskaAacSequentialReason) << ",\n";
+    json << "  \"matroskaAacSequentialTrackNumber\": "
+         << document.matroskaAacSequentialTrackNumber << ",\n";
+    json << "  \"matroskaAacSequentialTrackUid\": "
+         << document.matroskaAacSequentialTrackUid << ",\n";
+    json << "  \"matroskaAacSequentialAacObjectType\": "
+         << document.matroskaAacSequentialAacObjectType << ",\n";
+    json << "  \"matroskaAacSequentialSampleRate\": "
+         << document.matroskaAacSequentialSampleRate << ",\n";
+    json << "  \"matroskaAacSequentialChannels\": "
+         << document.matroskaAacSequentialChannels << ",\n";
+    json << "  \"matroskaAacSequentialSamplesPerAccessUnit\": "
+         << document.matroskaAacSequentialSamplesPerAccessUnit << ",\n";
+    json << "  \"matroskaAacSequentialSelectedAccessUnits\": "
+         << document.matroskaAacSequentialSelectedAccessUnits << ",\n";
+    json << "  \"matroskaAacSequentialPhysicalFrames\": "
+         << document.matroskaAacSequentialPhysicalFrames << ",\n";
+    json << "  \"matroskaAacSequentialCodecDelayNs\": "
+         << document.matroskaAacSequentialCodecDelayNs << ",\n";
+    json << "  \"matroskaAacSequentialInitialSkipFrames\": "
+         << document.matroskaAacSequentialInitialSkipFrames << ",\n";
+    json << "  \"matroskaAacSequentialDiscardPaddingNs\": "
+         << document.matroskaAacSequentialDiscardPaddingNs << ",\n";
+    json << "  \"matroskaAacSequentialTerminalDiscardFrames\": "
+         << document.matroskaAacSequentialTerminalDiscardFrames << ",\n";
+    json << "  \"matroskaAacSequentialPresentationFrames\": "
+         << document.matroskaAacSequentialPresentationFrames << ",\n";
+    json << "  \"matroskaAacSequentialFileSizeBytes\": "
+         << document.matroskaAacSequentialFileSizeBytes << ",\n";
+    json << "  \"matroskaAacSequentialBytesReturned\": "
+         << document.matroskaAacSequentialBytesReturned << ",\n";
+    json << "  \"matroskaAacSequentialReadCalls\": "
+         << document.matroskaAacSequentialReadCalls << ",\n";
+    json << "  \"matroskaAacSequentialScanDurationUs\": "
+         << document.matroskaAacSequentialScanDurationUs << ",\n";
+    json << "  \"matroskaAacSequentialMaximumWorkingBufferBytes\": "
+         << document.matroskaAacSequentialMaximumWorkingBufferBytes << ",\n";
+    json << "  \"matroskaAacSequentialElementsParsed\": "
+         << document.matroskaAacSequentialElementsParsed << ",\n";
+    json << "  \"matroskaAacSequentialClustersParsed\": "
+         << document.matroskaAacSequentialClustersParsed << ",\n";
+    json << "  \"matroskaAacSequentialSelectedBlocks\": "
+         << document.matroskaAacSequentialSelectedBlocks << ",\n";
+    json << "  \"matroskaAacSequentialSelectedLaces\": "
+         << document.matroskaAacSequentialSelectedLaces << ",\n";
+    json << "  \"matroskaAacSequentialReachedEof\": "
+         << (document.matroskaAacSequentialReachedEof ? "true" : "false") << ",\n";
+    json << "  \"matroskaAacSequentialReachedSegmentEnd\": "
+         << (document.matroskaAacSequentialReachedSegmentEnd ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialTrackMappingValid\": "
+         << (document.matroskaAacSequentialTrackMappingValid ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialTimestampContinuityValid\": "
+         << (document.matroskaAacSequentialTimestampContinuityValid ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialAllRelevantCrcValid\": "
+         << (document.matroskaAacSequentialAllRelevantCrcValid ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialCheckedArithmeticValid\": "
+         << (document.matroskaAacSequentialCheckedArithmeticValid ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialGenericScanEntered\": "
+         << (document.matroskaAacSequentialGenericScanEntered ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialGenericScanSkipped\": "
+         << (document.matroskaAacSequentialGenericScanSkipped ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialPossibleDoublePass\": "
+         << (document.matroskaAacSequentialPossibleDoublePass ? "true" : "false")
+         << ",\n";
+    json << "  \"matroskaAacSequentialLateFallback\": "
+         << (document.matroskaAacSequentialLateFallback ? "true" : "false")
+         << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

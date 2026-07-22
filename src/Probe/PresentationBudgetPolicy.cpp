@@ -288,6 +288,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "mp3_validated_header_presentation";
         case PresentationTotalSource::OggOpusSequentialPresentation:
             return "ogg_opus_sequential_presentation";
+        case PresentationTotalSource::MatroskaAacSequentialPresentation:
+            return "matroska_aac_sequential_presentation";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }
