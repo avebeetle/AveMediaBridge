@@ -1,5 +1,6 @@
 #include "ProbeJsonWriter.hpp"
 
+#include "MediaOpenValidator.hpp"
 #include "../Utils/JsonUtils.hpp"
 
 #include <algorithm>
@@ -28,6 +29,8 @@ void writeSelectedAudioJson(std::ostream& out, const SelectedAudioStreamInfo& st
     out << indent << "  \"index\": " << stream.index << ",\n";
     out << indent << "  \"codecName\": " << jsonString(stream.codecName) << ",\n";
     out << indent << "  \"codecId\": " << stream.codecId << ",\n";
+    out << indent << "  \"codecProfile\": " << stream.codecProfile << ",\n";
+    out << indent << "  \"codecProfileName\": " << jsonString(stream.codecProfileName) << ",\n";
     out << indent << "  \"decoderName\": " << jsonString(stream.decoderName) << ",\n";
     out << indent << "  \"sampleRate\": " << stream.sampleRate << ",\n";
     out << indent << "  \"channels\": " << stream.channels << ",\n";
@@ -83,6 +86,7 @@ bool createParentDirectory(const std::filesystem::path& filePath, std::string& e
 bool writeProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeJsonDocument& document,
+    const MediaOpenAssessment& mediaOpenAssessment,
     std::string& error) {
     if (!createParentDirectory(outputPath, error)) {
         return false;
@@ -108,6 +112,8 @@ bool writeProbeJson(
     json << "  \"formatLongName\": " << jsonString(document.formatLongName) << ",\n";
     json << "  \"codecName\": " << jsonString(document.selectedAudio.codecName) << ",\n";
     json << "  \"codecId\": " << document.selectedAudio.codecId << ",\n";
+    json << "  \"codecProfile\": " << document.selectedAudio.codecProfile << ",\n";
+    json << "  \"codecProfileName\": " << jsonString(document.selectedAudio.codecProfileName) << ",\n";
     json << "  \"sampleRate\": " << document.selectedAudio.sampleRate << ",\n";
     json << "  \"channels\": " << document.selectedAudio.channels << ",\n";
     json << "  \"channelLayout\": " << jsonString(document.channelLayout) << ",\n";
@@ -521,6 +527,47 @@ bool writeProbeJson(
     json << "  \"dolbySequentialDuplicatePresentationScanEntered\": " << (document.dolbySequentialDuplicatePresentationScanEntered ? "true" : "false") << ",\n";
     json << "  \"dolbySequentialPossibleDoublePass\": " << (document.dolbySequentialPossibleDoublePass ? "true" : "false") << ",\n";
     json << "  \"dolbySequentialLateFallback\": " << (document.dolbySequentialLateFallback ? "true" : "false") << ",\n";
+    json << "  \"mediaOpenAssessmentEntered\": true,\n";
+    json << "  \"mediaOpenDisposition\": "
+         << jsonString(mediaOpenDispositionName(mediaOpenAssessment.disposition)) << ",\n";
+    json << "  \"mediaTechnicalSupport\": "
+         << jsonString(mediaTechnicalSupportName(mediaOpenAssessment.technicalSupport)) << ",\n";
+    json << "  \"mediaCertificationLevel\": "
+         << jsonString(mediaCertificationLevelName(mediaOpenAssessment.certificationLevel)) << ",\n";
+    json << "  \"mediaPresentationMode\": "
+         << jsonString(mediaPresentationModeName(mediaOpenAssessment.presentationMode)) << ",\n";
+    json << "  \"mediaOpenReason\": "
+         << jsonString(mediaOpenReasonName(mediaOpenAssessment.reason)) << ",\n";
+    json << "  \"mediaOpenUserMessageKey\": "
+         << jsonString(mediaOpenAssessment.userMessageKey) << ",\n";
+    json << "  \"detectedContainer\": "
+         << jsonString(mediaOpenAssessment.detectedContainer) << ",\n";
+    json << "  \"detectedCodec\": "
+         << jsonString(mediaOpenAssessment.detectedCodec) << ",\n";
+    json << "  \"detectedProfile\": "
+         << jsonString(mediaOpenAssessment.detectedProfile) << ",\n";
+    json << "  \"decoderAvailable\": "
+         << (mediaOpenAssessment.decoderAvailable ? "true" : "false") << ",\n";
+    json << "  \"selectedAudioStreamFound\": "
+         << (mediaOpenAssessment.selectedAudioStreamFound ? "true" : "false") << ",\n";
+    json << "  \"mediaOpenCanImport\": "
+         << (mediaOpenAssessment.canImport ? "true" : "false") << ",\n";
+    json << "  \"sampleExactLoadingAvailable\": "
+         << (mediaOpenAssessment.sampleExactLoadingAvailable ? "true" : "false") << ",\n";
+    json << "  \"safeReconcileRequired\": "
+         << (mediaOpenAssessment.safeReconcileRequired ? "true" : "false") << ",\n";
+    json << "  \"mediaOpenAuthoritySource\": "
+         << jsonString(presentationTotalSourceName(mediaOpenAssessment.authoritySource)) << ",\n";
+    json << "  \"mediaOpenAuthorityTrust\": "
+         << jsonString(presentationTotalTrustName(mediaOpenAssessment.authorityTrust)) << ",\n";
+    json << "  \"mediaOpenAuthorityDomain\": "
+         << jsonString(presentationSampleDomainName(mediaOpenAssessment.authorityDomain)) << ",\n";
+    json << "  \"mediaOpenProbeReused\": "
+         << (mediaOpenAssessment.probeReused ? "true" : "false") << ",\n";
+    json << "  \"mediaOpenPresentationEvidenceReused\": "
+         << (mediaOpenAssessment.presentationEvidenceReused ? "true" : "false") << ",\n";
+    json << "  \"mediaOpenAdditionalProbeRequired\": "
+         << (mediaOpenAssessment.additionalProbeRequired ? "true" : "false") << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

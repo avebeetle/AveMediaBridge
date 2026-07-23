@@ -9,6 +9,8 @@
 
 namespace AveMediaBridge::Probe {
 
+struct MediaOpenAssessment;
+
 struct FastProbeJsonDocument {
     std::string sourcePath;
     std::string formatName;
@@ -279,6 +281,7 @@ struct FastProbeJsonDocument {
 bool writeProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeJsonDocument& document,
+    const MediaOpenAssessment& mediaOpenAssessment,
     std::string& error);
 
 }  // namespace AveMediaBridge::Probe

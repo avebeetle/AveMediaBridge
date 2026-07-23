@@ -79,6 +79,7 @@ add_library(AveMediaBridge SHARED
     src/Probe/AacAudioSpecificConfig.cpp
     src/Probe/EbmlSequentialReader.cpp
     src/Probe/MatroskaAacSequentialPresentation.cpp
+    src/Probe/MediaOpenValidator.cpp
     src/Probe/MediaProbeService.cpp
     src/Probe/Mp4Mp3SampleEditTablePresentation.cpp
     src/Probe/Mp3HeaderPresentation.cpp
@@ -151,6 +152,23 @@ copy_ffmpeg_runtime_dlls(AveMediaBridgeAudioPresentationEvidenceScanTests)
 add_test(
     NAME AveMediaBridgeTests.audio_presentation_evidence_scan
     COMMAND AveMediaBridgeAudioPresentationEvidenceScanTests
+)
+
+add_executable(AveMediaBridgeMediaOpenValidationTests
+    tests/MediaOpenValidationTests.cpp
+    src/Probe/MediaOpenValidator.cpp
+)
+
+target_link_libraries(AveMediaBridgeMediaOpenValidationTests PRIVATE AveMediaBridgeCore)
+target_include_directories(AveMediaBridgeMediaOpenValidationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeMediaOpenValidationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.media_open_validation
+    COMMAND AveMediaBridgeMediaOpenValidationTests
 )
 
 set(AVEMEDIABRIDGE_MATROSKA_CODEC_DELAY_TEST_MEDIA

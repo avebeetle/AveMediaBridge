@@ -4,6 +4,7 @@
 #include "Ac3Eac3SequentialPresentation.hpp"
 #include "PresentationBudgetPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
+#include "MediaOpenValidator.hpp"
 #include "Mp4Mp3SampleEditTablePresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
@@ -20,6 +21,7 @@ namespace AveMediaBridge::Probe {
 struct FastProbeResult {
     FastProbeJsonDocument document;
     TotalPresentationEvidence totalPresentation;
+    MediaOpenAssessment mediaOpenAssessment;
     Mp3HeaderPresentationResult mp3HeaderPresentation;
     NutBoundedTailProbeResult nutBoundedTail;
     OggOpusSequentialPresentationResult oggOpusSequentialPresentation;

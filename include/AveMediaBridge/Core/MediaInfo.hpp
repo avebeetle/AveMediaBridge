@@ -29,6 +29,8 @@ struct SelectedAudioStreamInfo {
     int index = -1;
     std::string codecName;
     int codecId = 0;
+    int codecProfile = -1;
+    std::string codecProfileName;
     std::string decoderName;
     int sampleRate = 0;
     int channels = 0;

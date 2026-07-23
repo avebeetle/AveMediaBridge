@@ -174,6 +174,11 @@ void fillFastSelectedAudio(
     result.document.selectedAudio.index = static_cast<int>(stream->index);
     result.document.selectedAudio.codecName = avcodec_get_name(codecpar->codec_id);
     result.document.selectedAudio.codecId = static_cast<int>(codecpar->codec_id);
+    result.document.selectedAudio.codecProfile = codecpar->profile;
+    const char* profileName =
+        avcodec_profile_name(codecpar->codec_id, codecpar->profile);
+    result.document.selectedAudio.codecProfileName =
+        profileName ? profileName : "";
     result.document.selectedAudio.decoderName = decoder && decoder->name ? decoder->name : "";
     result.document.selectedAudio.sampleRate = codecpar->sample_rate;
     result.document.selectedAudio.channels = codecpar->ch_layout.nb_channels;
@@ -1251,6 +1256,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     Ffmpeg::UniqueAVFormatContext formatContext(avformat_alloc_context());
     if (!formatContext) {
         result.document.errors.push_back("avformat_alloc_context failed");
+        result.mediaOpenAssessment =
+            assessMediaOpen(result.document, result.totalPresentation, false);
         return result;
     }
 
@@ -1267,6 +1274,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     av_dict_free(&options);
     if (ret < 0) {
         result.document.errors.push_back("avformat_open_input failed: " + ffErrorString(ret));
+        result.mediaOpenAssessment =
+            assessMediaOpen(result.document, result.totalPresentation, false);
         return result;
     }
 
@@ -1274,6 +1283,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     fillFastSourceInfo(result, formatContext.get());
     if (ret < 0) {
         result.document.errors.push_back("avformat_find_stream_info failed: " + ffErrorString(ret));
+        result.mediaOpenAssessment =
+            assessMediaOpen(result.document, result.totalPresentation, false);
         return result;
     }
 
@@ -1284,6 +1295,8 @@ FastProbeResult runFastProbe(const std::string& path) {
         Ffmpeg::selectBestAudioStreamWithFirstAudioFallback(formatContext.get());
     if (selection.streamIndex < 0) {
         result.document.errors.push_back("no audio stream found: " + ffErrorString(selection.bestStreamResult));
+        result.mediaOpenAssessment =
+            assessMediaOpen(result.document, result.totalPresentation, true);
         return result;
     }
     if (selection.usedFirstAudioFallback) {
@@ -1315,6 +1328,8 @@ FastProbeResult runFastProbe(const std::string& path) {
         result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
+    result.mediaOpenAssessment =
+        assessMediaOpen(result.document, result.totalPresentation, true);
     return result;
 }
 
@@ -1322,7 +1337,11 @@ bool writeFastProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeResult& result,
     std::string& error) {
-    return writeProbeJson(outputPath, result.document, error);
+    return writeProbeJson(
+        outputPath,
+        result.document,
+        result.mediaOpenAssessment,
+        error);
 }
 
 bool estimateDecodedBytesForPreflight(
