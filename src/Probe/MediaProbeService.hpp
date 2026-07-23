@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AdtsAacSequentialPresentation.hpp"
+#include "Ac3Eac3SequentialPresentation.hpp"
 #include "PresentationBudgetPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
 #include "Mp4Mp3SampleEditTablePresentation.hpp"
@@ -25,6 +26,7 @@ struct FastProbeResult {
     MatroskaAacSequentialPresentationResult matroskaAacSequentialPresentation;
     Mp4Mp3SampleEditTablePresentationResult mp4Mp3SampleEditTablePresentation;
     AdtsAacSequentialPresentationResult adtsAacSequentialPresentation;
+    DolbySequentialPresentationResult dolbySequentialPresentation;
     bool streamInfoFound = false;
 };
 

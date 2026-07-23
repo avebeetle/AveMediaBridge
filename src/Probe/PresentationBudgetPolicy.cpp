@@ -294,6 +294,10 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "mp4_mp3_sample_edit_table_presentation";
         case PresentationTotalSource::AdtsAacSequentialPresentation:
             return "adts_aac_sequential_presentation";
+        case PresentationTotalSource::Ac3SequentialPresentation:
+            return "ac3_sequential_presentation";
+        case PresentationTotalSource::Eac3SequentialPresentation:
+            return "eac3_sequential_presentation";
         case PresentationTotalSource::ExactPacketPresentation:
             return "exact_packet_presentation";
     }

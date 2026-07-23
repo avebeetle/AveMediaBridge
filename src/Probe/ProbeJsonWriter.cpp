@@ -469,6 +469,58 @@ bool writeProbeJson(
     json << "  \"adtsAacSequentialLateFallback\": "
          << (document.adtsAacSequentialLateFallback ? "true" : "false")
          << ",\n";
+    json << "  \"dolbySequentialEligible\": "
+         << (document.dolbySequentialEligible ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialEntered\": "
+         << (document.dolbySequentialEntered ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialStatus\": "
+         << jsonString(document.dolbySequentialStatus) << ",\n";
+    json << "  \"dolbySequentialReason\": "
+         << jsonString(document.dolbySequentialReason) << ",\n";
+    json << "  \"dolbySequentialCodecFamily\": "
+         << jsonString(document.dolbySequentialCodecFamily) << ",\n";
+    json << "  \"dolbySequentialSampleRate\": " << document.dolbySequentialSampleRate << ",\n";
+    json << "  \"dolbySequentialChannels\": " << document.dolbySequentialChannels << ",\n";
+    json << "  \"dolbySequentialBitstreamId\": " << document.dolbySequentialBitstreamId << ",\n";
+    json << "  \"dolbySequentialChannelMode\": " << document.dolbySequentialChannelMode << ",\n";
+    json << "  \"dolbySequentialLfe\": " << (document.dolbySequentialLfe ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialSelectedStreamType\": " << document.dolbySequentialSelectedStreamType << ",\n";
+    json << "  \"dolbySequentialSelectedSubstreamId\": " << document.dolbySequentialSelectedSubstreamId << ",\n";
+    json << "  \"dolbySequentialSyncframeCount\": " << document.dolbySequentialSyncframeCount << ",\n";
+    json << "  \"dolbySequentialAc3FrameCount\": " << document.dolbySequentialAc3FrameCount << ",\n";
+    json << "  \"dolbySequentialEac3IndependentFrameCount\": " << document.dolbySequentialEac3IndependentFrameCount << ",\n";
+    json << "  \"dolbySequentialEac3DependentFrameCount\": " << document.dolbySequentialEac3DependentFrameCount << ",\n";
+    json << "  \"dolbySequentialAudioBlockCount\": " << document.dolbySequentialAudioBlockCount << ",\n";
+    json << "  \"dolbySequentialSamplesPerAudioBlock\": " << document.dolbySequentialSamplesPerAudioBlock << ",\n";
+    json << "  \"dolbySequentialPresentationFrames\": " << document.dolbySequentialPresentationFrames << ",\n";
+    json << "  \"dolbySequentialFileSizeBytes\": " << document.dolbySequentialFileSizeBytes << ",\n";
+    json << "  \"dolbySequentialFileIndex\": " << document.dolbySequentialFileIndex << ",\n";
+    json << "  \"dolbySequentialLastWriteTime100ns\": " << document.dolbySequentialLastWriteTime100ns << ",\n";
+    json << "  \"dolbySequentialVolumeSerialNumber\": " << document.dolbySequentialVolumeSerialNumber << ",\n";
+    json << "  \"dolbySequentialBytesReturned\": " << document.dolbySequentialBytesReturned << ",\n";
+    json << "  \"dolbySequentialUniqueBytes\": " << document.dolbySequentialUniqueBytes << ",\n";
+    json << "  \"dolbySequentialDuplicateBytes\": " << document.dolbySequentialDuplicateBytes << ",\n";
+    json << "  \"dolbySequentialReadCalls\": " << document.dolbySequentialReadCalls << ",\n";
+    json << "  \"dolbySequentialSeekCallsAfterOpen\": " << document.dolbySequentialSeekCallsAfterOpen << ",\n";
+    json << "  \"dolbySequentialMaximumFrameBytes\": " << document.dolbySequentialMaximumFrameBytes << ",\n";
+    json << "  \"dolbySequentialScanDurationUs\": " << document.dolbySequentialScanDurationUs << ",\n";
+    json << "  \"dolbySequentialMaximumWorkingBufferBytes\": " << document.dolbySequentialMaximumWorkingBufferBytes << ",\n";
+    json << "  \"dolbySequentialReachedPhysicalEof\": " << (document.dolbySequentialReachedPhysicalEof ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialFrameBoundariesValid\": " << (document.dolbySequentialFrameBoundariesValid ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialConfigurationContinuous\": " << (document.dolbySequentialConfigurationContinuous ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialSubstreamPolicyValid\": " << (document.dolbySequentialSubstreamPolicyValid ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialOutputDomainValidated\": " << (document.dolbySequentialOutputDomainValidated ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialCheckedArithmeticValid\": " << (document.dolbySequentialCheckedArithmeticValid ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialFileIdentityStable\": " << (document.dolbySequentialFileIdentityStable ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialCrcObserved\": " << (document.dolbySequentialCrcObserved ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialCrcValidated\": " << (document.dolbySequentialCrcValidated ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialPayloadValiditySeparatedFromExtent\": " << (document.dolbySequentialPayloadValiditySeparatedFromExtent ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialTypedEvidencePublished\": " << (document.dolbySequentialTypedEvidencePublished ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialGenericFullScanEntered\": " << (document.dolbySequentialGenericFullScanEntered ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialGenericFullScanSkipped\": " << (document.dolbySequentialGenericFullScanSkipped ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialDuplicatePresentationScanEntered\": " << (document.dolbySequentialDuplicatePresentationScanEntered ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialPossibleDoublePass\": " << (document.dolbySequentialPossibleDoublePass ? "true" : "false") << ",\n";
+    json << "  \"dolbySequentialLateFallback\": " << (document.dolbySequentialLateFallback ? "true" : "false") << ",\n";
     json << "  \"probeScore\": " << document.probeScore << ",\n";
     json << "  \"streamCount\": " << document.streamCount << ",\n";
     json << "  \"audioStreamCount\": " << document.audioStreamCount << ",\n";

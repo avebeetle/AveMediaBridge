@@ -27,6 +27,8 @@ enum class PresentationTotalSource {
     MatroskaAacSequentialPresentation,
     Mp4Mp3SampleEditTablePresentation,
     AdtsAacSequentialPresentation,
+    Ac3SequentialPresentation,
+    Eac3SequentialPresentation,
     ExactPacketPresentation
 };
 

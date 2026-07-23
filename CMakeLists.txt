@@ -73,6 +73,7 @@ add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/AdtsAacSequentialPresentation.cpp
+    src/Probe/Ac3Eac3SequentialPresentation.cpp
     src/Probe/FlacStreamInfo.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/AacAudioSpecificConfig.cpp
@@ -591,4 +592,66 @@ add_test(
 )
 set_tests_properties(
     AveMediaBridgeTests.adts_aac_sequential_presentation
+    PROPERTIES SKIP_RETURN_CODE 77)
+
+set(AVEMEDIABRIDGE_EA053_EAC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA053_eac3_44100_44100.eac3"
+    CACHE FILEPATH
+    "External E-AC-3 44100 Hz regression media")
+set(AVEMEDIABRIDGE_EA142_AC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA142_ac3_44100_100003.ac3"
+    CACHE FILEPATH
+    "External AC-3 44100 Hz regression media")
+set(AVEMEDIABRIDGE_EA052_AC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA052_ac3_32000_32000.ac3"
+    CACHE FILEPATH
+    "External AC-3 32000 Hz regression media")
+set(AVEMEDIABRIDGE_EA103_AC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA103_ac3_48000_255.ac3"
+    CACHE FILEPATH
+    "External short AC-3 regression media")
+set(AVEMEDIABRIDGE_EA115_EAC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA115_eac3_32000_1023.eac3"
+    CACHE FILEPATH
+    "External E-AC-3 32000 Hz regression media")
+set(AVEMEDIABRIDGE_EA123_EAC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/block_codecs/EA123_eac3_48000_100003.eac3"
+    CACHE FILEPATH
+    "External E-AC-3 48000 Hz regression media")
+set(AVEMEDIABRIDGE_EA058_VOB_AC3_TEST_MEDIA
+    "${AVEMEDIABRIDGE_ROOT}/../AveMediaBridge_test_laboratory_v1/exact_authority/valid/transport/EA058_vob_ac3_48000_48000.vob"
+    CACHE FILEPATH
+    "External containerized AC-3 regression media")
+
+add_executable(AveMediaBridgeAc3Eac3SequentialPresentationTests
+    tests/Ac3Eac3SequentialPresentationTests.cpp
+    src/Probe/Ac3Eac3SequentialPresentation.cpp
+)
+target_link_libraries(AveMediaBridgeAc3Eac3SequentialPresentationTests PRIVATE
+    AveMediaBridge
+    AveMediaBridgeCore
+    "${FFMPEG_LIB_DIR}/avformat.lib"
+    "${FFMPEG_LIB_DIR}/avcodec.lib"
+    "${FFMPEG_LIB_DIR}/avutil.lib"
+)
+target_include_directories(AveMediaBridgeAc3Eac3SequentialPresentationTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
+    "${FFMPEG_INCLUDE_DIR}"
+)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeAc3Eac3SequentialPresentationTests)
+
+add_test(
+    NAME AveMediaBridgeTests.ac3_eac3_sequential_presentation
+    COMMAND AveMediaBridgeAc3Eac3SequentialPresentationTests
+        "${AVEMEDIABRIDGE_EA053_EAC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA142_AC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA052_AC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA103_AC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA115_EAC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA123_EAC3_TEST_MEDIA}"
+        "${AVEMEDIABRIDGE_EA058_VOB_AC3_TEST_MEDIA}"
+)
+set_tests_properties(
+    AveMediaBridgeTests.ac3_eac3_sequential_presentation
     PROPERTIES SKIP_RETURN_CODE 77)

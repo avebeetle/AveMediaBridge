@@ -9,6 +9,7 @@
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
 #include "../Probe/AdtsAacSequentialPresentation.hpp"
+#include "../Probe/Ac3Eac3SequentialPresentation.hpp"
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
@@ -99,6 +100,12 @@ struct StreamingImportResult {
     bool adtsAacSequentialAuthorityReused = false;
     bool genericAdtsAacFullScanEntered = false;
     bool adtsAacPossibleDoublePass = false;
+    Probe::DolbySequentialHandoffResult dolbySequentialHandoff;
+    bool dolbySequentialHandoffAttempted = false;
+    bool dolbySequentialAuthorityReused = false;
+    bool genericDolbyFullPacketScanEntered = false;
+    bool dolbyDuplicatePresentationScanEntered = false;
+    bool dolbyPossibleDoublePass = false;
     std::uint64_t physicalInputFrames = 0;
     std::uint64_t acceptedInputFrames = 0;
     std::uint64_t rejectedInputFrames = 0;
@@ -570,6 +577,32 @@ void resolveStreamingPresentationBudget(
                 !result.totalPresentationEvidence.conflict;
         }
     }
+    const bool standaloneRawDolby =
+        formatContext && formatContext->iformat && formatContext->iformat->name &&
+        ((std::string(formatContext->iformat->name) == "ac3" &&
+          codecpar->codec_id == AV_CODEC_ID_AC3) ||
+         (std::string(formatContext->iformat->name) == "eac3" &&
+          codecpar->codec_id == AV_CODEC_ID_EAC3));
+    if (standaloneRawDolby &&
+        result.totalPresentationEvidence.trust !=
+            Probe::PresentationTotalTrust::SampleExact) {
+        result.dolbySequentialHandoffAttempted = true;
+        result.dolbySequentialHandoff =
+            Probe::readDolbySequentialPresentationHandoff(
+                sessionDir / L"probe.json",
+                path,
+                formatContext,
+                audioStream,
+                result.totalPresentationEvidence);
+        if (result.dolbySequentialHandoff.accepted()) {
+            result.totalPresentationEvidence =
+                Probe::reconcileTotalPresentationEvidence(
+                    result.dolbySequentialHandoff.evidence,
+                    result.totalPresentationEvidence);
+            result.dolbySequentialAuthorityReused =
+                !result.totalPresentationEvidence.conflict;
+        }
+    }
     const bool mp4Mp3 =
         formatContext && formatContext->iformat && formatContext->iformat->name &&
         std::string(formatContext->iformat->name).find("mov") != std::string::npos &&
@@ -664,6 +697,12 @@ void resolveStreamingPresentationBudget(
     result.duplicatePresentationScanEntered =
         (standaloneOggOpus && result.oggOpusSequentialAuthorityReused) ||
         (standaloneAdtsAac && result.adtsAacSequentialAuthorityReused);
+    result.genericDolbyFullPacketScanEntered = standaloneRawDolby;
+    result.dolbyPossibleDoublePass =
+        standaloneRawDolby &&
+        result.dolbySequentialHandoff.presentation.bytesReturned > 0;
+    result.dolbyDuplicatePresentationScanEntered =
+        standaloneRawDolby && result.dolbySequentialAuthorityReused;
     // Resolve both presentation evidence components in one pre-decode pass
     // without changing the existing budget acceptance rules.
     const Probe::AudioPresentationEvidenceScan evidence =
@@ -1982,6 +2021,37 @@ bool writeStreamingMetadataJson(
          << result.adtsAacSequentialHandoff.presentation.readCalls << ",\n";
     json << "    \"adtsAacSequentialScanDurationUs\": "
          << result.adtsAacSequentialHandoff.presentation.scanDurationUs << ",\n";
+    json << "    \"dolbySequentialHandoffAttempted\": "
+         << (result.dolbySequentialHandoffAttempted ? "true" : "false")
+         << ",\n";
+    json << "    \"dolbySequentialHandoffStatus\": "
+         << jsonString(Probe::dolbySequentialHandoffStatusName(
+                result.dolbySequentialHandoff.status)) << ",\n";
+    json << "    \"dolbySequentialHandoffReason\": "
+         << jsonString(Probe::dolbySequentialReasonName(
+                result.dolbySequentialHandoff.reason)) << ",\n";
+    json << "    \"dolbySequentialAuthorityReused\": "
+         << (result.dolbySequentialAuthorityReused ? "true" : "false")
+         << ",\n";
+    json << "    \"genericDolbyFullPacketScanEntered\": "
+         << (result.genericDolbyFullPacketScanEntered ? "true" : "false")
+         << ",\n";
+    json << "    \"dolbyDuplicatePresentationScanEntered\": "
+         << (result.dolbyDuplicatePresentationScanEntered ? "true" : "false")
+         << ",\n";
+    json << "    \"dolbyPossibleDoublePass\": "
+         << (result.dolbyPossibleDoublePass ? "true" : "false") << ",\n";
+    json << "    \"dolbySequentialCodecFamily\": "
+         << jsonString(Probe::dolbySequentialCodecFamilyName(
+                result.dolbySequentialHandoff.presentation.family)) << ",\n";
+    json << "    \"dolbySequentialPresentationFrames\": "
+         << result.dolbySequentialHandoff.presentation.presentationFrames << ",\n";
+    json << "    \"dolbySequentialBytesReturned\": "
+         << result.dolbySequentialHandoff.presentation.bytesReturned << ",\n";
+    json << "    \"dolbySequentialReadCalls\": "
+         << result.dolbySequentialHandoff.presentation.readCalls << ",\n";
+    json << "    \"dolbySequentialScanDurationUs\": "
+         << result.dolbySequentialHandoff.presentation.scanDurationUs << ",\n";
     json << "    \"physicalInputFrames\": " << result.physicalInputFrames << ",\n";
     json << "    \"acceptedInputFrames\": " << result.acceptedInputFrames << ",\n";
     json << "    \"rejectedInputFrames\": " << result.rejectedInputFrames << ",\n";

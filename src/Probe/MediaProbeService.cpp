@@ -1,6 +1,7 @@
 #include "MediaProbeService.hpp"
 
 #include "AdtsAacSequentialPresentation.hpp"
+#include "Ac3Eac3SequentialPresentation.hpp"
 #include "FrameCountPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
 #include "Mp4Mp3SampleEditTablePresentation.hpp"
@@ -927,6 +928,123 @@ void applyAdtsAacSequentialPresentationAuthority(
     updateEstimatedDecodedBytes(document);
 }
 
+void copyDolbySequentialDiagnostics(
+    FastProbeJsonDocument& document,
+    const DolbySequentialPresentationResult& scan) {
+    document.dolbySequentialStatus = dolbySequentialStatusName(scan.status);
+    document.dolbySequentialReason = dolbySequentialReasonName(scan.reason);
+    document.dolbySequentialCodecFamily =
+        dolbySequentialCodecFamilyName(scan.family);
+    document.dolbySequentialSampleRate = scan.sampleRate;
+    document.dolbySequentialChannels = scan.channels;
+    document.dolbySequentialBitstreamId = scan.bitstreamId;
+    document.dolbySequentialChannelMode = scan.channelMode;
+    document.dolbySequentialLfe = scan.lfe;
+    document.dolbySequentialSelectedStreamType = scan.selectedStreamType;
+    document.dolbySequentialSelectedSubstreamId = scan.selectedSubstreamId;
+    document.dolbySequentialSyncframeCount = scan.syncframeCount;
+    document.dolbySequentialAc3FrameCount = scan.ac3FrameCount;
+    document.dolbySequentialEac3IndependentFrameCount =
+        scan.eac3IndependentFrameCount;
+    document.dolbySequentialEac3DependentFrameCount =
+        scan.eac3DependentFrameCount;
+    document.dolbySequentialAudioBlockCount = scan.audioBlockCount;
+    document.dolbySequentialSamplesPerAudioBlock = scan.samplesPerAudioBlock;
+    document.dolbySequentialPresentationFrames = scan.presentationFrames;
+    document.dolbySequentialFileSizeBytes = scan.fileSizeBytes;
+    document.dolbySequentialFileIndex = scan.fileIndex;
+    document.dolbySequentialLastWriteTime100ns = scan.lastWriteTime100ns;
+    document.dolbySequentialVolumeSerialNumber = scan.volumeSerialNumber;
+    document.dolbySequentialBytesReturned = scan.bytesReturned;
+    document.dolbySequentialUniqueBytes = scan.uniqueBytes;
+    document.dolbySequentialDuplicateBytes = scan.duplicateBytes;
+    document.dolbySequentialReadCalls = scan.readCalls;
+    document.dolbySequentialSeekCallsAfterOpen = scan.seekCallsAfterOpen;
+    document.dolbySequentialMaximumFrameBytes = scan.maximumFrameBytes;
+    document.dolbySequentialScanDurationUs = scan.scanDurationUs;
+    document.dolbySequentialMaximumWorkingBufferBytes =
+        scan.maximumWorkingBufferBytes;
+    document.dolbySequentialReachedPhysicalEof = scan.reachedPhysicalEof;
+    document.dolbySequentialFrameBoundariesValid = scan.frameBoundariesValid;
+    document.dolbySequentialConfigurationContinuous = scan.configurationContinuous;
+    document.dolbySequentialSubstreamPolicyValid = scan.substreamPolicyValid;
+    document.dolbySequentialOutputDomainValidated = scan.outputDomainValidated;
+    document.dolbySequentialCheckedArithmeticValid = scan.checkedArithmeticValid;
+    document.dolbySequentialFileIdentityStable = scan.fileIdentityStable;
+    document.dolbySequentialCrcObserved = scan.crcObserved;
+    document.dolbySequentialCrcValidated = scan.crcValidated;
+    document.dolbySequentialPayloadValiditySeparatedFromExtent =
+        scan.payloadValiditySeparatedFromExtent;
+    document.dolbySequentialLateFallback =
+        scan.status == DolbySequentialPresentationStatus::UnsupportedLate ||
+        ((scan.status == DolbySequentialPresentationStatus::Conflict ||
+          scan.status == DolbySequentialPresentationStatus::InvalidMedia ||
+          scan.status == DolbySequentialPresentationStatus::IoError) &&
+         scan.syncframeCount > 0);
+}
+
+void applyDolbySequentialPresentationAuthority(
+    FastProbeResult& result,
+    const std::string& path,
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream) {
+    const bool strongerExactAuthority =
+        result.totalPresentation.trust == PresentationTotalTrust::SampleExact;
+    const DolbySequentialEligibility eligibility =
+        evaluateDolbySequentialEligibility(
+            path, formatContext, audioStream, strongerExactAuthority);
+    FastProbeJsonDocument& document = result.document;
+    document.dolbySequentialEligible = eligibility.eligible;
+    if (!eligibility.eligible) {
+        document.dolbySequentialReason =
+            dolbySequentialReasonName(eligibility.reason);
+        return;
+    }
+
+    document.dolbySequentialEntered = true;
+    result.dolbySequentialPresentation =
+        probeDolbySequentialPresentation(path, eligibility.selected);
+    copyDolbySequentialDiagnostics(document, result.dolbySequentialPresentation);
+    if (!result.dolbySequentialPresentation.exact()) {
+        return;
+    }
+
+    TotalPresentationEvidence evidence =
+        makeDolbySequentialTotalPresentationEvidence(
+            result.dolbySequentialPresentation);
+    evidence = reconcileTotalPresentationEvidence(evidence, result.totalPresentation);
+    if (evidence.conflict) {
+        result.dolbySequentialPresentation.status =
+            DolbySequentialPresentationStatus::Conflict;
+        result.dolbySequentialPresentation.reason =
+            DolbySequentialPresentationReason::ExactAuthorityConflict;
+        copyDolbySequentialDiagnostics(
+            document, result.dolbySequentialPresentation);
+        return;
+    }
+    if (evidence.frames == 0 || evidence.frames >
+        static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+        return;
+    }
+
+    result.totalPresentation = evidence;
+    document.decodedSampleFrames = static_cast<std::int64_t>(evidence.frames);
+    document.decodedSampleFramesKind = "exact";
+    document.decodedSampleFramesTrust = "authoritative";
+    document.decodedSampleFramesSource = presentationTotalSourceName(evidence.source);
+    document.frameCountPolicyReason =
+        "validated sequential raw Dolby syncframe inventory proves the presentation end";
+    document.durationSec = static_cast<double>(evidence.frames) /
+        static_cast<double>(evidence.sampleRate);
+    document.durationKind = "exact";
+    document.durationEstimationMethod =
+        result.dolbySequentialPresentation.family == DolbySequentialCodecFamily::Ac3
+            ? "from_ac3_sequential_presentation"
+            : "from_eac3_sequential_presentation";
+    document.dolbySequentialTypedEvidencePublished = true;
+    updateEstimatedDecodedBytes(document);
+}
+
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
     const std::string& path,
@@ -991,6 +1109,19 @@ void applyFastFrameCountPolicies(
         result.document.adtsAacSequentialPossibleDoublePass =
             result.document.adtsAacSequentialEntered &&
             result.document.adtsAacSequentialLateFallback;
+    }
+    const bool genericDolbyScan =
+        (codecpar->codec_id == AV_CODEC_ID_AC3 ||
+         codecpar->codec_id == AV_CODEC_ID_EAC3) &&
+        (result.document.formatName == "ac3" ||
+         result.document.formatName == "eac3") &&
+        (packetScanRequired || gaplessScanRequired);
+    if (genericDolbyScan) {
+        result.document.dolbySequentialGenericFullScanEntered = true;
+        result.document.dolbySequentialGenericFullScanSkipped = false;
+        result.document.dolbySequentialPossibleDoublePass =
+            result.document.dolbySequentialEntered &&
+            result.document.dolbySequentialLateFallback;
     }
     const bool genericMp4Mp3Scan =
         codecpar->codec_id == AV_CODEC_ID_MP3 &&
@@ -1179,6 +1310,8 @@ FastProbeResult runFastProbe(const std::string& path) {
     applyMatroskaAacSequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);
     applyAdtsAacSequentialPresentationAuthority(
+        result, path, formatContext.get(), audioStream);
+    applyDolbySequentialPresentationAuthority(
         result, path, formatContext.get(), audioStream);
     applyFastFrameCountPolicies(result, path, audioStream, true);
     finalizeFrameCountTrustPolicy(result, audioStream);
