@@ -1,11 +1,31 @@
 param(
-    [Parameter(Mandatory)][string]$CandidateRoot,
-    [Parameter(Mandatory)][string]$OutputRoot
+    [string]$CandidateRoot,
+    [Parameter(Mandatory)][string]$OutputRoot,
+    [string]$StableImportReport,
+    [string]$CandidateImportReport,
+    [string]$ImportBaseline,
+    [switch]$CompareImportsOnly
 )
 $ErrorActionPreference = 'Stop'
-$candidate = (Resolve-Path -LiteralPath $CandidateRoot).Path
 $output = [IO.Path]::GetFullPath($OutputRoot)
 if (Test-Path -LiteralPath $output) { throw "Refusing existing evidence directory: $output" }
+$importGate = [ordered]@{ status='NOT_RUN'; releaseQualified=$false }
+$hasImportInput = $StableImportReport -or $CandidateImportReport -or $ImportBaseline
+if ($hasImportInput -or $CompareImportsOnly) {
+    if (-not ($StableImportReport -and $CandidateImportReport -and $ImportBaseline)) {
+        throw 'IMPORT_COMPARISON_FAILED: all three import evidence paths are required'
+    }
+    New-Item -ItemType Directory -Path $output | Out-Null
+    & python "$PSScriptRoot/compare_import_reports.py" --stable-report $StableImportReport --candidate-report $CandidateImportReport --baseline $ImportBaseline --output (Join-Path $output 'import-comparison.json')
+    if ($LASTEXITCODE) { throw 'IMPORT_COMPARISON_FAILED: stable/candidate evidence rejected' }
+    $importGate = Get-Content -Raw -LiteralPath (Join-Path $output 'import-comparison.json') | ConvertFrom-Json
+}
+if ($CompareImportsOnly) {
+    Write-Host 'IMPORT_PARITY_CHECKED_NOT_RELEASE_QUALIFIED'
+    return
+}
+if (-not $CandidateRoot) { throw 'CandidateRoot is required for export runtime checks' }
+$candidate = (Resolve-Path -LiteralPath $CandidateRoot).Path
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $profile = Get-Content -Raw (Join-Path $candidate 'candidate-manifest.json') | ConvertFrom-Json
 $profileSpec = Get-Content -Raw (Join-Path $repo 'tools\export\export-runtime-profile.json') | ConvertFrom-Json
@@ -27,7 +47,7 @@ $config = Join-Path $profile.buildDirectory 'ffbuild\config.mak'
 if (-not (Select-String -LiteralPath $config -Pattern '^CONFIG_PCM_F32LE_ENCODER=yes$' -Quiet)) { throw 'Candidate encoder disabled' }
 & git -C $profile.sourceDirectory apply --reverse --check --no-index --include=libavformat/matroskadec.c $patch
 if ($LASTEXITCODE) { throw 'Backport not present in candidate source' }
-New-Item -ItemType Directory -Path $output | Out-Null
+if (-not (Test-Path -LiteralPath $output)) { New-Item -ItemType Directory -Path $output | Out-Null }
 $decoder = 'C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe'
 $decoderHash = (Get-FileHash -LiteralPath $decoder -Algorithm SHA256).Hash
 if ($decoderHash -ne 'B90225987BDD042CCA09A1EFB5E34E9848F2D1DBF5FBCD388753A44145522997') { throw 'Reference decoder hash mismatch' }
@@ -64,7 +84,7 @@ if ($LASTEXITCODE) { throw 'Bridge export build failed' }
 $env:AMBE_EXPECT_FLOAT_WAV = '1'
 $env:AMBE_EXPORT_EVIDENCE_ROOT = $output
 try {
-    & ctest --test-dir $build -C Release --output-on-failure -R '^AveMediaBridgeTests.export_(float_wav|scratch|abi|state)$' | Tee-Object -FilePath (Join-Path $output 'ctest.log')
+    & ctest --test-dir $build -C Release --parallel 1 --output-on-failure -R '^AveMediaBridgeTests.export_(float_wav|scratch|abi|state)$' | Tee-Object -FilePath (Join-Path $output 'ctest.log')
     if ($LASTEXITCODE) { throw 'Export CTest failed' }
 } finally {
     Remove-Item Env:AMBE_EXPECT_FLOAT_WAV,Env:AMBE_EXPORT_EVIDENCE_ROOT -ErrorAction SilentlyContinue
@@ -101,7 +121,8 @@ $referenceChecks = @(
     (Check-Reference 'forced-rf64-mono-48000' 1)
 )
 $report = [ordered]@{
-    status = 'candidate-qualified-not-deployed'; candidateRoot=$candidate; evidenceDirectory=$output
+    status = 'export-checks-passed-not-release-qualified'; candidateRoot=$candidate; evidenceDirectory=$output
+    importGate=$importGate; releaseQualified=$false
     sourceSha256=$profile.sourceSha256; patchSha256=$profile.patchSha256; backportCommit=$profile.backportCommit
     addedConfigureFlags=$added; removedConfigureFlags=$removed; runtimeDlls=$runtime
     decoderPath=$decoder; decoderSha256=$decoderHash; ffprobePath=$probe; ffprobeSha256=$probeHash
@@ -109,4 +130,4 @@ $report = [ordered]@{
     exportCTest='4/4 passed'; bridgeBuild=$build
 }
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'qualification.json') -Encoding UTF8
-Write-Host 'EXPORT_RUNTIME_QUALIFIED_CANDIDATE_ONLY'
+Write-Host "EXPORT_RUNTIME_CHECKED_NOT_RELEASE_QUALIFIED; import gate: $($importGate.status)"
