@@ -7,3 +7,6 @@ target_include_directories(AveMediaBridgeStableInputContractTests PRIVATE
     "${AVEMEDIABRIDGE_ROOT}/src")
 add_test(NAME AveMediaBridgeTests.stable_input_contract
     COMMAND AveMediaBridgeStableInputContractTests)
+set_tests_properties(AveMediaBridgeTests.stable_input_contract PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 60)
