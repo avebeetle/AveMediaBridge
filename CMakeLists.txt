@@ -140,6 +140,7 @@ add_custom_command(TARGET AveMediaBridgeLabApp POST_BUILD
 copy_ffmpeg_runtime_dlls(AveMediaBridgeLabApp)
 
 include(cmake/AveMediaBridgeExportTests.cmake)
+include(cmake/AveMediaBridgeStableInputTests.cmake)
 
 add_executable(AveMediaBridgeAudioPresentationSliceTests
     tests/AudioPresentationSliceTests.cpp
