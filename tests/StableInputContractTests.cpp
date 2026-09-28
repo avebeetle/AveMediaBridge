@@ -66,8 +66,10 @@ AMBI_Status __cdecl checkFixture(void* user) {
 }
 
 struct Checks {
+    int executed = 0;
     int failures = 0;
     void expect(bool condition, const char* label) {
+        ++executed;
         if (!condition) { std::cerr << "FAIL: " << label << '\n'; ++failures; }
     }
 };
@@ -162,5 +164,11 @@ int main() {
     expectRead(0, 1, data, AMBI_IO_ERROR, 0, "throwing cancel query");
     check.expect(fixture.cancelChecks > 0, "cancellation checked");
     check.expect(!fixture.uninitializedCount, "reader receives zeroed nonnull count");
-    return check.failures == 0 ? 0 : 1;
+    if (check.executed == 0) {
+        std::cerr << "FAIL: no contract checks executed\n";
+        return 1;
+    }
+    if (check.failures != 0) return 1;
+    std::cout << "Stable input contract: " << check.executed << " checks passed\n";
+    return 0;
 }
