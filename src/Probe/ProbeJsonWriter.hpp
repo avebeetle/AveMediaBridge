@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AveMediaBridge/Core/MediaInfo.hpp"
+#include "../Input/SelectedAudioBinding.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -282,6 +283,7 @@ bool writeProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeJsonDocument& document,
     const MediaOpenAssessment& mediaOpenAssessment,
-    std::string& error);
+    std::string& error,
+    const Input::SelectedAudioBinding* authority = nullptr);
 
 }  // namespace AveMediaBridge::Probe

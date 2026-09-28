@@ -1,3 +1,11 @@
+add_executable(AveMediaBridgeReaderImportAbiTests tests/ReaderImportAbiTests.cpp tests/ReaderImportAbiC.c)
+target_include_directories(AveMediaBridgeReaderImportAbiTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")
+target_link_libraries(AveMediaBridgeReaderImportAbiTests PRIVATE AveMediaBridge)
+set_property(TARGET AveMediaBridgeReaderImportAbiTests PROPERTY C_STANDARD 11)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderImportAbiTests)
+add_test(NAME AveMediaBridgeTests.reader_import_abi COMMAND AveMediaBridgeReaderImportAbiTests)
+set_tests_properties(AveMediaBridgeTests.reader_import_abi PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
+
 set(AVEMEDIABRIDGE_READER_FIXTURE_ROOT "" CACHE PATH
     "Existing absolute directory of generated reader MP4/AAC fixtures")
 set(AVEMEDIABRIDGE_READER_LAB_ROOT "" CACHE PATH
@@ -77,4 +85,11 @@ if(AVEMEDIABRIDGE_READER_FIXTURE_ROOT)
             "${AVEMEDIABRIDGE_READER_LAB_ROOT}")
     set_tests_properties(AveMediaBridgeTests.reader_probe_parity PROPERTIES
         RUN_SERIAL TRUE TIMEOUT 180)
+    add_executable(AveMediaBridgeReaderImportTests tests/ReaderImportParityTests.cpp)
+    target_include_directories(AveMediaBridgeReaderImportTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")
+    target_link_libraries(AveMediaBridgeReaderImportTests PRIVATE AveMediaBridge)
+    copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderImportTests)
+    add_test(NAME AveMediaBridgeTests.reader_mp4_aac_parity COMMAND AveMediaBridgeReaderImportTests
+        "${AVEMEDIABRIDGE_READER_FIXTURE_ROOT}" "${AVEMEDIABRIDGE_READER_LAB_ROOT}")
+    set_tests_properties(AveMediaBridgeTests.reader_mp4_aac_parity PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
 endif()

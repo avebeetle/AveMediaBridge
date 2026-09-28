@@ -87,7 +87,8 @@ bool writeProbeJson(
     const std::filesystem::path& outputPath,
     const FastProbeJsonDocument& document,
     const MediaOpenAssessment& mediaOpenAssessment,
-    std::string& error) {
+    std::string& error,
+    const Input::SelectedAudioBinding* authority) {
     if (!createParentDirectory(outputPath, error)) {
         return false;
     }
@@ -100,6 +101,16 @@ bool writeProbeJson(
 
     json << std::fixed << std::setprecision(9);
     json << "{\n";
+    if (authority) {
+        std::string token;
+        constexpr char hex[] = "0123456789abcdef";
+        for (auto byte : authority->sourceToken) {
+            token += hex[byte >> 4]; token += hex[byte & 15];
+        }
+        json << "  \"inputAuthority\": {\"version\": 1, \"sourceToken\": "
+             << jsonString(token) << ", \"byteSize\": " << authority->byteSize
+             << ", \"selectedAudioStreamIndex\": " << authority->streamIndex << "},\n";
+    }
     json << "  \"apiVersion\": 1,\n";
     json << "  \"schemaVersion\": 2,\n";
     json << "  \"sourcePath\": " << jsonString(document.sourcePath) << ",\n";

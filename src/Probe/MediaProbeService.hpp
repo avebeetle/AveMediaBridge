@@ -52,6 +52,14 @@ bool writeFastProbeJson(
 bool estimateDecodedBytesForPreflight(
     const AVFormatContext* formatContext,
     const AVStream* audioStream,
+    const Input::MediaInputSource& source,
+    std::int64_t& estimatedFrames,
+    std::int64_t& estimatedBytes,
+    std::string& estimateKind);
+
+bool estimateDecodedBytesForPreflight(
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream,
     const std::string& path,
     std::int64_t& estimatedFrames,
     std::int64_t& estimatedBytes,

@@ -1436,6 +1436,17 @@ bool estimateDecodedBytesForPreflight(
     std::int64_t& estimatedFrames,
     std::int64_t& estimatedBytes,
     std::string& estimateKind) {
+    return estimateDecodedBytesForPreflight(formatContext, audioStream,
+        Input::MediaInputSource::fromPath(path), estimatedFrames, estimatedBytes, estimateKind);
+}
+
+bool estimateDecodedBytesForPreflight(
+    const AVFormatContext* formatContext,
+    const AVStream* audioStream,
+    const Input::MediaInputSource& source,
+    std::int64_t& estimatedFrames,
+    std::int64_t& estimatedBytes,
+    std::string& estimateKind) {
     FastProbeResult estimate;
     fillFastSourceInfo(estimate, formatContext);
     fillFastSelectedAudio(estimate, audioStream, nullptr);
@@ -1443,7 +1454,7 @@ bool estimateDecodedBytesForPreflight(
     // Loading authority is resolved by runFastProbe; disk preflight must not
     // repeat the full packet traversal only to refine its byte estimate.
     applyFastFrameCountPolicies(
-        estimate, Input::MediaInputSource::fromPath(path), audioStream, false);
+        estimate, source, audioStream, false);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
     estimatedFrames = estimate.document.decodedSampleFrames;
     estimatedBytes = estimate.document.estimatedDecodedBytes;

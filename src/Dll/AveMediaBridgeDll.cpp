@@ -1,4 +1,8 @@
 #include "AveMediaBridge/AveMediaBridgeApi.hpp"
+#include "AveMediaBridge/AveMediaBridgeReaderApi.h"
+#include "ReaderImportHandle.hpp"
+#include "../Input/DemuxSession.hpp"
+#include "../Input/StableInputContract.hpp"
 
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
@@ -41,6 +45,7 @@ namespace ClipDiag = AveMediaBridge::Diagnostics;
 namespace Decode = AveMediaBridge::Decode;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
+namespace Input = AveMediaBridge::Input;
 using AveMediaBridge::ffErrorString;
 using AveMediaBridge::Utils::jsonString;
 
@@ -486,14 +491,14 @@ void fillStreamingSelectedAudioInfo(
 bool estimateDecodedBytesForPreflight(
     const AVFormatContext* formatContext,
     const AVStream* audioStream,
-    const std::string& path,
+    const Input::MediaInputSource& source,
     std::int64_t& estimatedFrames,
     std::int64_t& estimatedBytes,
     std::string& estimateKind) {
     return Probe::estimateDecodedBytesForPreflight(
         formatContext,
         audioStream,
-        path,
+        source,
         estimatedFrames,
         estimatedBytes,
         estimateKind);
@@ -501,11 +506,13 @@ bool estimateDecodedBytesForPreflight(
 
 void resolveStreamingPresentationBudget(
     StreamingImportResult& result,
-    const std::string& path,
+    const Input::MediaInputSource& source,
     const std::filesystem::path& sessionDir,
     const AVFormatContext* formatContext,
-    const AVStream* audioStream) {
-    if (path.empty() || !audioStream || !audioStream->codecpar) {
+    const AVStream* audioStream,
+    const Input::SelectedAudioBinding* expected) {
+    const auto& path = source.displayLabel();
+    if ((!source.isStable() && path.empty()) || !audioStream || !audioStream->codecpar) {
         return;
     }
 
@@ -518,7 +525,7 @@ void resolveStreamingPresentationBudget(
             Probe::PresentationTotalTrust::SampleExact;
     const bool standaloneMp3 = Probe::shouldProbeMp3HeaderPresentation(
         formatContext, audioStream, false);
-    if (Probe::shouldProbeMp3HeaderPresentation(
+    if (!source.isStable() && Probe::shouldProbeMp3HeaderPresentation(
             formatContext, audioStream, strongerExactAuthority)) {
         const Probe::Mp3HeaderPresentationResult header =
             Probe::probeMp3HeaderPresentation(path);
@@ -533,7 +540,7 @@ void resolveStreamingPresentationBudget(
         formatContext && formatContext->iformat && formatContext->iformat->name &&
         std::string(formatContext->iformat->name) == "ogg" &&
         codecpar->codec_id == AV_CODEC_ID_OPUS;
-    if (standaloneOggOpus &&
+    if (!source.isStable() && standaloneOggOpus &&
         result.totalPresentationEvidence.trust !=
             Probe::PresentationTotalTrust::SampleExact) {
         result.oggOpusSequentialHandoffAttempted = true;
@@ -557,7 +564,7 @@ void resolveStreamingPresentationBudget(
         formatContext && formatContext->iformat && formatContext->iformat->name &&
         std::string(formatContext->iformat->name) == "aac" &&
         codecpar->codec_id == AV_CODEC_ID_AAC;
-    if (standaloneAdtsAac &&
+    if (!source.isStable() && standaloneAdtsAac &&
         result.totalPresentationEvidence.trust !=
             Probe::PresentationTotalTrust::SampleExact) {
         result.adtsAacSequentialHandoffAttempted = true;
@@ -583,7 +590,7 @@ void resolveStreamingPresentationBudget(
           codecpar->codec_id == AV_CODEC_ID_AC3) ||
          (std::string(formatContext->iformat->name) == "eac3" &&
           codecpar->codec_id == AV_CODEC_ID_EAC3));
-    if (standaloneRawDolby &&
+    if (!source.isStable() && standaloneRawDolby &&
         result.totalPresentationEvidence.trust !=
             Probe::PresentationTotalTrust::SampleExact) {
         result.dolbySequentialHandoffAttempted = true;
@@ -607,7 +614,7 @@ void resolveStreamingPresentationBudget(
         formatContext && formatContext->iformat && formatContext->iformat->name &&
         std::string(formatContext->iformat->name).find("mov") != std::string::npos &&
         codecpar->codec_id == AV_CODEC_ID_MP3;
-    if (mp4Mp3 &&
+    if (!source.isStable() && mp4Mp3 &&
         result.totalPresentationEvidence.trust !=
             Probe::PresentationTotalTrust::SampleExact) {
         const std::filesystem::path probeDocument = sessionDir / L"probe.json";
@@ -706,6 +713,7 @@ void resolveStreamingPresentationBudget(
     // Resolve both presentation evidence components in one pre-decode pass
     // without changing the existing budget acceptance rules.
     const Probe::AudioPresentationEvidenceScan evidence =
+        source.isStable() ? Probe::scanAudioPresentationEvidence(source, *expected, scanOptions) :
         Probe::scanAudioPresentationEvidence(
             path,
             audioStreamIndex,
@@ -1428,14 +1436,17 @@ int sendStreamingPacketAndReceive(
 }
 
 StreamingImportResult runStreamingSessionImportToLiveFile(
-    const std::string& path,
+    const Input::MediaInputSource& source,
     const std::filesystem::path& sessionDir,
     const std::filesystem::path& audioDataPath,
-    StreamingImportCallbacks* callbacks) {
+    StreamingImportCallbacks* callbacks,
+    const Input::SelectedAudioBinding* expected = nullptr) {
+    const auto& path = source.displayLabel();
     StreamingImportResult result;
     result.source.inputPath = path;
 
     AVFormatContext* formatContext = nullptr;
+    std::unique_ptr<Input::DemuxSession> demux;
     AVCodecContext* decoderContext = nullptr;
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
@@ -1463,19 +1474,36 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         if (decoderContext) {
             Ffmpeg::freeCodecContext(decoderContext);
         }
-        if (formatContext) {
-            Ffmpeg::closeInput(formatContext);
-        }
+        demux.reset();
+        formatContext = nullptr;
+    };
+    Input::ScopeExit resourceGuard(cleanup);
+    auto checkInput = [&]() {
+        if (!source.isStable()) return;
+        int error = demux ? demux->inputError() : 0;
+        AMBI_Status status = AMBI_OK;
+        try { status = source.stableSource()->checkCancel(source.stableSource()->user); }
+        catch (...) { status = AMBI_IO_ERROR; }
+        if (error == AVERROR_EXIT || status == AMBI_CANCELED)
+            throw Input::ReaderInputError(Input::ReaderInputFailure::Canceled, "reader import canceled");
+        if (error < 0 || status != AMBI_OK)
+            throw Input::ReaderInputError(Input::ReaderInputFailure::InputFailed, "reader import input callback failed");
     };
 
-    int ret = avformat_open_input(&formatContext, path.c_str(), nullptr, nullptr);
+    checkInput();
+    int ret = Input::DemuxSession::open(source, {}, demux);
+    if (source.isStable() && ret == AVERROR_EXIT)
+        throw Input::ReaderInputError(Input::ReaderInputFailure::Canceled, "reader open canceled");
+    checkInput();
     if (ret < 0) {
         result.error = "avformat_open_input failed: " + ffErrorString(ret);
         cleanup();
         return result;
     }
 
+    formatContext = demux->get();
     ret = avformat_find_stream_info(formatContext, nullptr);
+    checkInput();
     if (ret < 0) {
         result.error = "avformat_find_stream_info failed: " + ffErrorString(ret);
         cleanup();
@@ -1494,6 +1522,8 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     }
 
     const int audioStreamIndex = selection.streamIndex;
+    if (expected && !Input::matchesSelectedAudio(*expected, source, formatContext, audioStreamIndex))
+        throw Input::ReaderInputError(Input::ReaderInputFailure::BindingMismatch, "prepared audio stream binding changed");
     const AVCodec* decoder = selection.decoder;
     AVStream* audioStream = formatContext->streams[audioStreamIndex];
     AVCodecParameters* codecpar = audioStream->codecpar;
@@ -1505,12 +1535,13 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         estimateDecodedBytesForPreflight(
             formatContext,
             audioStream,
-            path,
+            source,
             result.preflightEstimatedFrames,
             result.preflightEstimatedBytes,
             result.preflightEstimateKind);
     resolveStreamingPresentationBudget(
-        result, path, sessionDir, formatContext, audioStream);
+        result, source, sessionDir, formatContext, audioStream, expected);
+    checkInput();
 
     std::string preflightError;
     if (!checkDiskPreflight(sessionDir, result, preflightError)) {
@@ -1578,6 +1609,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     }
 
     while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+        checkInput();
         if (!pollImportCancel(callbacks, result)) {
             av_packet_unref(packet);
             cleanup();
@@ -1608,6 +1640,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         }
     }
 
+    checkInput();
     if (ret != AVERROR_EOF) {
         result.error = "av_read_frame failed: " + ffErrorString(ret);
         cleanup();
@@ -1708,6 +1741,8 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         cleanup();
         return result;
     }
+    checkInput();
+    if (!pollImportCancel(callbacks, result)) return result;
     result.ok = true;
     cleanup();
     return result;
@@ -2407,6 +2442,11 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
             setLastErrorText(error);
             return 3;
         }
+        bool artifactsCommitted = false;
+        Input::ScopeExit artifactsGuard([&]() noexcept {
+            if (!artifactsCommitted)
+                cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
+        });
         if (!writeStreamingImportPlaceholderJson(audioInfoTmpPath, "audio_info.json.tmp", error) ||
             !writeStreamingImportPlaceholderJson(metadataTmpPath, "metadata.json.tmp", error)) {
             cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
@@ -2421,7 +2461,7 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
             options->structSize >= kImportOptionsWaveformSize ? options->onWaveformChunk : nullptr;
         callbacks.userData = options->userData;
 
-        StreamingImportResult imported = runStreamingSessionImportToLiveFile(input, sessionDir, audioDataPath, &callbacks);
+        StreamingImportResult imported = runStreamingSessionImportToLiveFile(Input::MediaInputSource::fromPath(input), sessionDir, audioDataPath, &callbacks);
         if (!imported.ok) {
             cleanupStreamingFailedImportArtifacts(audioDataPath, audioInfoTmpPath, metadataTmpPath);
             if (imported.canceled) {
@@ -2447,6 +2487,7 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
             return 3;
         }
 
+        artifactsCommitted = true;
         clearLastError();
         return 0;
     } catch (...) {
@@ -2466,3 +2507,113 @@ int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t*
 const wchar_t* AveMediaBridge_GetVersion() {
     return kVersionString;
 }
+
+namespace {
+int readerFailure(const Input::ReaderInputError& error) {
+    setLastErrorText(error.what());
+    switch (error.failure()) {
+    case Input::ReaderInputFailure::Canceled: return AMBR_CANCELED;
+    case Input::ReaderInputFailure::InputFailed: return AMBR_INPUT_FAILED;
+    case Input::ReaderInputFailure::Unsupported: return AMBR_UNSUPPORTED;
+    case Input::ReaderInputFailure::BindingMismatch: return AMBR_BINDING_MISMATCH;
+    }
+    return AMBR_INTERNAL_ERROR;
+}
+template<class T> bool validReaderOptions(const T* options) {
+    return options && options->structSize == sizeof(T) &&
+        options->abiVersion == AMBR_ABI_VERSION &&
+        std::all_of(std::begin(options->reserved), std::end(options->reserved),
+            [](uint32_t n) { return n == 0; });
+}
+int invalidReaderArgument(const char* message) {
+    setLastErrorText(message); return AMBR_INVALID_ARGUMENT;
+}
+}
+
+int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options, AMBR_PreparedInput** out) {
+    if (!out) return invalidReaderArgument("prepared output pointer is null");
+    *out = nullptr;
+    try {
+        if (!validReaderOptions(options) || Input::validateSource(options->source) != AMBI_OK)
+            return invalidReaderArgument("reader prepare options or source are invalid");
+        std::wstring label;
+        if (options->displayLabel) {
+            const auto count = wcsnlen_s(options->displayLabel, 32768);
+            if (count > 32767) return invalidReaderArgument("reader label exceeds 32767 UTF-16 units");
+            label.assign(options->displayLabel, count);
+        }
+        auto handle = std::make_unique<AMBR_PreparedInput>();
+        handle->source = Input::MediaInputSource::fromStable(*options->source, wideToUtf8(label.c_str()));
+        handle->probe = Probe::runFastProbe(handle->source);
+        if (!handle->probe.stableBinding)
+            throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported, "reader supports selected MOV/AAC only");
+        *out = handle.release();
+        clearLastError(); return AMBR_OK;
+    } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
+    catch (...) { setLastErrorText("unexpected exception preparing reader input"); return AMBR_INTERNAL_ERROR; }
+}
+
+int __cdecl AveMediaBridge_ReaderWriteProbeJsonV1(AMBR_PreparedInput* handle, const wchar_t* output) {
+    try {
+        if (!handle || !output || !*output) return invalidReaderArgument("reader probe arguments are invalid");
+        std::string error;
+        if (!Probe::writeProbeJson(output, handle->probe.document, handle->probe.mediaOpenAssessment,
+            error, &*handle->probe.stableBinding)) {
+            setLastErrorText(error); return AMBR_OUTPUT_FAILED;
+        }
+        clearLastError(); return AMBR_OK;
+    } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
+    catch (...) { setLastErrorText("unexpected exception writing reader probe"); return AMBR_INTERNAL_ERROR; }
+}
+
+int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* options) {
+    try {
+        if (!handle || !validReaderOptions(options) || !options->sessionMediaDir || !*options->sessionMediaDir)
+            return invalidReaderArgument("reader import options are invalid");
+        if (handle->attempted) { setLastErrorText("reader import attempt already consumed"); return AMBR_WRONG_STATE; }
+        const std::filesystem::path dir(options->sessionMediaDir);
+        std::error_code fsError;
+        if (!dir.is_absolute() || !std::filesystem::is_directory(dir, fsError) || fsError)
+            return invalidReaderArgument("reader destination must be an existing caller-owned absolute directory");
+        const auto data = dir / "original_f32.bin", info = dir / "audio_info.json", metadata = dir / "metadata.json";
+        const auto infoTmp = dir / "audio_info.json.tmp", metadataTmp = dir / "metadata.json.tmp";
+        const std::filesystem::path artifacts[] = {data, info, metadata, infoTmp, metadataTmp};
+        for (const auto& path : artifacts) {
+            const auto status = std::filesystem::symlink_status(path, fsError);
+            if ((fsError && fsError != std::errc::no_such_file_or_directory) || std::filesystem::exists(status))
+                return invalidReaderArgument("reader destination contains a media artifact or cannot be inspected");
+            fsError.clear();
+        }
+        handle->attempted = true;
+        bool committed = false;
+        Input::ScopeExit artifactsGuard([&]() noexcept {
+            if (!committed) for (const auto& path : artifacts) removeFileIfExists(path);
+        });
+        Input::ImportSourceCallbacks input{*handle->source.stableSource(), options->shouldCancel, options->userData};
+        const auto source = input.source(handle->source.displayLabel());
+        StreamingImportCallbacks callbacks;
+        callbacks.onProgress = options->onProgress;
+        // Source cancellation joins the import callback for opens and scans;
+        // the existing decode loop also polls the import callback as before.
+        callbacks.shouldCancel = options->shouldCancel;
+        callbacks.onWaveformChunk = options->onWaveformChunk;
+        callbacks.userData = options->userData;
+        std::string error;
+        if (!writeStreamingImportPlaceholderJson(infoTmp, "audio_info.json.tmp", error) ||
+            !writeStreamingImportPlaceholderJson(metadataTmp, "metadata.json.tmp", error)) {
+            setLastErrorText(error); return AMBR_OUTPUT_FAILED;
+        }
+        auto result = runStreamingSessionImportToLiveFile(source, dir, data, &callbacks, &*handle->probe.stableBinding);
+        if (!result.ok) { setLastErrorText(result.error); return result.canceled ? AMBR_CANCELED : AMBR_INPUT_FAILED; }
+        if (!verifyStreamingDataFileSize(data, result, error) ||
+            !writeStreamingAudioInfoJson(infoTmp, result, error) ||
+            !writeStreamingMetadataJson(metadataTmp, source.displayLabel(), result, error) ||
+            !commitStreamingSessionArtifacts(data, infoTmp, metadataTmp, info, metadata, error)) {
+            setLastErrorText(error); return AMBR_OUTPUT_FAILED;
+        }
+        committed = true;
+        clearLastError(); return AMBR_OK;
+    } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
+    catch (...) { setLastErrorText("unexpected exception importing reader input"); return AMBR_INTERNAL_ERROR; }
+}
+void __cdecl AveMediaBridge_ReaderDestroyV1(AMBR_PreparedInput* handle) { delete handle; }

@@ -348,6 +348,26 @@ int main(int argc, char** argv) {
         check.expect(bytes.reads > 0 && bytes.checks > 0,
             label + " memory callback used with nonexistent display label");
         if (reader.stableBinding) {
+            std::unique_ptr<Input::DemuxSession> preflight;
+            check.expect(Input::DemuxSession::open(source, {}, preflight) == 0,
+                label + " preflight context opens");
+            if (preflight) {
+                check.expect(avformat_find_stream_info(preflight->get(), nullptr) >= 0,
+                    label + " preflight discovery");
+                const int readsBefore = bytes.reads;
+                auto* audio = preflight->get()->streams[reader.stableBinding->streamIndex];
+                std::int64_t frames = 0, size = 0, pathFrames = 0, pathSize = 0;
+                std::string kind, pathKind;
+                const bool known = Probe::estimateDecodedBytesForPreflight(
+                    preflight->get(), audio, source, frames, size, kind);
+                const bool pathKnown = Probe::estimateDecodedBytesForPreflight(
+                    preflight->get(), audio, path.string(), pathFrames, pathSize, pathKind);
+                check.expect(bytes.reads == readsBefore,
+                    label + " source preflight performs no reads or scans");
+                check.expect(known == pathKnown && frames == pathFrames &&
+                    size == pathSize && kind == pathKind,
+                    label + " source preflight preserves metadata-only policy");
+            }
             check.expect(reader.stableBinding->byteSize == bytes.data.size() &&
                 reader.stableBinding->streamIndex == legacy.document.bestAudioStreamIndex,
                 label + " receipt source size and selected stream");

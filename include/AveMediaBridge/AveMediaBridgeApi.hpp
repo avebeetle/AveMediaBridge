@@ -14,57 +14,7 @@
 #define AVEMEDIABRIDGE_CALL
 #endif
 
-#define AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED 4
-#define AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY 0x00000001u
-
-struct AveMediaBridgeImportProgress {
-    uint32_t structSize;
-    uint64_t framesWritten;
-    uint64_t bytesWritten;
-    uint64_t estimatedTotalFrames;
-    uint64_t estimatedTotalBytes;
-    double availableEndSec;
-    double progress01;
-    int sampleRate;
-    int channels;
-    uint32_t flags;
-};
-
-typedef void (AVEMEDIABRIDGE_CALL *AveMediaBridgeProgressCallback)(
-    const AveMediaBridgeImportProgress* progress,
-    void* userData);
-
-typedef int (AVEMEDIABRIDGE_CALL *AveMediaBridgeCancelCallback)(
-    void* userData);
-
-struct AveMediaBridgeWaveformChunk {
-    uint32_t structSize;
-    uint64_t firstFrame;
-    uint32_t framesPerBin;
-    uint32_t binCount;
-    uint32_t valuesPerBin;
-    int sampleRate;
-    int channels;
-    const float* minMaxPairs;
-    uint32_t flags;
-    const double* sumSquaresPerBin;
-    const double* sumAbsPerBin;
-    const uint64_t* frameCountPerBin;
-};
-
-typedef void (AVEMEDIABRIDGE_CALL *AveMediaBridgeWaveformChunkCallback)(
-    const AveMediaBridgeWaveformChunk* chunk,
-    void* userData);
-
-struct AveMediaBridgeImportOptions {
-    uint32_t structSize;
-    const wchar_t* inputPath;
-    const wchar_t* sessionMediaDir;
-    AveMediaBridgeProgressCallback onProgress;
-    AveMediaBridgeCancelCallback shouldCancel;
-    void* userData;
-    AveMediaBridgeWaveformChunkCallback onWaveformChunk;
-};
+#include "AveMediaBridgeImportTypes.h"
 
 AVEMEDIABRIDGE_C_API int AveMediaBridge_TransformToWav(
     const wchar_t* inputPath,
