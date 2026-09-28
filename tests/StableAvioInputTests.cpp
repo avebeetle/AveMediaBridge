@@ -3,11 +3,13 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 }
 
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -15,10 +17,26 @@ extern "C" {
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
 using AveMediaBridge::Input::StableAvioInput;
+
+char capturedFfmpegLog[4096]{};
+size_t capturedFfmpegLogSize = 0;
+int ffmpegLogPrefix = 1;
+
+void captureFfmpegLog(void* context, int level, const char* format, va_list arguments) {
+    char line[1024]{};
+    av_log_format_line2(context, level, format, arguments, line, sizeof(line),
+        &ffmpegLogPrefix);
+    const size_t available = sizeof(capturedFfmpegLog) - capturedFfmpegLogSize - 1;
+    const size_t length = std::min(std::strlen(line), available);
+    std::memcpy(capturedFfmpegLog + capturedFfmpegLogSize, line, length);
+    capturedFfmpegLogSize += length;
+    capturedFfmpegLog[capturedFfmpegLogSize] = '\0';
+}
 
 struct Checks {
     int failures = 0;
@@ -38,6 +56,8 @@ struct Bytes {
     std::atomic<int> maxRequest{0};
     std::atomic<int> cancelAfterReads{-1};
     std::atomic<int> errorAfterReads{-1};
+    std::atomic<int> cancelOnceAfterReads{-1};
+    std::atomic<int> errorOnceAfterReads{-1};
     Fault fault = Fault::None;
 };
 
@@ -48,6 +68,11 @@ AMBI_Status __cdecl readBytes(void* user, uint64_t offset, void* destination,
     b.maxRequest.store(std::max(b.maxRequest.load(), static_cast<int>(count)));
     if (b.errorAfterReads.load() >= 0 && nth > b.errorAfterReads.load())
         return AMBI_IO_ERROR;
+    const int oneShotError = b.errorOnceAfterReads.load();
+    if (oneShotError >= 0 && nth > oneShotError) {
+        b.errorOnceAfterReads = -1;
+        return AMBI_IO_ERROR;
+    }
     if (b.fault == Bytes::Fault::Throw) throw std::runtime_error("read fault");
     if (b.fault == Bytes::Fault::IoError) return AMBI_IO_ERROR;
     if (b.fault == Bytes::Fault::ShortOk) {
@@ -64,6 +89,11 @@ AMBI_Status __cdecl readBytes(void* user, uint64_t offset, void* destination,
 AMBI_Status __cdecl checkBytes(void* user) {
     auto& b = *static_cast<Bytes*>(user);
     ++b.checks;
+    const int oneShotCancel = b.cancelOnceAfterReads.load();
+    if (oneShotCancel >= 0 && b.reads.load() >= oneShotCancel) {
+        b.cancelOnceAfterReads = -1;
+        return AMBI_CANCELED;
+    }
     return b.canceled ? AMBI_CANCELED : AMBI_OK;
 }
 
@@ -161,20 +191,30 @@ int main() {
     check.expect(b->io()->read_packet(b->io()->opaque, second, 1) == AVERROR_EXIT,
         "shared canceled source affects second reader");
     bytes.canceled = false;
-    check.expect(a->io()->seek(a->io()->opaque, 126, SEEK_SET) == 126 &&
-        a->io()->read_packet(a->io()->opaque, first, 8) == 2 &&
+    std::unique_ptr<StableAvioInput> afterCancel;
+    check.expect(StableAvioInput::create(sourceFor(bytes), afterCancel) == 0 && afterCancel,
+        "new reader after canceled reader remains available");
+    if (!afterCancel) return 1;
+    check.expect(afterCancel->io()->seek(afterCancel->io()->opaque, 126, SEEK_SET) == 126 &&
+        afterCancel->io()->read_packet(afterCancel->io()->opaque, first, 8) == 2 &&
         std::memcmp(first, bytes.data.data() + 126, 2) == 0 &&
-        a->io()->read_packet(a->io()->opaque, first, 1) == AVERROR_EOF,
+        afterCancel->io()->read_packet(afterCancel->io()->opaque, first, 1) == AVERROR_EOF,
         "EOF returns remaining bytes then EOF");
     bytes.fault = Bytes::Fault::ShortOk;
-    check.expect(a->io()->seek(a->io()->opaque, 0, SEEK_SET) == 0 &&
-        a->io()->read_packet(a->io()->opaque, first, 4) == AVERROR(EIO),
+    check.expect(afterCancel->io()->seek(afterCancel->io()->opaque, 0, SEEK_SET) == 0 &&
+        afterCancel->io()->read_packet(afterCancel->io()->opaque, first, 4) == AVERROR(EIO),
         "short OK is I/O error");
     bytes.fault = Bytes::Fault::IoError;
-    check.expect(a->io()->read_packet(a->io()->opaque, first, 4) == AVERROR(EIO),
+    std::unique_ptr<StableAvioInput> errorReader;
+    check.expect(StableAvioInput::create(sourceFor(bytes), errorReader) == 0 &&
+        errorReader && errorReader->io()->read_packet(errorReader->io()->opaque, first, 4) ==
+            AVERROR(EIO),
         "callback I/O error");
     bytes.fault = Bytes::Fault::Throw;
-    check.expect(a->io()->read_packet(a->io()->opaque, first, 4) == AVERROR(EIO),
+    std::unique_ptr<StableAvioInput> throwReader;
+    check.expect(StableAvioInput::create(sourceFor(bytes), throwReader) == 0 &&
+        throwReader && throwReader->io()->read_packet(throwReader->io()->opaque, first, 4) ==
+            AVERROR(EIO),
         "callback exception");
     bytes.fault = Bytes::Fault::None;
 
@@ -222,6 +262,46 @@ int main() {
             avio_read(faultInput->io(), output.data(), 1) == AVERROR(EIO),
             "I/O fault after prefix remains visible");
     }
+    Bytes oneShotFault; oneShotFault.data = sequence(5 * 1024 * 1024);
+    oneShotFault.errorOnceAfterReads = 1;
+    std::unique_ptr<StableAvioInput> oneShotFaultInput;
+    check.expect(StableAvioInput::create(sourceFor(oneShotFault), oneShotFaultInput) == 0 &&
+        oneShotFaultInput, "create transient-fault AVIO");
+    if (oneShotFaultInput) {
+        std::vector<uint8_t> output(5 * 1024 * 1024);
+        const int prefix = avio_read(oneShotFaultInput->io(), output.data(),
+            static_cast<int>(output.size()));
+        check.expect(prefix == AMBI_MAX_READ_BYTES &&
+            oneShotFaultInput->io()->error == AVERROR(EIO),
+            "transient I/O fault leaves a valid prefix");
+        check.expect(avio_read(oneShotFaultInput->io(), output.data(), 131072) == AVERROR(EIO),
+            "large read cannot bypass retained transient I/O fault");
+        std::unique_ptr<StableAvioInput> freshReader;
+        check.expect(StableAvioInput::create(sourceFor(oneShotFault), freshReader) == 0 &&
+            freshReader && avio_read(freshReader->io(), output.data(), 131072) == 131072 &&
+            std::memcmp(output.data(), oneShotFault.data.data(), 131072) == 0,
+            "terminal error is private to faulting AVIO instance");
+    }
+    Bytes oneShotCancel; oneShotCancel.data = sequence(5 * 1024 * 1024);
+    oneShotCancel.cancelOnceAfterReads = 1;
+    std::unique_ptr<StableAvioInput> oneShotCancelInput;
+    check.expect(StableAvioInput::create(sourceFor(oneShotCancel), oneShotCancelInput) == 0 &&
+        oneShotCancelInput, "create transient-cancel AVIO");
+    if (oneShotCancelInput) {
+        std::vector<uint8_t> output(5 * 1024 * 1024);
+        const int prefix = avio_read(oneShotCancelInput->io(), output.data(),
+            static_cast<int>(output.size()));
+        check.expect(prefix == AMBI_MAX_READ_BYTES &&
+            oneShotCancelInput->io()->error == AVERROR_EXIT,
+            "transient cancellation leaves a valid prefix");
+        check.expect(avio_read(oneShotCancelInput->io(), output.data(), 131072) == AVERROR_EXIT,
+            "large read cannot bypass retained transient cancellation");
+        std::unique_ptr<StableAvioInput> freshReader;
+        check.expect(StableAvioInput::create(sourceFor(oneShotCancel), freshReader) == 0 &&
+            freshReader && avio_read(freshReader->io(), output.data(), 131072) == 131072 &&
+            std::memcmp(output.data(), oneShotCancel.data.data(), 131072) == 0,
+            "terminal cancellation is private to canceled AVIO instance");
+    }
     Bytes independent; independent.data = sequence(64);
     std::unique_ptr<StableAvioInput> unaffected;
     check.expect(StableAvioInput::create(sourceFor(independent), unaffected) == 0 &&
@@ -266,8 +346,20 @@ int main() {
     check.expect(StableAvioInput::create(sourceFor(malformed), bad) == 0 && bad,
         "create malformed reader");
     if (bad) {
-        check.expect(bad->open(av_find_input_format("wav")) < 0,
+        capturedFfmpegLogSize = 0;
+        capturedFfmpegLog[0] = '\0';
+        ffmpegLogPrefix = 1;
+        av_log_set_callback(&captureFfmpegLog);
+        const int malformedResult = bad->open(av_find_input_format("wav"));
+        av_log_set_callback(av_log_default_callback);
+        check.expect(malformedResult < 0,
             "malformed bytes fail demux");
+        const std::string diagnostic(capturedFfmpegLog, capturedFfmpegLogSize);
+        const bool expectedDiagnostic = diagnostic.find("invalid start code") !=
+            std::string::npos && diagnostic.find("in RIFF header") !=
+            std::string::npos && std::count(diagnostic.begin(), diagnostic.end(), '\n') == 1;
+        if (!expectedDiagnostic) std::cerr << "Captured FFmpeg diagnostic: " << diagnostic;
+        check.expect(expectedDiagnostic, "only expected malformed-WAV diagnostic captured");
         check.expect(bad->open(av_find_input_format("wav")) == AVERROR(EINVAL),
             "repeat failed open rejected");
     }

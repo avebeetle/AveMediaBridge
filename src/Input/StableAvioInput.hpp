@@ -10,6 +10,9 @@ struct AVInputFormat;
 struct AVDictionary;
 
 namespace AveMediaBridge::Input {
+// Copies the descriptor but borrows source.user. The caller must keep its
+// adapter/user context alive until all calls are joined and this object is
+// destroyed.
 class StableAvioInput final {
 public:
     static int create(const AMBI_SourceV1& source,
@@ -36,6 +39,7 @@ private:
     AVIOContext* io_ = nullptr;
     AVFormatContext* format_ = nullptr;
     int64_t cursor_ = 0;
+    int terminalReadError_ = 0;
     bool opened_ = false;
 };
 }

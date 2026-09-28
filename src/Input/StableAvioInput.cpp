@@ -77,10 +77,13 @@ int StableAvioInput::open(const AVInputFormat* forcedFormat) noexcept {
 
 int StableAvioInput::readPacket(void* opaque, uint8_t* destination,
     int requested) noexcept {
-    if (!opaque || !destination || requested <= 0) return AVERROR(EINVAL);
+    if (!opaque) return AVERROR(EINVAL);
     auto& input = *static_cast<StableAvioInput*>(opaque);
+    if (input.terminalReadError_ < 0) return input.terminalReadError_;
+    if (!destination || requested <= 0)
+        return input.terminalReadError_ = AVERROR(EINVAL);
     const int canceled = cancelResult(input.source_);
-    if (canceled < 0) return canceled;
+    if (canceled < 0) return input.terminalReadError_ = canceled;
     if (input.cursor_ == static_cast<int64_t>(input.source_.byteSize)) return AVERROR_EOF;
 
     const uint32_t bounded = static_cast<uint32_t>(
@@ -88,9 +91,14 @@ int StableAvioInput::readPacket(void* opaque, uint8_t* destination,
     uint32_t actual = 0;
     const AMBI_Status status = readSource(input.source_,
         static_cast<uint64_t>(input.cursor_), destination, bounded, actual);
-    if (status == AMBI_CANCELED) return AVERROR_EXIT;
-    if (status != AMBI_OK && status != AMBI_EOF) return AVERROR(EIO);
-    if (actual == 0) return status == AMBI_EOF ? AVERROR_EOF : AVERROR(EIO);
+    if (status == AMBI_CANCELED)
+        return input.terminalReadError_ = AVERROR_EXIT;
+    if (status != AMBI_OK && status != AMBI_EOF)
+        return input.terminalReadError_ = AVERROR(EIO);
+    if (actual == 0) {
+        if (status == AMBI_EOF) return AVERROR_EOF;
+        return input.terminalReadError_ = AVERROR(EIO);
+    }
     input.cursor_ += actual;
     return static_cast<int>(actual);
 }
