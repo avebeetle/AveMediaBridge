@@ -69,7 +69,7 @@ target_link_libraries(AveMediaBridgeCore
         "${FFMPEG_LIB_DIR}/swresample.lib"
 )
 
-add_library(AveMediaBridge SHARED
+set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Dll/AveMediaBridgeDll.cpp
     src/Dll/AveMediaBridgeExportDll.cpp
     src/Export/StreamingExportJob.cpp
@@ -95,11 +95,25 @@ add_library(AveMediaBridge SHARED
     src/Utils/JsonUtils.cpp
 )
 
-target_link_libraries(AveMediaBridge PRIVATE AveMediaBridgeCore)
-target_include_directories(AveMediaBridge PRIVATE "${FFMPEG_INCLUDE_DIR}")
-target_include_directories(AveMediaBridge PRIVATE "${AVEMEDIABRIDGE_ROOT}/src")
-target_compile_definitions(AveMediaBridge PRIVATE AVEMEDIABRIDGE_BUILD_DLL)
-set_target_properties(AveMediaBridge PROPERTIES OUTPUT_NAME "AveMediaBridge")
+function(add_bridge_dll target)
+    add_library(${target} SHARED ${AVEMEDIABRIDGE_DLL_SOURCES})
+    target_link_libraries(${target} PRIVATE AveMediaBridgeCore)
+    target_include_directories(${target} PRIVATE "${FFMPEG_INCLUDE_DIR}" "${AVEMEDIABRIDGE_ROOT}/src")
+    target_compile_definitions(${target} PRIVATE AVEMEDIABRIDGE_BUILD_DLL)
+endfunction()
+add_bridge_dll(AveMediaBridge)
+
+option(AVEMEDIABRIDGE_ENABLE_EXPORT_IO_TEST_DLLS "TEST_ONLY private writer-fault Bridge variants" OFF)
+if(AVEMEDIABRIDGE_ENABLE_EXPORT_IO_TEST_DLLS)
+    foreach(fault IN ITEMS DiskFull ShortWrite)
+        set(target AveMediaBridgeExport${fault}Test)
+        add_bridge_dll(${target})
+        set_target_properties(${target} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+        target_compile_definitions(${target} PRIVATE AVEMEDIABRIDGE_TEST_ONLY_EXPORT_IO
+            AVEMEDIABRIDGE_TEST_ONLY_EXPORT_${fault})
+        copy_ffmpeg_runtime_dlls(${target})
+    endforeach()
+endif()
 
 add_executable(AveMediaBridgeLabApp
     app/main.cpp

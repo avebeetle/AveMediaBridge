@@ -3,6 +3,13 @@
 #include "Export/FfmpegFloatWavWriter.hpp"
 #include <mutex>
 
+#if defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_DiskFull) && defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_ShortWrite)
+#error Private export faults must be mutually exclusive
+#endif
+#if (defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_DiskFull) || defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_ShortWrite)) && !defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_IO)
+#error Private export faults require a TEST_ONLY target
+#endif
+
 namespace {
 
 AveMediaBridge::Export::ExportRegistry g_registry;
@@ -79,7 +86,15 @@ AMBE_Status __cdecl AveMediaBridge_ExportBegin(
             g_activeHandle = 0;
         }
         try {
+#if defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_DiskFull)
+            auto writer = AveMediaBridge::Export::makeFloatWavWriter(scratchPath, *input, false,
+                AveMediaBridge::Export::ExportScratchIo::Fault::DiskFull);
+#elif defined(AVEMEDIABRIDGE_TEST_ONLY_EXPORT_ShortWrite)
+            auto writer = AveMediaBridge::Export::makeFloatWavWriter(scratchPath, *input, false,
+                AveMediaBridge::Export::ExportScratchIo::Fault::ShortWrite);
+#else
             auto writer = AveMediaBridge::Export::makeFloatWavWriter(scratchPath, *input);
+#endif
             auto job = std::make_shared<AveMediaBridge::Export::StreamingExportJob>(*input, std::move(writer));
             const auto handle = g_registry.add(std::move(job));
             if (!handle) return AMBE_INTERNAL_ERROR;
