@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <cstdlib>
 
 struct Check {
     bool ok = true;
@@ -25,7 +26,9 @@ int main() {
     check.expect(AveMediaBridge_ExportQueryCapabilities(&caps, tiny, 1) == AMBE_OK,
         "valid capability query succeeds");
     check.expect(tiny[0] == L'\0', "one-character diagnostic buffer terminates");
-    check.expect(caps.profileBits == 0, "unimplemented profile is absent");
+    const bool expectedWriter = std::getenv("AMBE_EXPECT_FLOAT_WAV") != nullptr;
+    check.expect(caps.profileBits == (expectedWriter ? AMBE_PROFILE_BIT_WAV_F32_NATIVE_V1 : 0),
+        "capability matches qualified runtime");
     check.expect(caps.maxBlockBytes == AMBE_MAX_BLOCK_BYTES, "block limit is reported");
     check.expect(AveMediaBridge_ExportQueryCapabilities(&caps, nullptr, 1) == AMBE_INVALID_ARGUMENT,
         "positive diagnostic capacity needs a buffer");
@@ -38,8 +41,9 @@ int main() {
     input.sampleRate = 48000; input.channels = 2; input.layout = AMBE_LAYOUT_STEREO_LR;
     input.profile = AMBE_PROFILE_WAV_F32_NATIVE_V1; input.expectedFrames = 3;
     AMBE_Handle handle = 99;
-    check.expect(AveMediaBridge_ExportBegin(L"scratch.wav", &input, &handle, nullptr, 0) == AMBE_UNSUPPORTED && handle == 0,
-        "valid Begin reports absent writer and clears handle");
+    check.expect(AveMediaBridge_ExportBegin(L"scratch.wav", &input, &handle, nullptr, 0) ==
+        (expectedWriter ? AMBE_IO_ERROR : AMBE_UNSUPPORTED) && handle == 0,
+        "valid Begin reports runtime availability or missing scratch");
     input.structSize = 0; handle = 99;
     check.expect(AveMediaBridge_ExportBegin(L"scratch.wav", &input, &handle, nullptr, 0) == AMBE_INVALID_ARGUMENT && handle == 0,
         "malformed size clears handle");

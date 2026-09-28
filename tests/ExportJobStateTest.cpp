@@ -100,6 +100,35 @@ int main() {
     check.expect(job->finish(&result) == AMBE_INTERNAL_ERROR, "finish exception maps to internal error");
     check.expect(job->state() == StreamingExportJob::State::Failed, "finish exception fails job");
 
+    for (int malformed = 0; malformed < 3; ++malformed) {
+        capture = std::make_shared<Capture>(); job = makeJob(capture);
+        check.expect(job->write(pcm, 3) == AMBE_OK, "complete job before malformed result");
+        AMBE_ResultV1 bad = result;
+        if (malformed == 0) bad.structSize = 0;
+        if (malformed == 1) bad.abiVersion = 2;
+        if (malformed == 2) bad.reserved[0] = 1;
+        check.expect(job->finish(&bad) == AMBE_INVALID_ARGUMENT, "malformed result refused");
+        check.expect(job->state() == StreamingExportJob::State::Writing && !capture->closed,
+            "malformed result does not finalize or fail job");
+        check.expect(job->finish(&result) == AMBE_OK, "valid result can still finish");
+    }
+
+    const uint32_t maxStereoFrames = AMBE_MAX_BLOCK_BYTES / (2u * sizeof(float));
+    std::vector<float> maxBlock(static_cast<size_t>(maxStereoFrames) * 2u, 0.25f);
+    auto largeInput = stereo3(); largeInput.expectedFrames = maxStereoFrames;
+    capture = std::make_shared<Capture>();
+    job = std::make_shared<StreamingExportJob>(largeInput, std::make_unique<FakeWriter>(capture));
+    check.expect(job->write(maxBlock.data(), maxStereoFrames) == AMBE_OK, "exact 1 MiB block accepted");
+    check.expect(job->finish(&result) == AMBE_OK && result.encodedFrames == maxStereoFrames,
+        "exact 1 MiB block finishes");
+    largeInput.expectedFrames = static_cast<uint64_t>(maxStereoFrames) + 1;
+    capture = std::make_shared<Capture>();
+    job = std::make_shared<StreamingExportJob>(largeInput, std::make_unique<FakeWriter>(capture));
+    std::vector<float> overBlock(static_cast<size_t>(maxStereoFrames + 1) * 2u, 0.25f);
+    check.expect(job->write(overBlock.data(), maxStereoFrames + 1) == AMBE_INVALID_ARGUMENT,
+        "one frame above 1 MiB block rejected even within expected total");
+    check.expect(capture->samples.empty(), "oversize block writes nothing");
+
     ExportRegistry registry;
     capture = std::make_shared<Capture>();
     const AMBE_Handle token = registry.add(makeJob(capture));

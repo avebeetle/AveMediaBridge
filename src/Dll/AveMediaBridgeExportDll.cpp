@@ -1,9 +1,13 @@
 #include "AveMediaBridge/AveMediaBridgeExportApi.h"
 #include "Export/StreamingExportJob.hpp"
+#include "Export/FfmpegFloatWavWriter.hpp"
+#include <mutex>
 
 namespace {
 
 AveMediaBridge::Export::ExportRegistry g_registry;
+std::mutex g_beginMutex;
+AMBE_Handle g_activeHandle = 0;
 
 void setError(wchar_t* text, uint32_t capacity, const wchar_t* message) noexcept {
     if (capacity == 0 || !text) return;
@@ -51,7 +55,8 @@ AMBE_Status __cdecl AveMediaBridge_ExportQueryCapabilities(
     return guarded(errorText, errorCapacity, [&]() -> AMBE_Status {
         if (AveMediaBridge::Export::validateCapabilities(capabilities) != AMBE_OK)
             return AMBE_INVALID_ARGUMENT;
-        capabilities->profileBits = 0;
+        capabilities->profileBits = AveMediaBridge::Export::floatWavWriterAvailable()
+            ? AMBE_PROFILE_BIT_WAV_F32_NATIVE_V1 : 0;
         capabilities->maxBlockBytes = AMBE_MAX_BLOCK_BYTES;
         return AMBE_OK;
     });
@@ -65,8 +70,23 @@ AMBE_Status __cdecl AveMediaBridge_ExportBegin(
         if (!outHandle || !scratchPath || scratchPath[0] == L'\0' ||
             AveMediaBridge::Export::validateInput(input) != AMBE_OK)
             return AMBE_INVALID_ARGUMENT;
-        // Task 2 installs a qualified writer. No scratch file is created here.
-        return AMBE_UNSUPPORTED;
+        if (!AveMediaBridge::Export::floatWavWriterAvailable()) return AMBE_UNSUPPORTED;
+        std::lock_guard<std::mutex> lock(g_beginMutex);
+        if (g_activeHandle) {
+            const auto active = g_registry.find(g_activeHandle);
+            if (active && active->state() == AveMediaBridge::Export::StreamingExportJob::State::Writing)
+                return AMBE_INVALID_STATE;
+            g_activeHandle = 0;
+        }
+        try {
+            auto writer = AveMediaBridge::Export::makeFloatWavWriter(scratchPath, *input);
+            auto job = std::make_shared<AveMediaBridge::Export::StreamingExportJob>(*input, std::move(writer));
+            const auto handle = g_registry.add(std::move(job));
+            if (!handle) return AMBE_INTERNAL_ERROR;
+            g_activeHandle = handle;
+            *outHandle = handle;
+            return AMBE_OK;
+        } catch (...) { return AMBE_IO_ERROR; }
     });
 }
 

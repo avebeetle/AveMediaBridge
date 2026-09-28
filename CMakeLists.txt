@@ -73,6 +73,8 @@ add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
     src/Dll/AveMediaBridgeExportDll.cpp
     src/Export/StreamingExportJob.cpp
+    src/Export/FfmpegFloatWavWriter.cpp
+    src/Export/ExportScratchIo.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/AdtsAacSequentialPresentation.cpp
     src/Probe/Ac3Eac3SequentialPresentation.cpp
