@@ -36,8 +36,17 @@ ExportScratchIo::ExportScratchIo(const std::filesystem::path& path, Fault fault)
     io_->seekable = AVIO_SEEKABLE_NORMAL;
 }
 ExportScratchIo::~ExportScratchIo() {
-    if (io_) avio_context_free(&io_);
-    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+    abortClose();
+}
+void ExportScratchIo::abortClose() noexcept {
+    if (io_) {
+        av_freep(&io_->buffer);
+        avio_context_free(&io_);
+    }
+    if (file_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(file_);
+        file_ = INVALID_HANDLE_VALUE;
+    }
 }
 int ExportScratchIo::writePacket(void* opaque, const uint8_t* data, int size) noexcept {
     auto* self = static_cast<ExportScratchIo*>(opaque);

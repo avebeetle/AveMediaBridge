@@ -1,5 +1,6 @@
 #include "AveMediaBridge/AveMediaBridgeExportApi.h"
 #include "Export/FfmpegFloatWavWriter.hpp"
+#include "ExportOwnedRoot.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
@@ -44,8 +45,7 @@ static AMBE_InputV1 input(uint32_t rate, uint32_t channels, uint64_t frames) {
 int main() {
     int failures = 0;
     auto expect = [&](bool yes, const char* why) { if (!yes) { std::cerr << "FAIL " << why << '\n'; ++failures; } };
-    const fs::path root = fs::temp_directory_path() / ("ambe-float-wav-" + std::to_string(GetCurrentProcessId()));
-    fs::create_directory(root);
+    const fs::path root = acquireOwnedExportTestRoot("ambe-float-wav-");
     const std::vector<uint32_t> monoBits{0x00000000,0x80000000,0x00000001,0x3f800000,0xc0000000};
     for (uint32_t rate : {8000u,44100u,48000u,96000u}) for (uint32_t channels : {1u,2u}) {
         std::vector<uint32_t> bits;

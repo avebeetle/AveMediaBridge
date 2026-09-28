@@ -13,6 +13,7 @@ public:
     ExportScratchIo& operator=(const ExportScratchIo&) = delete;
     AVIOContext* context() const noexcept { return io_; }
     void flushAndClose();
+    void abortClose() noexcept;
     bool failed() const noexcept { return error_ != 0; }
 private:
     static int writePacket(void* opaque, const uint8_t* data, int size) noexcept;

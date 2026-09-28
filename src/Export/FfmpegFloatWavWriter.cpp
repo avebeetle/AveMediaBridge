@@ -82,6 +82,7 @@ public:
     void abort() noexcept override {
         if (format_) { avformat_free_context(format_); format_ = nullptr; }
         if (codec_) avcodec_free_context(&codec_);
+        scratch_.abortClose();
     }
 private:
     void drain() {

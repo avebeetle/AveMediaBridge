@@ -1,5 +1,6 @@
 #include "AveMediaBridge/AveMediaBridgeExportApi.h"
 #include "Export/ExportScratchIo.hpp"
+#include "ExportOwnedRoot.hpp"
 extern "C" {
 #include <libavformat/avio.h>
 }
@@ -11,7 +12,7 @@ extern "C" {
 namespace fs = std::filesystem;
 int main() {
     int failures = 0; auto expect = [&](bool yes, const char* why) { if (!yes) { std::cerr << "FAIL " << why << '\n'; ++failures; } };
-    const fs::path root = fs::temp_directory_path() / ("ambe-scratch-" + std::to_string(GetCurrentProcessId())); fs::create_directory(root);
+    const fs::path root = acquireOwnedExportTestRoot("ambe-scratch-");
     AMBE_InputV1 spec{}; spec.structSize = sizeof(spec); spec.abiVersion = AMBE_ABI_VERSION;
     spec.sampleRate = 48000; spec.channels = 1; spec.layout = AMBE_LAYOUT_MONO;
     spec.profile = AMBE_PROFILE_WAV_F32_NATIVE_V1; spec.expectedFrames = 1;
@@ -25,6 +26,40 @@ int main() {
     expect(AveMediaBridge_ExportBegin(empty.c_str(), &spec, &h, nullptr, 0) == AMBE_OK && h != 0, "existing empty scratch opens");
     if (h) { AveMediaBridge_ExportAbort(h, nullptr, 0); AveMediaBridge_ExportDestroy(h, nullptr, 0); }
     fs::remove(empty);
+    const auto abortPath = root / L"aborted.wav"; { std::ofstream f(abortPath, std::ios::binary); }
+    h = 0;
+    expect(AveMediaBridge_ExportBegin(abortPath.c_str(), &spec, &h, nullptr, 0) == AMBE_OK && h != 0,
+        "begin scratch for public abort");
+    if (h) {
+        const float sample = 0.25f;
+        expect(AveMediaBridge_ExportWriteF32(h, &sample, 1, nullptr, 0) == AMBE_OK,
+            "write before public abort");
+        expect(AveMediaBridge_ExportAbort(h, nullptr, 0) == AMBE_OK, "public abort succeeds");
+        HANDLE reopened = CreateFileW(abortPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        expect(reopened != INVALID_HANDLE_VALUE, "scratch is reopenable before Destroy");
+        if (reopened != INVALID_HANDLE_VALUE) CloseHandle(reopened);
+        std::error_code removeError;
+        expect(fs::remove(abortPath, removeError) && !removeError,
+            "scratch is deletable before Destroy");
+        expect(AveMediaBridge_ExportDestroy(h, nullptr, 0) == AMBE_OK, "destroy after abort");
+    }
+    if (fs::exists(abortPath)) fs::remove(abortPath);
+    const auto directAbortPath = root / L"direct-abort.wav";
+    { std::ofstream f(directAbortPath, std::ios::binary); }
+    {
+        AveMediaBridge::Export::ExportScratchIo io(directAbortPath);
+        const uint8_t data[4] = {1,2,3,4};
+        avio_write(io.context(), data, 4);
+        io.abortClose();
+        io.abortClose();
+        HANDLE reopened = CreateFileW(directAbortPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        expect(reopened != INVALID_HANDLE_VALUE, "direct scratch abort closes idempotently");
+        if (reopened != INVALID_HANDLE_VALUE) CloseHandle(reopened);
+        expect(fs::file_size(directAbortPath) == 0, "direct scratch abort discards buffered PCM");
+    }
+    fs::remove(directAbortPath);
     for (auto fault : {AveMediaBridge::Export::ExportScratchIo::Fault::Write,
                        AveMediaBridge::Export::ExportScratchIo::Fault::Seek,
                        AveMediaBridge::Export::ExportScratchIo::Fault::Flush,
@@ -45,5 +80,15 @@ int main() {
         }
         fs::remove(path);
     }
-    fs::remove(nonempty); fs::remove(root); return failures ? 1 : 0;
+    const auto collision = root / L"collision";
+    fs::create_directory(collision);
+    const auto sentinel = collision / L"sentinel.txt";
+    { std::ofstream f(sentinel); f << "preserve"; }
+    const auto selected = acquireOwnedExportTestRoot("ambe-collision-", collision);
+    std::string sentinelText;
+    { std::ifstream f(sentinel); f >> sentinelText; }
+    expect(selected != collision && sentinelText == "preserve",
+        "colliding test root content preserved and retried");
+    if (selected != collision) fs::remove_all(selected);
+    fs::remove(nonempty); fs::remove_all(root); return failures ? 1 : 0;
 }
