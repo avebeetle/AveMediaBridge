@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(AveMediaBridge LANGUAGES CXX)
+project(AveMediaBridge LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +71,8 @@ target_link_libraries(AveMediaBridgeCore
 
 add_library(AveMediaBridge SHARED
     src/Dll/AveMediaBridgeDll.cpp
+    src/Dll/AveMediaBridgeExportDll.cpp
+    src/Export/StreamingExportJob.cpp
     src/Ffmpeg/FfmpegStreamSelection.cpp
     src/Probe/AdtsAacSequentialPresentation.cpp
     src/Probe/Ac3Eac3SequentialPresentation.cpp
@@ -93,6 +95,7 @@ add_library(AveMediaBridge SHARED
 
 target_link_libraries(AveMediaBridge PRIVATE AveMediaBridgeCore)
 target_include_directories(AveMediaBridge PRIVATE "${FFMPEG_INCLUDE_DIR}")
+target_include_directories(AveMediaBridge PRIVATE "${AVEMEDIABRIDGE_ROOT}/src")
 target_compile_definitions(AveMediaBridge PRIVATE AVEMEDIABRIDGE_BUILD_DLL)
 set_target_properties(AveMediaBridge PROPERTIES OUTPUT_NAME "AveMediaBridge")
 
@@ -119,6 +122,8 @@ add_custom_command(TARGET AveMediaBridgeLabApp POST_BUILD
 )
 
 copy_ffmpeg_runtime_dlls(AveMediaBridgeLabApp)
+
+include(cmake/AveMediaBridgeExportTests.cmake)
 
 add_executable(AveMediaBridgeAudioPresentationSliceTests
     tests/AudioPresentationSliceTests.cpp
