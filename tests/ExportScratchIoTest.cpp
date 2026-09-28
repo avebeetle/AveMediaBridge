@@ -3,6 +3,7 @@
 #include "ExportOwnedRoot.hpp"
 extern "C" {
 #include <libavformat/avio.h>
+#include <libavutil/error.h>
 }
 #include <filesystem>
 #include <fstream>
@@ -60,6 +61,28 @@ int main() {
         expect(fs::file_size(directAbortPath) == 0, "direct scratch abort discards buffered PCM");
     }
     fs::remove(directAbortPath);
+    // Distinct deterministic faults: disk-full and a successful short OS write.
+    // Both must be latched by the real AVIO scratch boundary, then close for owner cleanup.
+    for (auto fault : {AveMediaBridge::Export::ExportScratchIo::Fault::DiskFull,
+                       AveMediaBridge::Export::ExportScratchIo::Fault::ShortWrite}) {
+        const auto injected = static_cast<int>(fault);
+        const auto path = root / (std::to_wstring(injected) + L"-write-boundary.wav");
+        { std::ofstream f(path, std::ios::binary); }
+        {
+            AveMediaBridge::Export::ExportScratchIo io(path,
+                fault);
+            const uint8_t data[4] = {1,2,3,4};
+            avio_write(io.context(), data, 4); avio_flush(io.context());
+            expect(io.failed() && io.context()->error < 0,
+                injected == 5 ? "disk-full write must fail" : "short OS write must fail");
+            expect(io.context()->error == AVERROR(injected == 5 ? ENOSPC : EIO),
+                "disk-full and short-write retain distinct boundary error codes");
+            try { io.flushAndClose(); expect(false, "failed boundary cannot finalize"); }
+            catch (const std::exception&) {}
+        }
+        expect(fs::file_size(path) == (injected == 5 ? 0 : 3), "distinct actual disk-full/short-write extents");
+        expect(fs::remove(path), "failed writer releases scratch for owned cleanup");
+    }
     for (auto fault : {AveMediaBridge::Export::ExportScratchIo::Fault::Write,
                        AveMediaBridge::Export::ExportScratchIo::Fault::Seek,
                        AveMediaBridge::Export::ExportScratchIo::Fault::Flush,

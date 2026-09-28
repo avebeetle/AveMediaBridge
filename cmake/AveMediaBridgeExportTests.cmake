@@ -15,7 +15,7 @@ target_include_directories(AveMediaBridgeExportJobStateTests PRIVATE
 add_test(NAME AveMediaBridgeTests.export_state COMMAND AveMediaBridgeExportJobStateTests)
 
 add_executable(AveMediaBridgeFloatWavTests tests/FloatWavWriterTest.cpp
-    src/Export/FfmpegFloatWavWriter.cpp src/Export/ExportScratchIo.cpp)
+    src/Export/FfmpegFloatWavWriter.cpp src/Export/ExportScratchIo.cpp src/Export/StreamingExportJob.cpp)
 target_link_libraries(AveMediaBridgeFloatWavTests PRIVATE AveMediaBridge
     "${FFMPEG_LIB_DIR}/avformat.lib" "${FFMPEG_LIB_DIR}/avcodec.lib" "${FFMPEG_LIB_DIR}/avutil.lib")
 target_include_directories(AveMediaBridgeFloatWavTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include"

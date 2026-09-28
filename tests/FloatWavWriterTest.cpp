@@ -1,5 +1,6 @@
 #include "AveMediaBridge/AveMediaBridgeExportApi.h"
 #include "Export/FfmpegFloatWavWriter.hpp"
+#include "Export/ExportScratchIo.hpp"
 #include "ExportOwnedRoot.hpp"
 #include <windows.h>
 #include <cstdint>
@@ -110,6 +111,26 @@ int main() {
             fs::copy_file(path, fs::path(evidence) / L"forced-rf64-mono-48000.wav",
                 fs::copy_options::overwrite_existing);
         fs::remove(path);
+    }
+    for (auto fault : {AveMediaBridge::Export::ExportScratchIo::Fault::DiskFull,
+                       AveMediaBridge::Export::ExportScratchIo::Fault::ShortWrite}) {
+        const auto path = root / (std::to_wstring(static_cast<int>(fault)) + L"-job.scratch");
+        const auto target = root / (std::to_wstring(static_cast<int>(fault)) + L"-must-not-publish.wav");
+        { std::ofstream scratch(path, std::ios::binary); }
+        const auto spec = input(48000, 2, 131072);
+        std::vector<float> samples(262144, 0.25f);
+        {
+            auto writer = AveMediaBridge::Export::makeFloatWavWriter(path, spec, false, fault);
+            AveMediaBridge::Export::StreamingExportJob job(spec, std::move(writer));
+            const auto status = job.write(samples.data(), 131072);
+            AMBE_ResultV1 result{}; result.structSize=sizeof(result); result.abiVersion=AMBE_ABI_VERSION;
+            expect(status != AMBE_OK && job.state() == AveMediaBridge::Export::StreamingExportJob::State::Failed,
+                "actual scratch write fault reaches failed export job");
+            expect(job.finish(&result) != AMBE_OK && result.encodedFrames == 0,
+                "failed real writer cannot return successful finalized frames");
+            expect(job.abort() == AMBE_OK && fs::remove(path), "abort releases actual scratch for owner cleanup");
+            expect(!fs::exists(target), "failed scratch writer never publishes target");
+        }
     }
     fs::remove_all(root); return failures ? 1 : 0;
 }

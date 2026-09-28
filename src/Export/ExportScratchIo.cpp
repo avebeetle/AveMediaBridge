@@ -53,8 +53,17 @@ int ExportScratchIo::writePacket(void* opaque, const uint8_t* data, int size) no
     if (self->fault_ == Fault::Write) { self->error_ = AVERROR(EIO); return self->error_; }
     if (size < 0 || self->file_ == INVALID_HANDLE_VALUE) return AVERROR(EIO);
     DWORD written = 0;
-    if (!WriteFile(self->file_, data, static_cast<DWORD>(size), &written, nullptr) || written != static_cast<DWORD>(size)) {
-        self->error_ = AVERROR(EIO); return self->error_;
+    // Deterministic private qualification faults exercise the same result handling
+    // as a failing disk or a successful but incomplete WriteFile operation.
+    const DWORD requested = static_cast<DWORD>(size);
+    BOOL succeeded = FALSE;
+    if (self->fault_ == Fault::DiskFull) SetLastError(ERROR_DISK_FULL);
+    else succeeded = WriteFile(self->file_, data,
+        self->fault_ == Fault::ShortWrite && requested ? requested - 1 : requested, &written, nullptr);
+    const auto lastError = succeeded ? ERROR_SUCCESS : GetLastError();
+    if (!succeeded || written != requested) {
+        self->error_ = AVERROR(lastError == ERROR_DISK_FULL || lastError == ERROR_HANDLE_DISK_FULL ? ENOSPC : EIO);
+        return self->error_;
     }
     return size;
 }

@@ -14,8 +14,9 @@ namespace {
 void check(int value, const char* action) { if (value < 0) throw std::runtime_error(action); }
 class FloatWavWriter final : public IStreamingPcmWriter {
 public:
-    FloatWavWriter(const Path& scratchPath, const AMBE_InputV1& input, bool forceRf64)
-        : scratch_(scratchPath), channels_(input.channels) {
+    FloatWavWriter(const Path& scratchPath, const AMBE_InputV1& input, bool forceRf64,
+        ExportScratchIo::Fault scratchFault)
+        : scratch_(scratchPath, scratchFault), channels_(input.channels) {
       try {
         const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_PCM_F32LE);
         if (!codec) throw std::runtime_error("pcm_f32le encoder unavailable");
@@ -117,8 +118,9 @@ private:
 bool floatWavWriterAvailable() noexcept {
     return avcodec_find_encoder(AV_CODEC_ID_PCM_F32LE) && av_guess_format("wav", nullptr, nullptr);
 }
-std::unique_ptr<IStreamingPcmWriter> makeFloatWavWriter(const Path& path, const AMBE_InputV1& input, bool forceRf64ForTest) {
+std::unique_ptr<IStreamingPcmWriter> makeFloatWavWriter(const Path& path, const AMBE_InputV1& input,
+    bool forceRf64ForTest, ExportScratchIo::Fault scratchFaultForTest) {
     if (!floatWavWriterAvailable()) throw std::runtime_error("writer runtime unavailable");
-    return std::make_unique<FloatWavWriter>(path, input, forceRf64ForTest);
+    return std::make_unique<FloatWavWriter>(path, input, forceRf64ForTest, scratchFaultForTest);
 }
 }

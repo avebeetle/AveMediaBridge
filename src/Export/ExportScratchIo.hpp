@@ -6,7 +6,7 @@ struct AVIOContext;
 namespace AveMediaBridge::Export {
 class ExportScratchIo final {
 public:
-    enum class Fault { None, Write, Seek, Flush, Close };
+    enum class Fault { None, Write, Seek, Flush, Close, DiskFull, ShortWrite };
     explicit ExportScratchIo(const std::filesystem::path& path, Fault fault = Fault::None);
     ~ExportScratchIo();
     ExportScratchIo(const ExportScratchIo&) = delete;
