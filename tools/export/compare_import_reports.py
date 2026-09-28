@@ -12,6 +12,9 @@ PROBE_TYPES = {"decodedSampleFrames": int, "decodedSampleFramesKind": str, "deco
     "mediaOpenAuthorityDomain": str, "mediaOpenDisposition": str, "sampleRate": int, "channels": int}
 IMPORT_TYPES = {"known": bool, "frames": int, "source": str, "reason": str, "evidenceTrust": str,
     "evidenceSource": str, "sampleDomain": str, "validation": str}
+INVALID_INPUT_REASON = ("Smoke DLL import session\n\nResult: FAIL\n"
+    "AveMediaBridge_ImportAudioToSession returned 2\n"
+    "DLL last error: avformat_open_input failed: Invalid data found when processing input")
 
 
 def require(value, message):
@@ -92,6 +95,17 @@ def report_rows(payload, version, baseline):
     return rows
 
 
+def failure_reason(error):
+    lines = error.splitlines()
+    # Only LabApp's two leading informational runtime paths vary between builds.
+    # Never scrub paths, errno, or extra diagnostics from the actual failure body.
+    if (len(lines) >= 3 and lines[0] == "Smoke DLL import session" and
+            re.fullmatch(r"  DLL: [A-Za-z]:[\\/].*[\\/]AveMediaBridge\.dll", lines[1]) and
+            re.fullmatch(r"  FFmpeg DLL dir: [A-Za-z]:[\\/].*[\\/]ffmpeg", lines[2])):
+        lines = lines[:1] + lines[3:]
+    return "\n".join(lines)
+
+
 def compare(stable, candidate, historical):
     baseline = baseline_rows(historical)
     left = report_rows(stable, "stable", baseline); right = report_rows(candidate, "candidate", baseline)
@@ -103,6 +117,13 @@ def compare(stable, candidate, historical):
         for key in compared:
             require(left[index][key] == right[index][key], f"case {index}: stable/candidate {key} differs")
     failures = [i for i in sorted(CASE_IDS) if not left[i]["succeeded"]]
+    reasons = {}
+    for index in failures:
+        reasons[index] = failure_reason(left[index]["error"])
+        require(reasons[index] == failure_reason(right[index]["error"]),
+            f"case {index}: stable/candidate failure reason differs")
+    expected_unsupported = [i for i in failures if not baseline[i]["importSucceeded"] and
+        reasons[i] == INVALID_INPUT_REASON]
     historical_changes = {}
     for name, rows in (("stable", left), ("candidate", right)):
         historical_changes[name] = {
@@ -112,11 +133,13 @@ def compare(stable, candidate, historical):
                 rows[i]["frames"] != baseline[i]["finalWrittenFrames"]]}
     unexpected = [i for i in failures if baseline[i]["importSucceeded"]]
     return {"status": "PASS_PAIRWISE_IMPORT_PARITY", "caseCount": 70, "succeeded": 70 - len(failures),
-        "matchingFailures": failures, "expectedUnsupported": [i for i in failures if not baseline[i]["importSucceeded"]],
+        "matchingFailures": failures, "expectedUnsupported": expected_unsupported,
+        "otherMatchingFailures": [i for i in failures if i not in expected_unsupported],
         "unexpectedStableFailures": unexpected, "allFormatsSupported": not failures,
         "allHistoricallySupportedSucceeded": not unexpected, "historicalDeltasInformationalOnly": historical_changes,
         "failureOutcomes": [{"index": i, "fileName": left[i]["fileName"], "stableError": left[i]["error"],
-            "candidateError": right[i]["error"], "returnCode": left[i]["returnCode"]} for i in failures],
+            "candidateError": right[i]["error"], "returnCode": left[i]["returnCode"], "failureReason": reasons[i],
+            "failureCategory": "invalid_input" if reasons[i] == INVALID_INPUT_REASON else "other"} for i in failures],
         "releaseQualified": False}
 
 

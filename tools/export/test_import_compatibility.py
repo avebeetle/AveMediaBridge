@@ -11,6 +11,12 @@ HERE = Path(__file__).resolve().parent
 IDS = list(range(1, 70)) + [7006]
 
 
+def failure_log(version, cause="Invalid data found when processing input"):
+    return (f"Smoke DLL import session\n  DLL: D:\\owned-{version}\\Release\\AveMediaBridge.dll\n"
+        f"  FFmpeg DLL dir: D:\\owned-{version}\\Release\\Lib\\ffmpeg\n\nResult: FAIL\n"
+        f"AveMediaBridge_ImportAudioToSession returned 2\nDLL last error: avformat_open_input failed: {cause}")
+
+
 def fixtures():
     baseline = {"files": [{"index": i, "fileName": f"{i:02}_sample.wav" if i != 7006 else "6. Практика (Сцена 3).mp4",
         "importSucceeded": i < 63 or i == 7006, "finalWrittenFrames": 12 if i < 63 or i == 7006 else 0,
@@ -30,7 +36,7 @@ def fixtures():
                     "sampleRate": 48000 if success else 0, "channels": 2 if success else 0},
                 "importAuthority": {"known": True, "frames": 12, "source": "actual-import", "reason": "accepted",
                     "evidenceTrust": "authoritative", "evidenceSource": "actual-import", "sampleDomain": "presentation",
-                    "validation": "validated"} if success else None, "error": "" if success else "unsupported input"})
+                    "validation": "validated"} if success else None, "error": "" if success else failure_log(version)})
         reports.append({"schemaVersion": 1, "complete": True, "version": version, "caseCount": 70,
             "sourceHead": "b" * 40, "sourceSha256": "c" * 64, "files": rows})
     return baseline, reports
@@ -61,8 +67,52 @@ class ComparatorControls(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(report["caseCount"], 70)
         self.assertEqual(report["matchingFailures"], list(range(63, 70)))
+        self.assertEqual(report["expectedUnsupported"], list(range(63, 70)))
         self.assertEqual(report["unexpectedStableFailures"], [])
         self.assertFalse(report["allFormatsSupported"])
+
+    def test_failure_cause_only_drift_rejected_on_both_sides_and_public_entry(self):
+        # Removing reason comparison must let these same-status, same-exit failures pass incorrectly.
+        for side in (0, 1):
+            for cause in ("Permission denied (errno 13)", "Input/output error (errno 5)",
+                    "Invalid data found when processing input (errno 99)"):
+                for powershell, export_mode in ((False, False), (True, False), (True, True)):
+                    with self.subTest(side=side, cause=cause, powershell=powershell, export_mode=export_mode):
+                        reports = fixtures()[1]
+                        reports[side]["files"][62]["error"] = failure_log(reports[side]["version"], cause)
+                        result, report = self.invoke(reports, powershell=powershell, export_mode=export_mode)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("IMPORT_COMPARISON_FAILED", result.stderr)
+                        self.assertIsNone(report)
+
+    def test_matching_permission_failure_is_not_historically_inferred_unsupported(self):
+        reports = fixtures()[1]
+        for report in reports:
+            report["files"][62]["error"] = failure_log(report["version"], "Permission denied (errno 13)")
+        result, report = self.invoke(reports)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(63, report["expectedUnsupported"])
+        self.assertEqual(report["otherMatchingFailures"], [63])
+        self.assertFalse(report["allFormatsSupported"])
+        self.assertFalse(report["releaseQualified"])
+        outcome = report["failureOutcomes"][0]
+        self.assertIn("Permission denied (errno 13)", outcome["failureReason"])
+        self.assertEqual(outcome["stableError"], reports[0]["files"][62]["error"])
+        self.assertEqual(outcome["candidateError"], reports[1]["files"][62]["error"])
+
+    def test_failure_diagnostic_paths_and_errno_not_scrubbed(self):
+        for side in (0, 1):
+            for original, changed in (("Permission denied (errno 13)", "Permission denied (errno 5)"),
+                    ("Cannot read D:/input/a.bin (errno 5)", "Cannot read D:/input/b.bin (errno 5)")):
+                with self.subTest(side=side, original=original):
+                    reports = fixtures()[1]
+                    for report in reports:
+                        report["files"][62]["error"] = failure_log(report["version"], original)
+                    reports[side]["files"][62]["error"] = failure_log(reports[side]["version"], changed)
+                    result, report = self.invoke(reports)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("failure reason differs", result.stderr)
+                    self.assertIsNone(report)
 
     def test_invalid_reports_fail_closed(self):
         mutations = {
