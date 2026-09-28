@@ -41,7 +41,7 @@ class GoldenBindingControls(unittest.TestCase):
                    "--voice-exe", "D:/ave-t7-build/Release/AveVoiceTests.exe",
                    "--runtime-root", str(candidate.CANDIDATE), "--output", str(self.root / "fresh"),
                    "--bridge-head", "a" * 40, "--voice-head", "b" * 40]
-        for option, value, message in [("--runtime-root", str(self.root), "not reviewed candidate"),
+        for option, value, message in [("--runtime-root", str(self.root / "wrong-runtime"), "not reviewed candidate"),
                                         ("--bridge-dll", "D:/ave-t7-bridge/Release/Fault.dll", "normal selected Bridge"),
                                         ("--output", str(self.root), "absent and absolute")]:
             changed = command.copy()
