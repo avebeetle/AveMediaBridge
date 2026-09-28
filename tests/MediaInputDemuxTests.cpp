@@ -4,6 +4,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 }
 
 #include <cerrno>
@@ -140,6 +141,8 @@ int main(int argc, char** argv) {
             "stable session denies network secondary open");
     }
 
+    const int originalLogLevel = av_log_get_level();
+    av_log_set_level(AV_LOG_QUIET);
     Bytes fault{bytes.data};
     fault.failAfterReads = 1;
     std::unique_ptr<DemuxSession> faultSession;
@@ -185,6 +188,7 @@ int main(int argc, char** argv) {
         ((prefixOpen == AVERROR_EXIT && !canceledPrefixSession) ||
         (canceledPrefixSession && canceledPrefixSession->inputError() == AVERROR_EXIT)),
         "cancellation after valid prefix remains terminal");
+    av_log_set_level(originalLogLevel);
 
     const ReaderInputError tagged(ReaderInputFailure::Canceled, "stopped");
     check.expect(tagged.failure() == ReaderInputFailure::Canceled &&

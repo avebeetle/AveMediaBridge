@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace AveMediaBridge::Input {
 enum class ReaderInputFailure { Canceled, InputFailed, Unsupported, BindingMismatch };
