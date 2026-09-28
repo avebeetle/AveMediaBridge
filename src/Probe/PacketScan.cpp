@@ -2,6 +2,8 @@
 
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
+#include "Input/DemuxSession.hpp"
+#include "Input/ReaderInputError.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -90,7 +92,8 @@ void setScanWarnings(
 }
 
 AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
-    const std::string& path,
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding* expected,
     int audioStreamIndex,
     int sampleRate,
     AVCodecID codecId,
@@ -98,7 +101,17 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
     bool collectPacketTiming,
     bool collectGapless) {
     AudioPresentationEvidenceScan result;
-    if (path.empty() || audioStreamIndex < 0) {
+    const std::string* path = source.legacyPath();
+    if (source.isStable() && (!expected || audioStreamIndex < 0 ||
+        expected->sampleRate <= 0)) {
+        throw Input::ReaderInputError(Input::ReaderInputFailure::BindingMismatch,
+            "stable packet scan has no selected audio binding");
+    }
+    if (source.isStable() && expected->codecId != AV_CODEC_ID_AAC) {
+        throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
+            "stable packet scan requires AAC");
+    }
+    if ((path && path->empty()) || audioStreamIndex < 0) {
         return result;
     }
 
@@ -107,8 +120,23 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
         return result;
     }
 
-    Ffmpeg::UniqueAVFormatContext scanContext(avformat_alloc_context());
-    if (!scanContext) {
+    Ffmpeg::UniqueAVFormatContext pathContext;
+    std::unique_ptr<Input::DemuxSession> stableSession;
+    if (source.isStable()) {
+        const int opened = Input::DemuxSession::open(source,
+            {true, options.probeSizeBytes, options.analyzeDurationUs}, stableSession);
+        if (opened < 0) {
+            throw Input::ReaderInputError(
+                opened == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                : opened == AVERROR_INVALIDDATA || opened == AVERROR_DEMUXER_NOT_FOUND
+                    ? Input::ReaderInputFailure::Unsupported
+                    : Input::ReaderInputFailure::InputFailed,
+                "stable packet scan open failed: " + ffErrorString(opened));
+        }
+    } else {
+        pathContext.reset(avformat_alloc_context());
+    }
+    if (!source.isStable() && !pathContext) {
         setScanWarnings(
             result,
             collectPacketTiming,
@@ -118,17 +146,18 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
         return result;
     }
 
-    scanContext->probesize = options.probeSizeBytes;
-    scanContext->max_analyze_duration = options.analyzeDurationUs;
-
-    AVDictionary* dictionary = nullptr;
-    av_dict_set(&dictionary, "probesize", std::to_string(options.probeSizeBytes).c_str(), 0);
-    av_dict_set(&dictionary, "analyzeduration", std::to_string(options.analyzeDurationUs).c_str(), 0);
-
-    AVFormatContext* openContext = scanContext.release();
-    int ret = avformat_open_input(&openContext, path.c_str(), nullptr, &dictionary);
-    scanContext.reset(openContext);
-    av_dict_free(&dictionary);
+    int ret = 0;
+    if (!source.isStable()) {
+        pathContext->probesize = options.probeSizeBytes;
+        pathContext->max_analyze_duration = options.analyzeDurationUs;
+        AVDictionary* dictionary = nullptr;
+        av_dict_set(&dictionary, "probesize", std::to_string(options.probeSizeBytes).c_str(), 0);
+        av_dict_set(&dictionary, "analyzeduration", std::to_string(options.analyzeDurationUs).c_str(), 0);
+        AVFormatContext* openContext = pathContext.release();
+        ret = avformat_open_input(&openContext, path->c_str(), nullptr, &dictionary);
+        pathContext.reset(openContext);
+        av_dict_free(&dictionary);
+    }
     if (ret < 0) {
         const std::string error = ffErrorString(ret);
         setScanWarnings(
@@ -140,7 +169,16 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
         return result;
     }
 
-    ret = avformat_find_stream_info(scanContext.get(), nullptr);
+    AVFormatContext* scanContext = source.isStable()
+        ? stableSession->get() : pathContext.get();
+    ret = avformat_find_stream_info(scanContext, nullptr);
+    if (source.isStable() && stableSession->inputError() < 0) {
+        const int failure = stableSession->inputError();
+        throw Input::ReaderInputError(
+            failure == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                                    : Input::ReaderInputFailure::InputFailed,
+            "stable packet scan stream discovery failed: " + ffErrorString(failure));
+    }
     if (ret < 0) {
         const std::string error = ffErrorString(ret);
         setScanWarnings(
@@ -152,6 +190,18 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
         return result;
     }
 
+    if (source.isStable() && (!scanContext->iformat ||
+        !scanContext->iformat->name ||
+        std::string(scanContext->iformat->name).rfind("mov", 0) != 0)) {
+        throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
+            "stable packet scan requires MOV-family input");
+    }
+
+    if (source.isStable() && (!expected ||
+        !Input::matchesSelectedAudio(*expected, source, scanContext, audioStreamIndex))) {
+        throw Input::ReaderInputError(Input::ReaderInputFailure::BindingMismatch,
+            "stable packet scan selected audio binding mismatch");
+    }
     if (audioStreamIndex >= static_cast<int>(scanContext->nb_streams) ||
         !scanContext->streams[audioStreamIndex] ||
         !scanContext->streams[audioStreamIndex]->codecpar ||
@@ -198,7 +248,14 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
 
     // Packet timing and gapless metadata remain independent evidence
     // models, but share one physical demux traversal.
-    while ((ret = av_read_frame(scanContext.get(), packet.get())) >= 0) {
+    while ((ret = av_read_frame(scanContext, packet.get())) >= 0) {
+        if (source.isStable() && stableSession->inputError() < 0) {
+            const int failure = stableSession->inputError();
+            throw Input::ReaderInputError(
+                failure == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                                        : Input::ReaderInputFailure::InputFailed,
+                "stable packet scan callback failed: " + ffErrorString(failure));
+        }
         const bool selectedAudio = packet->stream_index == audioStreamIndex;
         if (packetTiming) {
             // Count physical codec samples independently of a container's
@@ -229,6 +286,14 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
             });
         }
         av_packet_unref(packet.get());
+    }
+
+    if (source.isStable() && stableSession->inputError() < 0) {
+        const int failure = stableSession->inputError();
+        throw Input::ReaderInputError(
+            failure == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                                    : Input::ReaderInputFailure::InputFailed,
+            "stable packet scan callback failed: " + ffErrorString(failure));
     }
 
     const std::string readError = ret != AVERROR_EOF ? ffErrorString(ret) : std::string{};
@@ -481,7 +546,8 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidence(
     AVCodecID codecId,
     PacketScanOptions options) {
     return scanAudioPresentationEvidenceImpl(
-        path,
+        Input::MediaInputSource::fromPath(path),
+        nullptr,
         audioStreamIndex,
         sampleRate,
         codecId,
@@ -497,7 +563,8 @@ PacketFrameCountScan scanPacketFrameCountCandidates(
     AVCodecID codecId,
     PacketScanOptions options) {
     return scanAudioPresentationEvidenceImpl(
-        path,
+        Input::MediaInputSource::fromPath(path),
+        nullptr,
         audioStreamIndex,
         sampleRate,
         codecId,
@@ -511,13 +578,41 @@ GaplessSkipSampleScan scanGaplessSkipSampleSideData(
     int audioStreamIndex,
     PacketScanOptions options) {
     return scanAudioPresentationEvidenceImpl(
-        path,
+        Input::MediaInputSource::fromPath(path),
+        nullptr,
         audioStreamIndex,
         0,
         AV_CODEC_ID_NONE,
         options,
         false,
         true).gapless;
+}
+
+AudioPresentationEvidenceScan scanAudioPresentationEvidence(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
+    PacketScanOptions options) {
+    return scanAudioPresentationEvidenceImpl(source, &expected,
+        expected.streamIndex, expected.sampleRate,
+        static_cast<AVCodecID>(expected.codecId), options, true, true);
+}
+
+PacketFrameCountScan scanPacketFrameCountCandidates(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
+    PacketScanOptions options) {
+    return scanAudioPresentationEvidenceImpl(source, &expected,
+        expected.streamIndex, expected.sampleRate,
+        static_cast<AVCodecID>(expected.codecId), options, true, false).packetTiming;
+}
+
+GaplessSkipSampleScan scanGaplessSkipSampleSideData(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
+    PacketScanOptions options) {
+    return scanAudioPresentationEvidenceImpl(source, &expected,
+        expected.streamIndex, expected.sampleRate,
+        static_cast<AVCodecID>(expected.codecId), options, false, true).gapless;
 }
 
 }  // namespace AveMediaBridge::Probe

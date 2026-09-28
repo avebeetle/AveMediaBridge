@@ -96,6 +96,7 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Input/StableAvioInput.cpp
     src/Input/MediaInputSource.cpp
     src/Input/DemuxSession.cpp
+    src/Input/SelectedAudioBinding.cpp
     src/Utils/JsonUtils.cpp
 )
 
@@ -167,6 +168,11 @@ add_executable(AveMediaBridgeAudioPresentationEvidenceScanTests
     tests/AudioPresentationEvidenceScanTests.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
+    src/Input/StableInputContract.cpp
+    src/Input/StableAvioInput.cpp
+    src/Input/MediaInputSource.cpp
+    src/Input/DemuxSession.cpp
+    src/Input/SelectedAudioBinding.cpp
 )
 
 target_link_libraries(AveMediaBridgeAudioPresentationEvidenceScanTests PRIVATE AveMediaBridgeCore)
@@ -223,6 +229,11 @@ add_executable(AveMediaBridgeMatroskaCodecDelaySkipTests
     tests/MatroskaCodecDelaySkipTests.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
+    src/Input/StableInputContract.cpp
+    src/Input/StableAvioInput.cpp
+    src/Input/MediaInputSource.cpp
+    src/Input/DemuxSession.cpp
+    src/Input/SelectedAudioBinding.cpp
 )
 
 target_link_libraries(AveMediaBridgeMatroskaCodecDelaySkipTests PRIVATE
@@ -235,6 +246,7 @@ target_link_libraries(AveMediaBridgeMatroskaCodecDelaySkipTests PRIVATE
 )
 target_include_directories(AveMediaBridgeMatroskaCodecDelaySkipTests PRIVATE
     "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
     "${FFMPEG_INCLUDE_DIR}"
 )
 copy_ffmpeg_runtime_dlls(AveMediaBridgeMatroskaCodecDelaySkipTests)
@@ -261,6 +273,11 @@ add_executable(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests
     tests/Mp4Mp3LoadingReadyPresentationTests.cpp
     src/Probe/FrameCountPolicy.cpp
     src/Probe/PacketScan.cpp
+    src/Input/StableInputContract.cpp
+    src/Input/StableAvioInput.cpp
+    src/Input/MediaInputSource.cpp
+    src/Input/DemuxSession.cpp
+    src/Input/SelectedAudioBinding.cpp
 )
 
 target_link_libraries(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests PRIVATE
@@ -273,6 +290,7 @@ target_link_libraries(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests PRIVATE
 )
 target_include_directories(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests PRIVATE
     "${AVEMEDIABRIDGE_ROOT}"
+    "${AVEMEDIABRIDGE_ROOT}/src"
     "${FFMPEG_INCLUDE_DIR}"
 )
 copy_ffmpeg_runtime_dlls(AveMediaBridgeMp4Mp3LoadingReadyPresentationTests)

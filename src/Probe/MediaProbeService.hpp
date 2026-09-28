@@ -10,10 +10,12 @@
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
 #include "ProbeJsonWriter.hpp"
+#include "../Input/SelectedAudioBinding.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace AveMediaBridge::Probe {
@@ -30,12 +32,17 @@ struct FastProbeResult {
     AdtsAacSequentialPresentationResult adtsAacSequentialPresentation;
     DolbySequentialPresentationResult dolbySequentialPresentation;
     bool streamInfoFound = false;
+    std::optional<Input::SelectedAudioBinding> stableBinding;
 };
 
 std::string rationalToString(AVRational value);
 StreamSummary makeStreamSummary(int index, const AVStream* stream);
 
 FastProbeResult runFastProbe(const std::string& path);
+FastProbeResult runFastProbe(const Input::MediaInputSource& source);
+#ifdef AVEMEDIABRIDGE_TEST_ONLY
+FastProbeResult runFastProbeWithTestPadding(const Input::MediaInputSource& source);
+#endif
 
 bool writeFastProbeJson(
     const std::filesystem::path& outputPath,

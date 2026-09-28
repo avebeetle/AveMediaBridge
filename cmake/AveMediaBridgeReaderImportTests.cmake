@@ -34,4 +34,47 @@ if(AVEMEDIABRIDGE_READER_FIXTURE_ROOT)
             "${AVEMEDIABRIDGE_READER_FIXTURE_ROOT}/reader_demux_aac.m4a")
     set_tests_properties(AveMediaBridgeTests.media_input_demux PROPERTIES
         RUN_SERIAL TRUE TIMEOUT 60)
+
+    if(NOT AVEMEDIABRIDGE_READER_LAB_ROOT)
+        message(FATAL_ERROR "Reader probe parity requires AVEMEDIABRIDGE_READER_LAB_ROOT")
+    endif()
+    foreach(fixture IN ITEMS reader_stereo_front_aac.mp4
+            reader_stereo_tail_aac.mp4 reader_two_aac_default_second.mp4
+            reader_mp4_mp3_control.mp4 reader_mp4_alac_control.m4a
+            reader_mp4_no_audio.mp4)
+        if(NOT EXISTS "${AVEMEDIABRIDGE_READER_FIXTURE_ROOT}/${fixture}")
+            message(FATAL_ERROR "Missing required reader fixture: ${fixture}")
+        endif()
+    endforeach()
+    foreach(fixture IN ITEMS
+            exact_authority/valid/aac/EA035_m4a_aac_96000_10241.m4a
+            exact_authority/valid/aac/EA127_mp4_aac_88200_88199.mp4
+            exact_authority/valid/aac/EA098_m4a_aac_48000_1.m4a
+            av_sync/valid/mp4/AV018_nonzero_audio_media_time_mp4.mp4
+            av_sync/valid/mov/AV019_empty_edit_before_audio_mov.mov
+            exact_authority/valid/pcm_lossless/EA002_wav_s16_16000_257.wav)
+        if(NOT EXISTS "${AVEMEDIABRIDGE_READER_LAB_ROOT}/${fixture}")
+            message(FATAL_ERROR "Missing required reader laboratory fixture: ${fixture}")
+        endif()
+    endforeach()
+    set(_reader_probe_sources ${AVEMEDIABRIDGE_DLL_SOURCES})
+    list(FILTER _reader_probe_sources EXCLUDE REGEX "^src/Dll/")
+    list(FILTER _reader_probe_sources EXCLUDE REGEX "^src/Export/")
+    add_executable(AveMediaBridgeReaderProbeTests
+        tests/ReaderProbeParityTests.cpp
+        ${_reader_probe_sources})
+    target_link_libraries(AveMediaBridgeReaderProbeTests PRIVATE AveMediaBridgeCore)
+    target_compile_definitions(AveMediaBridgeReaderProbeTests PRIVATE
+        AVEMEDIABRIDGE_TEST_ONLY)
+    target_include_directories(AveMediaBridgeReaderProbeTests PRIVATE
+        "${AVEMEDIABRIDGE_ROOT}/include"
+        "${AVEMEDIABRIDGE_ROOT}/src"
+        "${FFMPEG_INCLUDE_DIR}")
+    copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderProbeTests)
+    add_test(NAME AveMediaBridgeTests.reader_probe_parity
+        COMMAND AveMediaBridgeReaderProbeTests
+            "${AVEMEDIABRIDGE_READER_FIXTURE_ROOT}"
+            "${AVEMEDIABRIDGE_READER_LAB_ROOT}")
+    set_tests_properties(AveMediaBridgeTests.reader_probe_parity PROPERTIES
+        RUN_SERIAL TRUE TIMEOUT 180)
 endif()

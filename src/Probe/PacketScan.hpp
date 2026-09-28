@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Ffmpeg/FfmpegHeaders.hpp"
+#include "../Input/SelectedAudioBinding.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -122,10 +123,18 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidence(
     int sampleRate,
     AVCodecID codecId,
     PacketScanOptions options);
+AudioPresentationEvidenceScan scanAudioPresentationEvidence(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
+    PacketScanOptions options);
 
 GaplessSkipSampleScan scanGaplessSkipSampleSideData(
     const std::string& path,
     int audioStreamIndex,
+    PacketScanOptions options);
+GaplessSkipSampleScan scanGaplessSkipSampleSideData(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
     PacketScanOptions options);
 
 PacketFrameCountScan scanPacketFrameCountCandidates(
@@ -133,6 +142,10 @@ PacketFrameCountScan scanPacketFrameCountCandidates(
     int audioStreamIndex,
     int sampleRate,
     AVCodecID codecId,
+    PacketScanOptions options);
+PacketFrameCountScan scanPacketFrameCountCandidates(
+    const Input::MediaInputSource& source,
+    const Input::SelectedAudioBinding& expected,
     PacketScanOptions options);
 
 }  // namespace AveMediaBridge::Probe

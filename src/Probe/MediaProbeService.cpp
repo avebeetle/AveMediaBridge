@@ -13,11 +13,14 @@
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
+#include "Input/DemuxSession.hpp"
+#include "Input/ReaderInputError.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <sstream>
+#include <memory>
 
 namespace AveMediaBridge::Probe {
 namespace {
@@ -1052,7 +1055,7 @@ void applyDolbySequentialPresentationAuthority(
 
 void applyFastFrameCountPolicies(
     FastProbeResult& result,
-    const std::string& path,
+    const Input::MediaInputSource& source,
     const AVStream* audioStream,
     bool allowExactPacketPresentationScan) {
     const AVCodecParameters* codecpar = audioStream && audioStream->codecpar ? audioStream->codecpar : nullptr;
@@ -1143,26 +1146,35 @@ void applyFastFrameCountPolicies(
     GaplessSkipSampleScan gaplessScan;
     if (packetScanRequired && gaplessScanRequired) {
         const AudioPresentationEvidenceScan evidence =
-            scanAudioPresentationEvidence(
-                path,
+            source.isStable()
+                ? scanAudioPresentationEvidence(
+                    source, *result.stableBinding, packetScanOptions)
+                : scanAudioPresentationEvidence(
+                    *source.legacyPath(),
+                    static_cast<int>(audioStream->index),
+                    policyState.selectedAudio.sampleRate,
+                    codecpar->codec_id,
+                    packetScanOptions);
+        packetScan = evidence.packetTiming;
+        gaplessScan = evidence.gapless;
+    } else if (packetScanRequired) {
+        packetScan = source.isStable()
+            ? scanPacketFrameCountCandidates(
+                source, *result.stableBinding, packetScanOptions)
+            : scanPacketFrameCountCandidates(
+                *source.legacyPath(),
                 static_cast<int>(audioStream->index),
                 policyState.selectedAudio.sampleRate,
                 codecpar->codec_id,
                 packetScanOptions);
-        packetScan = evidence.packetTiming;
-        gaplessScan = evidence.gapless;
-    } else if (packetScanRequired) {
-        packetScan = scanPacketFrameCountCandidates(
-            path,
-            static_cast<int>(audioStream->index),
-            policyState.selectedAudio.sampleRate,
-            codecpar->codec_id,
-            packetScanOptions);
     } else if (gaplessScanRequired) {
-        gaplessScan = scanGaplessSkipSampleSideData(
-            path,
-            static_cast<int>(audioStream->index),
-            packetScanOptions);
+        gaplessScan = source.isStable()
+            ? scanGaplessSkipSampleSideData(
+                source, *result.stableBinding, packetScanOptions)
+            : scanGaplessSkipSampleSideData(
+                *source.legacyPath(),
+                static_cast<int>(audioStream->index),
+                packetScanOptions);
     }
 
     // Resolve complete packet evidence after traversal, including padding
@@ -1249,29 +1261,44 @@ StreamSummary makeStreamSummary(int index, const AVStream* stream) {
     return summary;
 }
 
-FastProbeResult runFastProbe(const std::string& path) {
+static FastProbeResult runFastProbeImpl(
+    const Input::MediaInputSource& source, bool forceTestPadding) {
     FastProbeResult result;
+    const std::string& path = source.displayLabel();
     result.document.sourcePath = path;
 
-    Ffmpeg::UniqueAVFormatContext formatContext(avformat_alloc_context());
-    if (!formatContext) {
-        result.document.errors.push_back("avformat_alloc_context failed");
-        result.mediaOpenAssessment =
-            assessMediaOpen(result.document, result.totalPresentation, false);
-        return result;
+    Ffmpeg::UniqueAVFormatContext pathContext;
+    std::unique_ptr<Input::DemuxSession> stableSession;
+    int ret = 0;
+    if (source.isStable()) {
+        ret = Input::DemuxSession::open(source,
+            {true, kFastProbeSizeBytes, kFastProbeAnalyzeDurationUs}, stableSession);
+        if (ret < 0) {
+            throw Input::ReaderInputError(
+                ret == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                : ret == AVERROR_INVALIDDATA || ret == AVERROR_DEMUXER_NOT_FOUND
+                    ? Input::ReaderInputFailure::Unsupported
+                    : Input::ReaderInputFailure::InputFailed,
+                "stable probe open failed: " + ffErrorString(ret));
+        }
+    } else {
+        pathContext.reset(avformat_alloc_context());
+        if (!pathContext) {
+            result.document.errors.push_back("avformat_alloc_context failed");
+            result.mediaOpenAssessment =
+                assessMediaOpen(result.document, result.totalPresentation, false);
+            return result;
+        }
+        pathContext->probesize = kFastProbeSizeBytes;
+        pathContext->max_analyze_duration = kFastProbeAnalyzeDurationUs;
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "probesize", "4194304", 0);
+        av_dict_set(&options, "analyzeduration", "3000000", 0);
+        AVFormatContext* openContext = pathContext.release();
+        ret = avformat_open_input(&openContext, path.c_str(), nullptr, &options);
+        pathContext.reset(openContext);
+        av_dict_free(&options);
     }
-
-    formatContext->probesize = kFastProbeSizeBytes;
-    formatContext->max_analyze_duration = kFastProbeAnalyzeDurationUs;
-
-    AVDictionary* options = nullptr;
-    av_dict_set(&options, "probesize", "4194304", 0);
-    av_dict_set(&options, "analyzeduration", "3000000", 0);
-
-    AVFormatContext* openContext = formatContext.release();
-    int ret = avformat_open_input(&openContext, path.c_str(), nullptr, &options);
-    formatContext.reset(openContext);
-    av_dict_free(&options);
     if (ret < 0) {
         result.document.errors.push_back("avformat_open_input failed: " + ffErrorString(ret));
         result.mediaOpenAssessment =
@@ -1279,8 +1306,17 @@ FastProbeResult runFastProbe(const std::string& path) {
         return result;
     }
 
-    ret = avformat_find_stream_info(formatContext.get(), nullptr);
-    fillFastSourceInfo(result, formatContext.get());
+    AVFormatContext* context = source.isStable()
+        ? stableSession->get() : pathContext.get();
+    ret = avformat_find_stream_info(context, nullptr);
+    if (source.isStable() && stableSession->inputError() < 0) {
+        const int failure = stableSession->inputError();
+        throw Input::ReaderInputError(
+            failure == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                                    : Input::ReaderInputFailure::InputFailed,
+            "stable probe stream discovery failed: " + ffErrorString(failure));
+    }
+    fillFastSourceInfo(result, context);
     if (ret < 0) {
         result.document.errors.push_back("avformat_find_stream_info failed: " + ffErrorString(ret));
         result.mediaOpenAssessment =
@@ -1289,11 +1325,15 @@ FastProbeResult runFastProbe(const std::string& path) {
     }
 
     result.streamInfoFound = true;
-    fillFastStreamDetails(result, formatContext.get());
+    fillFastStreamDetails(result, context);
 
     const Ffmpeg::AudioStreamSelection selection =
-        Ffmpeg::selectBestAudioStreamWithFirstAudioFallback(formatContext.get());
+        Ffmpeg::selectBestAudioStreamWithFirstAudioFallback(context);
     if (selection.streamIndex < 0) {
+        if (source.isStable()) {
+            throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
+                "stable MOV input has no audio stream");
+        }
         result.document.errors.push_back("no audio stream found: " + ffErrorString(selection.bestStreamResult));
         result.mediaOpenAssessment =
             assessMediaOpen(result.document, result.totalPresentation, true);
@@ -1308,30 +1348,67 @@ FastProbeResult runFastProbe(const std::string& path) {
     const int audioStreamIndex = selection.streamIndex;
     const AVCodec* decoder = selection.decoder;
     result.document.bestAudioStreamIndex = audioStreamIndex;
-    AVStream* audioStream = formatContext->streams[audioStreamIndex];
+    AVStream* audioStream = context->streams[audioStreamIndex];
+    if (source.isStable()) {
+        const std::string demuxer = context->iformat && context->iformat->name
+            ? context->iformat->name : "";
+        if (demuxer.rfind("mov", 0) != 0 || !audioStream ||
+            !audioStream->codecpar ||
+            audioStream->codecpar->codec_id != AV_CODEC_ID_AAC) {
+            throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
+                "stable route requires MOV-family AAC audio");
+        }
+        result.stableBinding =
+            Input::bindSelectedAudio(source, context, audioStreamIndex);
+    }
     if (!decoder && audioStream && audioStream->codecpar) {
         decoder = avcodec_find_decoder(audioStream->codecpar->codec_id);
     }
     fillFastSelectedAudio(result, audioStream, decoder);
-    estimateFastDurationAndFrames(result, formatContext.get(), audioStream);
-    applyMp3HeaderPresentationAuthority(result, path, formatContext.get(), audioStream);
+    estimateFastDurationAndFrames(result, context, audioStream);
+    // Each direct parser first evaluates MOV/AAC eligibility and returns
+    // before its pathname opener. This retains its ineligible diagnostics.
+    applyMp3HeaderPresentationAuthority(result, path, context, audioStream);
     applyMp4Mp3SampleEditTablePresentationAuthority(
-        result, path, formatContext.get(), audioStream);
-    applyNutBoundedTailAuthority(result, path, formatContext.get(), audioStream);
+        result, path, context, audioStream);
+    applyNutBoundedTailAuthority(result, path, context, audioStream);
     applyOggOpusSequentialPresentationAuthority(
-        result, path, formatContext.get(), audioStream);
+        result, path, context, audioStream);
     applyMatroskaAacSequentialPresentationAuthority(
-        result, path, formatContext.get(), audioStream);
+        result, path, context, audioStream);
     applyAdtsAacSequentialPresentationAuthority(
-        result, path, formatContext.get(), audioStream);
+        result, path, context, audioStream);
     applyDolbySequentialPresentationAuthority(
-        result, path, formatContext.get(), audioStream);
-    applyFastFrameCountPolicies(result, path, audioStream, true);
+        result, path, context, audioStream);
+    if (forceTestPadding && audioStream && audioStream->codecpar)
+        audioStream->codecpar->initial_padding = 1;
+    applyFastFrameCountPolicies(result, source, audioStream, true);
+    if (source.isStable() && stableSession->inputError() < 0) {
+        const int failure = stableSession->inputError();
+        throw Input::ReaderInputError(
+            failure == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
+                                    : Input::ReaderInputFailure::InputFailed,
+            "stable probe failed after buffered read: " + ffErrorString(failure));
+    }
     finalizeFrameCountTrustPolicy(result, audioStream);
     result.mediaOpenAssessment =
         assessMediaOpen(result.document, result.totalPresentation, true);
     return result;
 }
+
+FastProbeResult runFastProbe(const Input::MediaInputSource& source) {
+    return runFastProbeImpl(source, false);
+}
+
+FastProbeResult runFastProbe(const std::string& path) {
+    return runFastProbe(Input::MediaInputSource::fromPath(path));
+}
+
+#ifdef AVEMEDIABRIDGE_TEST_ONLY
+FastProbeResult runFastProbeWithTestPadding(const Input::MediaInputSource& source) {
+    return runFastProbeImpl(source, true);
+}
+#endif
 
 bool writeFastProbeJson(
     const std::filesystem::path& outputPath,
@@ -1357,7 +1434,8 @@ bool estimateDecodedBytesForPreflight(
     estimateFastDurationAndFrames(estimate, formatContext, audioStream);
     // Loading authority is resolved by runFastProbe; disk preflight must not
     // repeat the full packet traversal only to refine its byte estimate.
-    applyFastFrameCountPolicies(estimate, path, audioStream, false);
+    applyFastFrameCountPolicies(
+        estimate, Input::MediaInputSource::fromPath(path), audioStream, false);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
     estimatedFrames = estimate.document.decodedSampleFrames;
     estimatedBytes = estimate.document.estimatedDecodedBytes;
