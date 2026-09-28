@@ -1,23 +1,30 @@
 #include "Input/MediaInputSource.hpp"
 #include "Input/ReaderInputError.hpp"
+#include "Input/DemuxSession.hpp"
 #include "Probe/MediaProbeService.hpp"
 #include "Probe/PacketScan.hpp"
 
 #include <cerrno>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 extern "C" {
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 }
 
 using namespace AveMediaBridge;
@@ -35,12 +42,71 @@ struct Checks {
     }
 };
 
+class ExpectedFfmpegLog final {
+public:
+    ExpectedFfmpegLog() {
+        active_ = this;
+        av_log_set_callback(&ExpectedFfmpegLog::capture);
+    }
+    ~ExpectedFfmpegLog() {
+        av_log_set_callback(av_log_default_callback);
+        active_ = nullptr;
+    }
+    ExpectedFfmpegLog(const ExpectedFfmpegLog&) = delete;
+    ExpectedFfmpegLog& operator=(const ExpectedFfmpegLog&) = delete;
+
+    void expectOnly(Checks& check, const std::string& label,
+        std::initializer_list<std::string_view> allowed) const {
+        std::istringstream lines(text_);
+        std::string line;
+        bool unexpected = overflow_;
+        while (std::getline(lines, line)) {
+            if (line.empty()) continue;
+            bool accepted = false;
+            for (const auto expected : allowed) {
+                if (line.find(expected) != std::string::npos) {
+                    accepted = true;
+                    break;
+                }
+            }
+            if (!accepted) {
+                unexpected = true;
+                std::cerr << "Unexpected FFmpeg diagnostic in " << label
+                    << ": " << line << '\n';
+            }
+        }
+        check.expect(!unexpected, label + " FFmpeg diagnostics are expected only");
+    }
+
+private:
+    static void capture(void*, int level, const char* format, va_list args) {
+        if (!active_ || level > av_log_get_level()) return;
+        char buffer[1024]{};
+        const int length = std::vsnprintf(buffer, sizeof buffer, format, args);
+        if (length < 0 || length >= static_cast<int>(sizeof buffer)) {
+            active_->overflow_ = true;
+            return;
+        }
+        try {
+            active_->text_.append(buffer, static_cast<std::size_t>(length));
+        } catch (...) {
+            active_->overflow_ = true;
+        }
+    }
+    static ExpectedFfmpegLog* active_;
+    std::string text_;
+    bool overflow_ = false;
+};
+
+ExpectedFfmpegLog* ExpectedFfmpegLog::active_ = nullptr;
+
 struct Bytes {
     std::vector<std::uint8_t> data;
     int reads = 0;
     int checks = 0;
     int failAtRead = -1;
     int cancelAtCheck = -1;
+    int cancelAfterReads = -1;
 };
 
 AMBI_Status __cdecl readAt(void* user, std::uint64_t offset, void* destination,
@@ -60,7 +126,8 @@ AMBI_Status __cdecl readAt(void* user, std::uint64_t offset, void* destination,
 AMBI_Status __cdecl checkCancel(void* user) {
     auto& bytes = *static_cast<Bytes*>(user);
     ++bytes.checks;
-    return bytes.cancelAtCheck >= 0 && bytes.checks >= bytes.cancelAtCheck
+    return ((bytes.cancelAtCheck >= 0 && bytes.checks >= bytes.cancelAtCheck) ||
+        (bytes.cancelAfterReads >= 0 && bytes.reads > bytes.cancelAfterReads))
         ? AMBI_CANCELED : AMBI_OK;
 }
 
@@ -182,6 +249,19 @@ void compareProbe(Checks& check, const Probe::FastProbeResult& reader,
         label + " admitted preflight does not packet scan");
 }
 
+void compareTotalPresentation(Checks& check,
+    const Probe::FastProbeResult& reader,
+    const Probe::FastProbeResult& legacy,
+    const std::string& label) {
+    const auto& a = reader.totalPresentation;
+    const auto& b = legacy.totalPresentation;
+    check.expect(a.frames == b.frames && a.trust == b.trust &&
+        a.source == b.source && a.domain == b.domain &&
+        a.sampleRate == b.sampleRate && a.exactRescale == b.exactRescale &&
+        a.conflict == b.conflict && a.validation == b.validation,
+        label + " complete total-presentation evidence");
+}
+
 void compareScans(Checks& check, const Input::MediaInputSource& source,
     const Input::SelectedAudioBinding& binding, const std::string& path,
     const std::string& label) {
@@ -289,6 +369,8 @@ int main(int argc, char** argv) {
             legacy.document.gaplessAudioPacketsScanned &&
             stable.document.skipSamplesStart == legacy.document.skipSamplesStart,
             "forced metadata routes stable conditional scans with parity");
+        compareCompleteJson(check, stable, legacy, "forced padding stable");
+        compareTotalPresentation(check, stable, legacy, "forced padding stable");
         Bytes noLabel = load(path);
         const auto emptyLabel = Probe::runFastProbeWithTestPadding(
             sourceFor(noLabel, ""));
@@ -297,6 +379,9 @@ int main(int argc, char** argv) {
             emptyLabel.document.gaplessAudioPacketsScanned ==
             legacy.document.gaplessAudioPacketsScanned,
             "empty display label cannot suppress conditional scan");
+        compareCompleteJson(check, emptyLabel, legacy, "forced padding empty label");
+        compareTotalPresentation(check, emptyLabel, legacy,
+            "forced padding empty label");
     }
     for (const auto& path : {
         generated / "reader_mp4_mp3_control.mp4",
@@ -319,12 +404,15 @@ int main(int argc, char** argv) {
         Bytes bytes = load(path);
         if (bytes.data.empty()) return 2;
         bool unsupported = false;
+        ExpectedFfmpegLog expectedLog;
         try {
             (void)Probe::runFastProbe(sourceFor(bytes));
         } catch (const Input::ReaderInputError& error) {
             unsupported = error.failure() == Input::ReaderInputFailure::Unsupported;
         }
         check.expect(unsupported, "stable route classifies non-MOV WAV as unsupported");
+        expectedLog.expectOnly(check, "non-MOV WAV rejection",
+            {"moov atom not found"});
     }
     {
         const auto path = generated / "reader_demux_aac.m4a";
@@ -333,27 +421,47 @@ int main(int argc, char** argv) {
         const auto binding = Probe::runFastProbe(sourceFor(clean)).stableBinding;
         check.expect(binding.has_value(), "large fixture gives selected receipt");
         if (binding) {
-            Bytes failed = load(path);
-            failed.failAtRead = 1;
-            bool inputFailed = false;
-            try {
-                (void)Probe::scanAudioPresentationEvidence(sourceFor(failed), *binding,
-                    {4 * 1024 * 1024, 3 * AV_TIME_BASE});
-            } catch (const Input::ReaderInputError& error) {
-                inputFailed = error.failure() == Input::ReaderInputFailure::InputFailed;
+            {
+                Bytes failed = load(path);
+                failed.failAtRead = 1;
+                bool inputFailed = false;
+                ExpectedFfmpegLog faultLog;
+                try {
+                    (void)Probe::scanAudioPresentationEvidence(sourceFor(failed), *binding,
+                        {4 * 1024 * 1024, 3 * AV_TIME_BASE});
+                } catch (const Input::ReaderInputError& error) {
+                    inputFailed = error.failure() == Input::ReaderInputFailure::InputFailed;
+                }
+                check.expect(inputFailed && failed.reads == 1,
+                    "stable scan callback failure remains fatal after buffered prefix");
+                faultLog.expectOnly(check, "callback fault",
+                    {"Packet corrupt", "moov atom not found"});
             }
-            check.expect(inputFailed && failed.reads == 1,
-                "stable scan callback failure remains fatal after buffered prefix");
-            Bytes canceled = load(path);
-            canceled.cancelAtCheck = 3;
-            bool stopped = false;
-            try {
-                (void)Probe::scanAudioPresentationEvidence(sourceFor(canceled), *binding,
-                    {4 * 1024 * 1024, 3 * AV_TIME_BASE});
-            } catch (const Input::ReaderInputError& error) {
-                stopped = error.failure() == Input::ReaderInputFailure::Canceled;
+            Bytes discovery = load(path);
+            std::unique_ptr<Input::DemuxSession> discoverySession;
+            const int discoveryOpen = Input::DemuxSession::open(sourceFor(discovery),
+                {true, 4 * 1024 * 1024, 3 * AV_TIME_BASE}, discoverySession);
+            const int discoveryInfo = discoveryOpen == 0 && discoverySession
+                ? avformat_find_stream_info(discoverySession->get(), nullptr) : -1;
+            check.expect(discoveryInfo == 0 && discoverySession &&
+                discoverySession->inputError() == 0 && discovery.reads > 0,
+                "phase calibration reaches stable stream discovery");
+            {
+                Bytes canceled = load(path);
+                canceled.cancelAfterReads = discovery.reads;
+                bool stopped = false;
+                ExpectedFfmpegLog cancelLog;
+                try {
+                    (void)Probe::scanAudioPresentationEvidence(sourceFor(canceled), *binding,
+                        {4 * 1024 * 1024, 3 * AV_TIME_BASE});
+                } catch (const Input::ReaderInputError& error) {
+                    stopped = error.failure() == Input::ReaderInputFailure::Canceled;
+                }
+                check.expect(stopped && canceled.reads > discovery.reads,
+                    "stable scan cancellation after stream discovery remains fatal");
+                cancelLog.expectOnly(check, "late cancellation",
+                    {"Packet corrupt"});
             }
-            check.expect(stopped, "stable scan cancellation remains fatal");
         }
     }
     std::cout << "checks=" << check.count << " failures=" << check.failures << '\n';

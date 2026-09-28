@@ -1371,6 +1371,14 @@ static FastProbeResult runFastProbeImpl(
     applyMp3HeaderPresentationAuthority(result, path, context, audioStream);
     applyMp4Mp3SampleEditTablePresentationAuthority(
         result, path, context, audioStream);
+    if (source.isStable() && path.empty() && audioStream &&
+        audioStream->codecpar && audioStream->codecpar->codec_id == AV_CODEC_ID_AAC &&
+        result.totalPresentation.trust != PresentationTotalTrust::SampleExact) {
+        // The label is optional. The selected AAC codec already makes this
+        // path-only MP3 helper ineligible before any file identity check.
+        result.document.mp4Mp3SampleTableReason = mp4Mp3SampleTableReasonName(
+            Mp4Mp3SampleTableReason::SelectedCodecNotMp3);
+    }
     applyNutBoundedTailAuthority(result, path, context, audioStream);
     applyOggOpusSequentialPresentationAuthority(
         result, path, context, audioStream);
