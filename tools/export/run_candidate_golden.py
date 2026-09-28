@@ -1,11 +1,12 @@
 """Run the pinned Contract 1.1.0 Golden suite with explicit candidate bindings.
 
-This adapter changes paths, not historical audio/marker predicates. Additional
-execution gates are reported separately and cannot convert a historical FAIL.
+This adapter rebinds paths and corrects reopen window selection, not historical
+audio/marker predicates. Additional execution gates cannot convert a historical FAIL.
 """
 import argparse
 import copy
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -177,6 +178,64 @@ def loaded_modules(bridge_dll):
     return result
 
 
+def select_reopen_viewports(pid, handles, describe, evidence):
+    def eligible(value, hwnd):
+        return (value is not None and value["hwnd"] == hwnd and value["pid"] == pid
+                and value["windowClass"] == "AveVoiceWaveformViewportShellWindow" and value["visible"] is True)
+
+    for hwnd in handles:
+        if not eligible(describe(hwnd), hwnd):
+            continue
+        # Enumeration is stale-able: recheck ownership, class and visibility at return.
+        current = describe(hwnd)
+        if eligible(current, hwnd):
+            evidence.append(current)
+            return [hwnd]
+    return []
+
+
+def describe_window(hwnd):
+    user = ctypes.WinDLL("user32")
+    user.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    user.GetWindowThreadProcessId.restype = ctypes.c_uint32
+    for name in ("GetClassNameW", "GetWindowTextW"):
+        function = getattr(user, name)
+        function.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        function.restype = ctypes.c_int
+    user.IsWindowVisible.argtypes, user.IsWindowVisible.restype = [ctypes.c_void_p], ctypes.c_int
+    first_pid, last_pid = ctypes.c_uint32(), ctypes.c_uint32()
+    first_thread = user.GetWindowThreadProcessId(hwnd, ctypes.byref(first_pid))
+    kind, title = ctypes.create_unicode_buffer(512), ctypes.create_unicode_buffer(512)
+    if not first_thread or not user.GetClassNameW(hwnd, kind, len(kind)):
+        return None
+    user.GetWindowTextW(hwnd, title, len(title))
+    visible = bool(user.IsWindowVisible(hwnd))
+    last_thread = user.GetWindowThreadProcessId(hwnd, ctypes.byref(last_pid))
+    if not last_thread or (first_thread, first_pid.value) != (last_thread, last_pid.value):
+        return None
+    return {"hwnd": hwnd, "pid": last_pid.value, "windowClass": kind.value, "title": title.value, "visible": visible}
+
+
+@contextmanager
+def owned_reopen_windows(module, evidence):
+    original = module.process_windows
+    module.process_windows = lambda pid: select_reopen_viewports(pid, original(pid), describe_window, evidence)
+    try:
+        # Scope only the inherited reopen helper. Its 30s discovery/60s exit waits stay unchanged.
+        # HWND validation and PostMessage cannot be atomic: an irreducible race remains after return.
+        yield
+    finally:
+        module.process_windows = original
+
+
+def candidate_metadata(historical, result, derived_sha, original_contract):
+    return {**result, "manifestKind": "derived-candidate", "derivedManifestSha256": derived_sha,
+            "originalContractReference": {"aggregateSha256": original_contract, "identity": "reference-only"},
+            "historicalPredicateStatus": historical.get("status", "NOT_RUN"),
+            "metadataPathsRelativeTo": "candidate-output-root",
+            "historicalMetadataRawFile": "golden/HISTORICAL_RUN_METADATA.raw.json"}
+
+
 def main():
     require(sys.version_info >= (3, 10), "frozen runner requires Python 3.10 or newer")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -223,7 +282,9 @@ def main():
                   "originalManifestSha256": MANIFEST_SHA, "derivedManifestSha256": digest(module.MANIFEST),
                   "originalContractHash": module.read_json(module.CONTRACT / "contract_hash.json")["aggregateSha256"],
                   "historicalRuntimePinsNotCandidateExpectations": original_runtime, "candidateRuntimePins": RUNTIME,
-                  "oracleChange": "Only two manifest HEAD values; runner path expressions only; additive execution gates",
+                  "oracleChange": "Frozen audio/case/marker predicates unchanged; derived manifest changes only two HEAD values",
+                  "stagedSourceChange": "Exact guarded build/DLL/EXE path expression replacements only",
+                  "reopenOrchestration": "Adapter filters inherited process_windows to rechecked owned-PID visible AveVoiceWaveformViewportShellWindow; discovery30s/exit60s and success predicates unchanged",
                   "childRuntimeLoadObservation": "NOT_OBSERVED; staged files pinned, not proof of child load", "builds": []}
     save(args.output / "provenance.json", provenance)
     # Only the adapter process environment is changed; child selectors cannot escape this owned run.
@@ -237,6 +298,19 @@ def main():
     before = reference_snapshot(module, original)
     save(args.output / "inputs_before.json", before)
     result = {"status": "RUNNING", "releaseQualified": False, "manualNativeAcceptance": "NOT_VERIFIED"}
+    historical_metadata = {}
+    candidate_metadata_path = args.output / "golden/RUN_METADATA.json"
+
+    def bound_write_json(path, value):
+        nonlocal historical_metadata
+        if path == candidate_metadata_path:
+            historical_metadata = copy.deepcopy(value)
+            save(args.output / "golden/HISTORICAL_RUN_METADATA.raw.json", value)
+            save(path, candidate_metadata(value, result, provenance["derivedManifestSha256"], provenance["originalContractHash"]))
+        else:
+            save(path, value)
+
+    module.write_json = bound_write_json
     executions = []
     binaries = {}
     try:
@@ -311,11 +385,14 @@ def main():
             child.mkdir(parents=True)
             old_temp, old_tmp = os.environ["TEMP"], os.environ["TMP"]
             os.environ.update(TEMP=str(child), TMP=str(child))
+            selected_windows = []
             try:
-                observation = original_reopen(exe, data_root, log_path)
+                with owned_reopen_windows(module, selected_windows):
+                    observation = original_reopen(exe, data_root, log_path)
             finally:
                 os.environ.update(TEMP=old_temp, TMP=old_tmp)
-            reopen_observations.append({"exe": str(exe), "dataRoot": str(data_root), "temp": str(child), **observation})
+            reopen_observations.append({"exe": str(exe), "dataRoot": str(data_root), "temp": str(child),
+                                        "selectedWindows": selected_windows, **observation})
             save(args.output / "reopen_executions.json", reopen_observations)
             return observation
 
@@ -359,6 +436,9 @@ def main():
         result["referenceInputsUnchanged"] = before == after
         if before != after:
             result.update(status="FAILED_GATE", error="reference input/sidecar mutation")
+        result = candidate_metadata(historical_metadata, result, provenance["derivedManifestSha256"], provenance["originalContractHash"])
+        if historical_metadata:
+            save(candidate_metadata_path, result)
         save(args.output / "candidate_result.json", result)
     print(json.dumps(result, sort_keys=True), flush=True)
     return 0 if result["status"] == "PASS_CURRENT_GOLDEN" else 1

@@ -152,5 +152,64 @@ class GoldenBindingControls(unittest.TestCase):
             self.reject(candidate.validate_synthetic, changed, executions, self.manifest)
 
 
+class ReopenWindowControls(unittest.TestCase):
+    """Synthetic Win32 boundary observations; the actual selector is exercised."""
+    def window(self, hwnd=10, pid=42, kind="AveVoiceWaveformViewportShellWindow", visible=True):
+        return {"hwnd": hwnd, "pid": pid, "windowClass": kind, "title": "AveVoice Waveform Viewport Test", "visible": visible}
+
+    def test_early_ime_and_unrelated_windows_are_not_close_targets(self):
+        windows = {10: self.window(kind="IME", visible=False), 11: self.window(11, kind="OtherWindow")}
+        evidence = []
+        self.assertEqual(candidate.select_reopen_viewports(42, [10, 11], windows.get, evidence), [])
+        self.assertEqual(evidence, [])
+
+    def test_later_visible_expected_viewport_is_selected(self):
+        evidence = []
+        windows = {10: self.window(kind="IME", visible=False)}
+        self.assertEqual(candidate.select_reopen_viewports(42, [10], windows.get, evidence), [])
+        windows[20] = self.window(20)
+        self.assertEqual(candidate.select_reopen_viewports(42, [10, 20], windows.get, evidence), [20])
+        self.assertEqual(evidence, [{"hwnd": 20, "pid": 42, "windowClass": "AveVoiceWaveformViewportShellWindow",
+                                     "title": "AveVoice Waveform Viewport Test", "visible": True}])
+
+    def test_wrong_pid_or_hidden_viewport_never_selected(self):
+        for value in (self.window(pid=99), self.window(visible=False)):
+            with self.subTest(value=value):
+                evidence = []
+                self.assertEqual(candidate.select_reopen_viewports(42, [10], lambda _: value, evidence), [])
+                self.assertEqual(evidence, [])
+
+    def test_no_viewport_has_no_close_any_window_fallback(self):
+        self.assertEqual(candidate.select_reopen_viewports(42, [], lambda _: None, []), [])
+        self.assertEqual(candidate.select_reopen_viewports(42, [10], lambda _: self.window(kind="MSCTFIME UI"), []), [])
+
+    def test_disappeared_or_reused_handle_is_rechecked_before_return(self):
+        for final in (None, self.window(pid=99), self.window(kind="OtherWindow"), self.window(visible=False)):
+            with self.subTest(final=final):
+                observations = iter([self.window(), final])
+                evidence = []
+                self.assertEqual(candidate.select_reopen_viewports(42, [10], lambda _: next(observations), evidence), [])
+                self.assertEqual(evidence, [])
+
+
+class CandidateMetadataControls(unittest.TestCase):
+    def test_historical_pass_cannot_hide_strict_reopen_failure_or_claim_original_identity(self):
+        historical = {"contractHash": "a" * 64, "contractVersion": "1.1.0", "status": "PASS"}
+        raw_before = copy.deepcopy(historical)
+        result = candidate.candidate_metadata(historical,
+                    {"status": "FAILED_GATE", "error": "reopen execution failed: GOLDEN-PCM-1", "releaseQualified": False}, "b" * 64, "a" * 64)
+        self.assertEqual(result["status"], "FAILED_GATE")
+        self.assertNotIn("contractHash", result)
+        self.assertEqual(result["manifestKind"], "derived-candidate")
+        self.assertEqual(result["derivedManifestSha256"], "b" * 64)
+        self.assertEqual(result["originalContractReference"], {"aggregateSha256": "a" * 64, "identity": "reference-only"})
+        self.assertEqual(result["historicalPredicateStatus"], "PASS")
+        self.assertEqual(historical, raw_before)
+
+    def test_historical_pass_remains_running_until_strict_verdict(self):
+        result = candidate.candidate_metadata({"status": "PASS"}, {"status": "RUNNING"}, "b" * 64, "a" * 64)
+        self.assertEqual(result["status"], "RUNNING")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
