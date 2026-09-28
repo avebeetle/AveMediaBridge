@@ -92,6 +92,8 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/PacketScan.cpp
     src/Probe/PresentationBudgetPolicy.cpp
     src/Probe/ProbeJsonWriter.cpp
+    src/Input/StableInputContract.cpp
+    src/Input/StableAvioInput.cpp
     src/Utils/JsonUtils.cpp
 )
 
