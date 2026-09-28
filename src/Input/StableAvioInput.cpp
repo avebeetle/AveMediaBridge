@@ -1,11 +1,13 @@
 #include "Input/StableAvioInput.hpp"
 
 #include "Input/StableInputContract.hpp"
+#include "Input/DemuxSession.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/mem.h>
+#include <libavutil/dict.h>
 }
 
 #include <algorithm>
@@ -60,10 +62,30 @@ StableAvioInput::~StableAvioInput() noexcept {
 }
 
 int StableAvioInput::open(const AVInputFormat* forcedFormat) noexcept {
+    return open(forcedFormat, {});
+}
+
+int StableAvioInput::checkCancel() noexcept {
+    if (terminalReadError_ < 0) return terminalReadError_;
+    const int canceled = cancelResult(source_);
+    if (canceled < 0) terminalReadError_ = canceled;
+    return canceled;
+}
+
+int StableAvioInput::interrupt(void* opaque) noexcept {
+    if (!opaque) return 1;
+    return static_cast<StableAvioInput*>(opaque)->checkCancel() < 0 ? 1 : 0;
+}
+
+int StableAvioInput::open(const AVInputFormat* forcedFormat,
+    DemuxOpenOptions options) noexcept {
     if (opened_) return AVERROR(EINVAL);
     opened_ = true;
     if (!forcedFormat || (forcedFormat->flags & AVFMT_NOFILE)) return AVERROR(EINVAL);
-    const int canceled = cancelResult(source_);
+    if (options.useProbeLimits &&
+        (options.probeSizeBytes <= 0 || options.analyzeDurationUs <= 0))
+        return AVERROR(EINVAL);
+    const int canceled = checkCancel();
     if (canceled < 0) return canceled;
 
     format_ = avformat_alloc_context();
@@ -71,8 +93,22 @@ int StableAvioInput::open(const AVInputFormat* forcedFormat) noexcept {
     format_->pb = io_;
     format_->flags |= AVFMT_FLAG_CUSTOM_IO;
     format_->io_open = &StableAvioInput::denySecondary;
+    format_->interrupt_callback = {&StableAvioInput::interrupt, this};
+    AVDictionary* dictionary = nullptr;
+    if (options.useProbeLimits) {
+        format_->probesize = options.probeSizeBytes;
+        format_->max_analyze_duration = options.analyzeDurationUs;
+        if (av_dict_set_int(&dictionary, "probesize", options.probeSizeBytes, 0) < 0 ||
+            av_dict_set_int(&dictionary, "analyzeduration", options.analyzeDurationUs, 0) < 0) {
+            av_dict_free(&dictionary);
+            return AVERROR(ENOMEM);
+        }
+    }
     // No URL is supplied. FFmpeg consumes only this custom AVIO context.
-    return avformat_open_input(&format_, nullptr, forcedFormat, nullptr);
+    const int result = avformat_open_input(&format_, nullptr, forcedFormat,
+        options.useProbeLimits ? &dictionary : nullptr);
+    av_dict_free(&dictionary);
+    return terminalReadError_ < 0 ? terminalReadError_ : result;
 }
 
 int StableAvioInput::readPacket(void* opaque, uint8_t* destination,
@@ -82,8 +118,8 @@ int StableAvioInput::readPacket(void* opaque, uint8_t* destination,
     if (input.terminalReadError_ < 0) return input.terminalReadError_;
     if (!destination || requested <= 0)
         return input.terminalReadError_ = AVERROR(EINVAL);
-    const int canceled = cancelResult(input.source_);
-    if (canceled < 0) return input.terminalReadError_ = canceled;
+    const int canceled = input.checkCancel();
+    if (canceled < 0) return canceled;
     if (input.cursor_ == static_cast<int64_t>(input.source_.byteSize)) return AVERROR_EOF;
 
     const uint32_t bounded = static_cast<uint32_t>(
@@ -93,6 +129,8 @@ int StableAvioInput::readPacket(void* opaque, uint8_t* destination,
         static_cast<uint64_t>(input.cursor_), destination, bounded, actual);
     if (status == AMBI_CANCELED)
         return input.terminalReadError_ = AVERROR_EXIT;
+    if (status == AMBI_INVALID_ARGUMENT)
+        return input.terminalReadError_ = AVERROR(EINVAL);
     if (status != AMBI_OK && status != AMBI_EOF)
         return input.terminalReadError_ = AVERROR(EIO);
     if (actual == 0) {
@@ -107,7 +145,7 @@ int64_t StableAvioInput::seekPacket(void* opaque, int64_t offset,
     int whence) noexcept {
     if (!opaque) return AVERROR(EINVAL);
     auto& input = *static_cast<StableAvioInput*>(opaque);
-    const int canceled = cancelResult(input.source_);
+    const int canceled = input.checkCancel();
     if (canceled < 0) return canceled;
     if (whence == AVSEEK_SIZE || whence == (AVSEEK_SIZE | AVSEEK_FORCE))
         return static_cast<int64_t>(input.source_.byteSize);

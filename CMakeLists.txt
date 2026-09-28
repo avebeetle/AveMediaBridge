@@ -94,6 +94,8 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/ProbeJsonWriter.cpp
     src/Input/StableInputContract.cpp
     src/Input/StableAvioInput.cpp
+    src/Input/MediaInputSource.cpp
+    src/Input/DemuxSession.cpp
     src/Utils/JsonUtils.cpp
 )
 
@@ -143,6 +145,7 @@ copy_ffmpeg_runtime_dlls(AveMediaBridgeLabApp)
 
 include(cmake/AveMediaBridgeExportTests.cmake)
 include(cmake/AveMediaBridgeStableInputTests.cmake)
+include(cmake/AveMediaBridgeReaderImportTests.cmake)
 
 add_executable(AveMediaBridgeAudioPresentationSliceTests
     tests/AudioPresentationSliceTests.cpp

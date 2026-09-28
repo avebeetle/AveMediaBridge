@@ -10,6 +10,7 @@ struct AVInputFormat;
 struct AVDictionary;
 
 namespace AveMediaBridge::Input {
+struct DemuxOpenOptions;
 // Copies the descriptor but borrows source.user. The caller must keep its
 // adapter/user context alive until all calls are joined and this object is
 // destroyed.
@@ -25,8 +26,10 @@ public:
     StableAvioInput& operator=(StableAvioInput&&) = delete;
 
     int open(const AVInputFormat* forcedFormat) noexcept;
+    int open(const AVInputFormat* forcedFormat, DemuxOpenOptions options) noexcept;
     AVIOContext* io() const noexcept { return io_; }
     AVFormatContext* format() const noexcept { return format_; }
+    int terminalError() const noexcept { return terminalReadError_; }
 
 private:
     explicit StableAvioInput(const AMBI_SourceV1& source) noexcept : source_(source) {}
@@ -34,6 +37,8 @@ private:
     static int64_t seekPacket(void* opaque, int64_t offset, int whence) noexcept;
     static int denySecondary(AVFormatContext*, AVIOContext**, const char*, int,
         AVDictionary**) noexcept;
+    static int interrupt(void* opaque) noexcept;
+    int checkCancel() noexcept;
 
     AMBI_SourceV1 source_{};
     AVIOContext* io_ = nullptr;
