@@ -178,6 +178,7 @@ def loaded_modules(bridge_dll):
 
 
 def main():
+    require(sys.version_info >= (3, 10), "frozen runner requires Python 3.10 or newer")
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("bridge-repo", "voice-repo", "bridge-build", "voice-build", "bridge-dll", "voice-exe", "runtime-root", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
