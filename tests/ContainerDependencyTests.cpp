@@ -1,6 +1,7 @@
 #include "AveMediaBridge/AveMediaBridgeContainerApi.h"
 #include "Probe/ContainerDependency.hpp"
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -172,19 +173,37 @@ int wmain(int argc,wchar_t** argv) {
     source.throwCancel=false;auto invalid=input;invalid.reserved[0]=1;CHECK(AveMediaBridge_ClassifyContainerV1(&invalid,nullptr,0,&n)==AMBR_INVALID_ARGUMENT);
     invalid=input;invalid.byteSize=UINT64_MAX;CHECK(AveMediaBridge_ClassifyContainerV1(&invalid,nullptr,0,&n)==AMBR_INVALID_ARGUMENT);
     CHECK(AveMediaBridge_ClassifyContainerV1(&input,nullptr,1,&n)==AMBR_INVALID_ARGUMENT);
-    if(argc==2)for(const auto& entry:std::filesystem::directory_iterator(argv[1])) {
-        if(entry.path().extension()!=L".mp4")continue;
-        std::ifstream f(entry.path(),std::ios::binary);Bytes b{std::istreambuf_iterator<char>(f),{}};
-        expect(entry.path().filename().string().c_str(),b,"singleFile");
-        expect("GeneratedSelectedExternal",mutation(b,"url ",4,0),"externalDependencies");
-        expect("GeneratedUnknownTable",mutation(b,"stts",0,0x78787878),"unknown");
-        expect("GeneratedInvalidOffset",mutation(b,"stco",12,0),"unknown");
-        if(entry.path().filename()==L"front.mp4"||entry.path().filename()==L"multiple.mp4")
-            expect("GeneratedUnselectedExternal",mutation(b,"url ",4,0,1),"externalDependencies");
-        if(entry.path().filename()==L"no-audio.mp4"){
-            Source video{b};auto inputVideo=video.descriptor();AMBR_PrepareOptionsV1 options{};options.structSize=sizeof(options);options.abiVersion=1;options.source=&inputVideo;options.displayLabel=L"generated no audio";
-            AMBR_PreparedInput* prepared=nullptr;CHECK(AveMediaBridge_ReaderPrepareV1(&options,&prepared)!=AMBR_OK);if(prepared)AveMediaBridge_ReaderDestroyV1(prepared);
+    if(argc==2) {
+        const std::filesystem::path fixtureRoot(argv[1]);
+        constexpr std::array required{L"front.mp4",L"tail.mp4",L"multiple.mp4",L"cover.mp4",L"no-audio.mp4"};
+        size_t successfulRealFixtures=0;
+        CHECK(std::filesystem::is_directory(fixtureRoot));
+        for(const auto* name:required) {
+            const auto path=fixtureRoot/name;
+            const bool present=std::filesystem::is_regular_file(path);
+            CHECK(present);
+            if(!present)continue;
+            std::ifstream f(path,std::ios::binary);
+            CHECK(f.is_open());
+            if(!f)continue;
+            Bytes b{std::istreambuf_iterator<char>(f),{}};
+            CHECK(!b.empty());
+            if(b.empty())continue;
+            const int failuresBefore=failures;
+            expect(path.filename().string().c_str(),b,"singleFile");
+            expect("GeneratedSelectedExternal",mutation(b,"url ",4,0),"externalDependencies");
+            expect("GeneratedUnknownTable",mutation(b,"stts",0,0x78787878),"unknown");
+            expect("GeneratedInvalidOffset",mutation(b,"stco",12,0),"unknown");
+            if(path.filename()==L"front.mp4"||path.filename()==L"multiple.mp4")
+                expect("GeneratedUnselectedExternal",mutation(b,"url ",4,0,1),"externalDependencies");
+            if(path.filename()==L"no-audio.mp4"){
+                Source video{b};auto inputVideo=video.descriptor();AMBR_PrepareOptionsV1 options{};options.structSize=sizeof(options);options.abiVersion=1;options.source=&inputVideo;options.displayLabel=L"generated no audio";
+                AMBR_PreparedInput* prepared=nullptr;CHECK(AveMediaBridge_ReaderPrepareV1(&options,&prepared)!=AMBR_OK);if(prepared)AveMediaBridge_ReaderDestroyV1(prepared);
+            }
+            if(failures==failuresBefore)++successfulRealFixtures;
         }
+        CHECK(successfulRealFixtures==required.size());
+        std::cout<<"successful_real_fixtures="<<successfulRealFixtures<<"/"<<required.size()<<'\n';
     }
     std::cout<<"checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;
 }
