@@ -2,6 +2,8 @@
 #include "AveMediaBridge/AveMediaBridgeReaderApi.h"
 #include <algorithm>
 #include <chrono>
+#include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -9,6 +11,8 @@
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <limits>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -86,6 +90,40 @@ struct Handle {
     AMBR_PreparedInput *p = nullptr;
     ~Handle() { AveMediaBridge_ReaderDestroyV1(p); }
 };
+struct PcmOracle {
+    std::vector<char> pcm;
+    uint64_t frames = 0;
+    int sampleRate = 0, channels = 0;
+    bool valid = false;
+};
+PcmOracle frozenPcm(const fs::path& session) {
+    PcmOracle result;
+    result.pcm = load(session / "original_f32.bin");
+    const auto bytes = load(session / "audio_info.json");
+    const std::string json(bytes.begin(), bytes.end());
+    auto number = [&](const char* name) -> uint64_t {
+        std::smatch match;
+        return std::regex_search(json, match, std::regex(std::string("\"") + name +
+                   "\"\\s*:\\s*([0-9]+)\\s*[,}]")) ? std::stoull(match[1]) : 0;
+    };
+    const auto rate = number("sampleRate"), channels = number("channels");
+    result.frames = number("frames");
+    if (!rate || rate > INT_MAX || !channels || channels > INT_MAX ||
+        result.frames > UINT64_MAX / channels / sizeof(float)) return result;
+    result.sampleRate = static_cast<int>(rate);
+    result.channels = static_cast<int>(channels);
+    result.valid = result.frames > 0 &&
+        result.pcm.size() == result.frames * channels * sizeof(float) &&
+        json.find("\"sampleFormat\": \"float32\"") != std::string::npos &&
+        json.find("\"sampleLayout\": \"interleaved\"") != std::string::npos;
+    return result;
+}
+
+// Local sensitivity switches: only callback copies / fresh candidate files are
+// mutated. Never modify a fixture, frozen oracle, or production DLL.
+enum class PublicationMutation { None, PcmPrefix, WaveformPosition };
+constexpr auto kPublicationMutation = PublicationMutation::None;
+
 struct Progress {
     fs::path dir;
     Bytes *bytes = nullptr;
@@ -97,13 +135,51 @@ struct Progress {
     std::vector<float> waveform;
     std::vector<double> squares, abs;
     std::vector<uint64_t> counts;
+    const PcmOracle* oracle = nullptr;
+    bool prefixValid = true, waveformShapeValid = true, waveformValuesValid = true;
+    uint64_t nextWaveFrame = 0, prefixChecks = 0, waveformBins = 0;
+    bool mutationApplied = false, mutationRestored = false;
 };
 void __stdcall progress(const AveMediaBridgeImportProgress *p, void *u) {
     auto &s = *static_cast<Progress *>(u);
     ++s.calls;
+    // A wrong byte is visible to the observer, then restored before import
+    // continues. Final-file parity alone cannot detect this mutation.
+    std::fstream mutation;
+    char saved = 0;
+    if (kPublicationMutation == PublicationMutation::PcmPrefix && s.oracle &&
+        !s.mutationApplied && p->bytesWritten > 0) {
+        mutation.open(s.dir / "original_f32.bin", std::ios::binary | std::ios::in | std::ios::out);
+        mutation.read(&saved, 1);
+        char wrong = static_cast<char>(static_cast<unsigned char>(saved) ^ 1u);
+        mutation.seekp(0); mutation.write(&wrong, 1); mutation.flush();
+        s.mutationApplied = static_cast<bool>(mutation);
+    }
     auto bytes = load(s.dir / "original_f32.bin");
-    s.valid = s.valid && p->framesWritten >= s.frames && bytes.size() >= p->bytesWritten &&
-              p->bytesWritten == p->framesWritten * p->channels * 4;
+    if (mutation.is_open()) {
+        mutation.seekp(0); mutation.write(&saved, 1); mutation.flush();
+        s.mutationRestored = static_cast<bool>(mutation);
+    }
+    const bool shape = p->structSize == sizeof(*p) && p->channels > 0 && p->sampleRate > 0 &&
+        std::isfinite(p->availableEndSec) && std::isfinite(p->progress01) &&
+        p->progress01 >= 0 && p->progress01 <= 1 && (p->flags & ~1u) == 0 &&
+        p->availableEndSec == double(p->framesWritten) / p->sampleRate &&
+        p->framesWritten <= UINT64_MAX / static_cast<uint64_t>(p->channels) / sizeof(float);
+    s.valid = s.valid && shape && p->framesWritten >= s.frames &&
+        bytes.size() >= p->bytesWritten &&
+        p->bytesWritten == p->framesWritten * static_cast<uint64_t>(p->channels) * sizeof(float);
+    if (s.oracle) {
+        const auto& reference = *s.oracle;
+        const bool bounds = shape && reference.valid && p->channels == reference.channels &&
+            p->sampleRate == reference.sampleRate && p->framesWritten <= reference.frames &&
+            p->bytesWritten <= reference.pcm.size() && p->bytesWritten <= bytes.size();
+        s.prefixValid = s.prefixValid && bounds;
+        if (bounds) {
+            ++s.prefixChecks;
+            s.prefixValid = s.prefixValid && std::equal(reference.pcm.begin(),
+                reference.pcm.begin() + static_cast<size_t>(p->bytesWritten), bytes.begin());
+        }
+    }
     s.frames = p->framesWritten;
     if (s.action == 1 && p->framesWritten > 0)
         s.stop = true;
@@ -126,6 +202,56 @@ int __stdcall cancelImport(void *u) {
 void __stdcall wave(const AveMediaBridgeWaveformChunk *p, void *u) {
     auto &s = *static_cast<Progress *>(u);
     if (s.action == 8) throw std::runtime_error("waveform callback exception");
+    auto observed = *p;
+    if (kPublicationMutation == PublicationMutation::WaveformPosition && s.oracle &&
+        observed.firstFrame != 0) {
+        observed.firstFrame = 0;
+        s.mutationApplied = true;
+    }
+    p = &observed;
+    const bool shape = p->structSize == sizeof(*p) && p->framesPerBin == 128 &&
+        p->binCount > 0 && p->valuesPerBin == 2 && p->sampleRate > 0 && p->channels > 0 &&
+        p->flags == AVEMEDIABRIDGE_WAVEFORM_CHUNK_FLAG_LONG_FORM_ENERGY &&
+        p->minMaxPairs && p->sumSquaresPerBin && p->sumAbsPerBin && p->frameCountPerBin;
+    s.waveformShapeValid = s.waveformShapeValid && shape;
+    if (!shape) return;
+    if (s.oracle) {
+        const auto& reference = *s.oracle;
+        const bool range = reference.valid && p->sampleRate == reference.sampleRate &&
+            p->channels == reference.channels && p->firstFrame == s.nextWaveFrame &&
+            p->firstFrame % 128 == 0 && p->firstFrame < reference.frames &&
+            p->binCount <= (reference.frames - p->firstFrame + 127) / 128;
+        s.waveformShapeValid = s.waveformShapeValid && range;
+        if (!range) return;
+        for (uint32_t bin = 0; bin < p->binCount; ++bin) {
+            const uint64_t first = p->firstFrame + uint64_t(bin) * 128;
+            const uint64_t count = (std::min)(uint64_t(128), reference.frames - first);
+            float low = (std::numeric_limits<float>::max)(), high = -low;
+            double squares = 0, absolute = 0;
+            for (uint64_t frame = first; frame < first + count; ++frame) {
+                double sum = 0;
+                for (int channel = 0; channel < reference.channels; ++channel) {
+                    float sample;
+                    const size_t offset = static_cast<size_t>(frame * reference.channels + channel) * sizeof(float);
+                    std::memcpy(&sample, reference.pcm.data() + offset, sizeof(sample));
+                    sum += std::isfinite(sample) ? sample : 0.0f;
+                }
+                const float mono = static_cast<float>(sum / reference.channels);
+                low = (std::min)(low, mono); high = (std::max)(high, mono);
+                squares += double(mono) * mono; absolute += std::abs(double(mono));
+            }
+            s.waveformShapeValid = s.waveformShapeValid && p->frameCountPerBin[bin] == count;
+            auto close = [](double actual, double expected) {
+                return std::isfinite(actual) && std::abs(actual - expected) <=
+                    1e-12 * (std::max)(1.0, std::abs(expected));
+            };
+            s.waveformValuesValid = s.waveformValuesValid &&
+                p->minMaxPairs[bin * 2] == low && p->minMaxPairs[bin * 2 + 1] == high &&
+                close(p->sumSquaresPerBin[bin], squares) && close(p->sumAbsPerBin[bin], absolute);
+            s.nextWaveFrame += count;
+            ++s.waveformBins;
+        }
+    }
     s.waveform.insert(s.waveform.end(), p->minMaxPairs,
                       p->minMaxPairs + p->binCount * p->valuesPerBin);
     if (p->sumSquaresPerBin)
@@ -134,6 +260,23 @@ void __stdcall wave(const AveMediaBridgeWaveformChunk *p, void *u) {
         s.abs.insert(s.abs.end(), p->sumAbsPerBin, p->sumAbsPerBin + p->binCount);
     if (p->frameCountPerBin)
         s.counts.insert(s.counts.end(), p->frameCountPerBin, p->frameCountPerBin + p->binCount);
+}
+void checkPublication(Checks& c, const Progress& p, bool success, const std::string& label) {
+    c.expect(p.valid, label + " progress format/math/monotonic readable range");
+    c.expect(p.prefixValid, label + " callback-time frozen PCM prefix");
+    c.expect(p.waveformShapeValid, label + " waveform shape and contiguous frame positions");
+    c.expect(p.waveformValuesValid, label + " waveform values from frozen PCM");
+    if (success) {
+        c.expect(p.oracle && p.oracle->valid && p.prefixChecks > 0 &&
+            p.frames == p.oracle->frames, label + " complete PCM publication");
+        c.expect(p.oracle && p.nextWaveFrame == p.oracle->frames &&
+            p.waveformBins == (p.oracle->frames + 127) / 128,
+            label + " complete waveform coverage including final partial bin");
+        if (kPublicationMutation == PublicationMutation::PcmPrefix)
+            c.expect(p.mutationApplied && p.mutationRestored, label + " PCM mutation applied/restored");
+    } else {
+        c.expect(p.calls == 0 && p.waveform.empty(), label + " failed input has no successful oracle/publication");
+    }
 }
 AMBR_ImportOptionsV1 options(const std::wstring &dir, Progress *p = nullptr) {
     AMBR_ImportOptionsV1 o{};
@@ -234,6 +377,12 @@ int main(int argc, char **argv) {
         c.expect(normalizedJson(pp) == normalizedJson(frozen / row.name / "probe.json"),
                  label + " frozen probe");
         Progress lp{legacy}, rp{reader};
+        PcmOracle reference;
+        if (row.result == 0) {
+            reference = frozenPcm(frozen / row.name / "session");
+            c.expect(reference.valid, label + " independent frozen PCM format and extent");
+            lp.oracle = rp.oracle = &reference;
+        }
         AveMediaBridgeImportOptions lo{};
         lo.structSize = sizeof lo;
         lo.inputPath = input.c_str();
@@ -244,6 +393,7 @@ int main(int argc, char **argv) {
         lo.userData = &lp;
         c.expect(AveMediaBridge_ImportAudioToSessionEx(&lo) == row.result,
                  label + " frozen terminal result");
+        checkPublication(c, lp, row.result == 0, label + " legacy");
         for (auto name : {"metadata.json", "audio_info.json", "original_f32.bin"})
             if (row.result == 0) {
                 c.expect(fs::exists(legacy / name) &&
@@ -290,7 +440,7 @@ int main(int argc, char **argv) {
                  label + " reader terminal result");
         c.expect(AveMediaBridge_ReaderImportV1(h.p, &o) == AMBR_WRONG_STATE,
                  label + " one attempt");
-        c.expect(lp.valid && rp.valid, label + " progress committed bytes readable");
+        checkPublication(c, rp, row.result == 0, label + " reader");
         c.expect(lp.waveform == rp.waveform && lp.squares == rp.squares && lp.abs == rp.abs &&
                      lp.counts == rp.counts,
                  label + " all waveform values");
