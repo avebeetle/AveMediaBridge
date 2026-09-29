@@ -5,11 +5,18 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace AveMediaBridge::Export {
 
 using Path = std::filesystem::path;
+
+// Internal writer-operation failure. No C++ exception type crosses the public C ABI.
+class WriterIoFailure final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 class IStreamingPcmWriter {
 public:

@@ -78,6 +78,9 @@ AMBE_Status StreamingExportJob::write(const float* samples, uint32_t frameCount)
         writer_->write(samples, frameCount);
         acceptedFrames_ += frameCount;
         return AMBE_OK;
+    } catch (const WriterIoFailure&) {
+        state_ = State::Failed;
+        return AMBE_IO_ERROR;
     } catch (...) {
         state_ = State::Failed;
         return AMBE_INTERNAL_ERROR;
@@ -102,6 +105,9 @@ AMBE_Status StreamingExportJob::finish(AMBE_ResultV1* result) noexcept {
         result->encodedFrames = encodedFrames;
         state_ = State::Finished;
         return AMBE_OK;
+    } catch (const WriterIoFailure&) {
+        state_ = State::Failed;
+        return AMBE_FINALIZE_ERROR;
     } catch (...) {
         state_ = State::Failed;
         return AMBE_INTERNAL_ERROR;

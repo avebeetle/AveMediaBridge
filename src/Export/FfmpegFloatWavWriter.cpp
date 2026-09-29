@@ -74,9 +74,13 @@ public:
         check(avcodec_send_frame(codec_, nullptr), "PCM encoder drain failed");
         drain();
         if (encoded_ != submitted_) throw std::runtime_error("PCM frame mismatch");
-        check(av_write_trailer(format_), "WAV trailer failed");
-        if (scratch_.failed() || scratch_.context()->error) throw std::runtime_error("WAV I/O failed");
-        scratch_.flushAndClose();
+        const int trailer=av_write_trailer(format_);
+        if (trailer<0 && (scratch_.failed() || scratch_.context()->error))
+            throw WriterIoFailure("WAV trailer I/O failed");
+        check(trailer, "WAV trailer failed");
+        if (scratch_.failed() || scratch_.context()->error) throw WriterIoFailure("WAV I/O failed");
+        try { scratch_.flushAndClose(); }
+        catch (const std::runtime_error&) { throw WriterIoFailure("WAV flush/close failed"); }
         finished_ = true;
         return encoded_;
     }
@@ -99,7 +103,12 @@ private:
                 encoded_ += static_cast<uint64_t>(packet->size) / (channels_ * sizeof(float));
                 av_packet_rescale_ts(packet, codec_->time_base, stream_->time_base);
                 packet->stream_index = stream_->index;
-                check(av_interleaved_write_frame(format_, packet), "WAV packet write failed");
+                const int written=av_interleaved_write_frame(format_, packet);
+                if (written<0 && (scratch_.failed() || scratch_.context()->error))
+                    throw WriterIoFailure("WAV packet I/O failed");
+                check(written, "WAV packet write failed");
+                if (scratch_.failed() || scratch_.context()->error)
+                    throw WriterIoFailure("WAV packet I/O failed");
                 av_packet_unref(packet);
             }
         } catch (...) { av_packet_free(&packet); throw; }

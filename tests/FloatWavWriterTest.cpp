@@ -123,12 +123,27 @@ int main() {
             AveMediaBridge::Export::StreamingExportJob job(spec, std::move(writer));
             const auto status = job.write(samples.data(), 131072);
             AMBE_ResultV1 result{}; result.structSize=sizeof(result); result.abiVersion=AMBE_ABI_VERSION;
-            expect(status != AMBE_OK && job.state() == AveMediaBridge::Export::StreamingExportJob::State::Failed,
-                "actual scratch write fault reaches failed export job");
+            expect(status == AMBE_IO_ERROR && job.state() == AveMediaBridge::Export::StreamingExportJob::State::Failed,
+                "actual scratch write fault retains structured IO status");
             expect(job.finish(&result) != AMBE_OK && result.encodedFrames == 0,
                 "failed real writer cannot return successful finalized frames");
             expect(job.abort() == AMBE_OK && fs::remove(path), "abort releases actual scratch for owner cleanup");
         }
+    }
+    {
+        const auto path = root / L"flush-job.scratch";
+        { std::ofstream scratch(path, std::ios::binary); }
+        const auto spec = input(48000, 1, 5);
+        const float samples[]{0.0f, -0.0f, 0.25f, -0.5f, 1.0f};
+        auto writer = AveMediaBridge::Export::makeFloatWavWriter(path, spec, false,
+            AveMediaBridge::Export::ExportScratchIo::Fault::Flush);
+        AveMediaBridge::Export::StreamingExportJob job(spec, std::move(writer));
+        AMBE_ResultV1 result{}; result.structSize=sizeof(result); result.abiVersion=AMBE_ABI_VERSION;
+        expect(job.write(samples, 5) == AMBE_OK, "flush fault accepts exact PCM before finalization");
+        expect(job.finish(&result) == AMBE_FINALIZE_ERROR &&
+            job.state() == AveMediaBridge::Export::StreamingExportJob::State::Failed && result.encodedFrames == 0,
+            "actual scratch flush fault retains structured Finalize status and no successful result");
+        expect(job.abort() == AMBE_OK && fs::remove(path), "abort releases failed finalization scratch");
     }
     fs::remove_all(root); return failures ? 1 : 0;
 }
