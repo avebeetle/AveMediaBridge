@@ -34,7 +34,23 @@ $recipes = @(
         '-map', '0:a:0', '-c:a', 'alac', '-f', 'ipod') },
     @{ Name = 'reader_mp4_no_audio.mp4'; Label = 'no-audio'; Args = @(
         '-f', 'lavfi', '-i', 'color=c=black:s=16x16:r=1:d=2',
-        '-an', '-c:v', 'mpeg4', '-f', 'mp4') }
+        '-an', '-c:v', 'mpeg4', '-f', 'mp4') },
+    @{ Name = 'reader_cover_only_aac.mp4'; Label = 'cover-only'; Args = @(
+        '-f', 'lavfi', '-i', 'sine=frequency=719:sample_rate=48000:duration=2',
+        '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=1:d=1',
+        '-map', '0:a:0', '-map', '1:v:0', '-c:a', 'aac', '-b:a', '128k',
+        '-c:v', 'mjpeg', '-frames:v', '1', '-disposition:v:0', 'attached_pic', '-f', 'mp4') },
+    @{ Name = 'reader_single_video_aac.mp4'; Label = 'single-video'; Args = @(
+        '-f', 'lavfi', '-i', 'sine=frequency=719:sample_rate=48000:duration=2',
+        '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=1:d=2',
+        '-map', '0:a:0', '-map', '1:v:0', '-c:a', 'aac', '-b:a', '128k',
+        '-c:v', 'mpeg4', '-f', 'mp4') },
+    @{ Name = 'reader_two_video_aac.mp4'; Label = 'two-video'; Args = @(
+        '-f', 'lavfi', '-i', 'sine=frequency=719:sample_rate=48000:duration=2',
+        '-f', 'lavfi', '-i', 'color=c=red:s=16x16:r=1:d=2',
+        '-f', 'lavfi', '-i', 'color=c=blue:s=16x16:r=1:d=2',
+        '-map', '0:a:0', '-map', '1:v:0', '-map', '2:v:0', '-c:a', 'aac', '-b:a', '128k',
+        '-c:v', 'mpeg4', '-f', 'mp4') }
 )
 $destinations = @($recipes | ForEach-Object { Join-Path $outputRoot $_.Name })
 foreach ($destination in $destinations) {
@@ -95,7 +111,7 @@ $fixture = $destinations[0]
 [pscustomobject]@{
     fixturePath = $fixture
     fixtureSha256 = (Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
-    generatedFixtures = $destinations[1..6]
+    generatedFixtures = $destinations[1..($destinations.Count - 1)]
     generatorPath = $PSCommandPath
     generatorSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
     ffmpegPath = $ffmpeg

@@ -1,5 +1,6 @@
 #include "AveMediaBridge/AveMediaBridgeApi.hpp"
 #include "AveMediaBridge/AveMediaBridgeReaderApi.h"
+#include "AveMediaBridge/AveMediaBridgeMediaFactsApi.h"
 #include "ReaderImportHandle.hpp"
 #include "../Input/DemuxSession.hpp"
 #include "../Input/StableInputContract.hpp"
@@ -2547,6 +2548,8 @@ int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options,
         handle->probe = Probe::runFastProbe(handle->source);
         if (!handle->probe.stableBinding)
             throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported, "reader supports selected MOV/AAC only");
+        if (handle->probe.readerMediaFacts)
+            handle->mediaFactsJson = Probe::encodeReaderMediaFacts(*handle->probe.readerMediaFacts);
         *out = handle.release();
         clearLastError(); return AMBR_OK;
     } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
@@ -2617,3 +2620,28 @@ int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput* handle, const AMBR
     catch (...) { setLastErrorText("unexpected exception importing reader input"); return AMBR_INTERNAL_ERROR; }
 }
 void __cdecl AveMediaBridge_ReaderDestroyV1(AMBR_PreparedInput* handle) { delete handle; }
+int __cdecl AveMediaBridge_ReaderGetMediaFactsV1(AMBR_PreparedInput* handle, char* utf8,
+    uint32_t capacity, uint32_t* requiredBytes) {
+    try {
+        if (!handle || !requiredBytes || (!utf8 && capacity != 0))
+            return invalidReaderArgument("reader media facts arguments are invalid");
+        *requiredBytes = 0;
+        if (handle->mediaFactsJson.empty() ||
+            handle->mediaFactsJson.size() >= AMBM_MAX_JSON_BYTES) {
+            setLastErrorText("reader media facts unavailable or exceed 64 KiB");
+            return AMBR_UNSUPPORTED;
+        }
+        const auto required = static_cast<uint32_t>(handle->mediaFactsJson.size() + 1);
+        *requiredBytes = required;
+        if (!utf8 || capacity < required) {
+            setLastErrorText("reader media facts buffer too small");
+            return AMBM_BUFFER_TOO_SMALL;
+        }
+        std::memcpy(utf8, handle->mediaFactsJson.c_str(), required);
+        clearLastError();
+        return AMBR_OK;
+    } catch (...) {
+        setLastErrorText("unexpected exception reading reader media facts");
+        return AMBR_INTERNAL_ERROR;
+    }
+}

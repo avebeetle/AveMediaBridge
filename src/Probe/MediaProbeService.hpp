@@ -10,6 +10,7 @@
 #include "NutBoundedTailAuthority.hpp"
 #include "OggOpusSequentialPresentation.hpp"
 #include "ProbeJsonWriter.hpp"
+#include "ReaderMediaFacts.hpp"
 #include "../Input/SelectedAudioBinding.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
@@ -33,6 +34,7 @@ struct FastProbeResult {
     DolbySequentialPresentationResult dolbySequentialPresentation;
     bool streamInfoFound = false;
     std::optional<Input::SelectedAudioBinding> stableBinding;
+    std::optional<ReaderMediaFacts> readerMediaFacts;
 };
 
 std::string rationalToString(AVRational value);

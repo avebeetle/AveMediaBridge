@@ -1360,6 +1360,7 @@ static FastProbeResult runFastProbeImpl(
         }
         result.stableBinding =
             Input::bindSelectedAudio(source, context, audioStreamIndex);
+        result.readerMediaFacts = captureReaderMediaFacts(context, *result.stableBinding);
     }
     if (!decoder && audioStream && audioStream->codecpar) {
         decoder = avcodec_find_decoder(audioStream->codecpar->codec_id);

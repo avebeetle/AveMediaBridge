@@ -6,6 +6,37 @@ copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderImportAbiTests)
 add_test(NAME AveMediaBridgeTests.reader_import_abi COMMAND AveMediaBridgeReaderImportAbiTests)
 set_tests_properties(AveMediaBridgeTests.reader_import_abi PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
 
+add_executable(AveMediaBridgeReaderMediaFactsTests
+    tests/ReaderMediaFactsTests.cpp tests/ReaderMediaFactsAbiC.c
+    src/Probe/ReaderMediaFacts.cpp src/Utils/JsonUtils.cpp)
+target_include_directories(AveMediaBridgeReaderMediaFactsTests PRIVATE
+    "${AVEMEDIABRIDGE_ROOT}/include" "${AVEMEDIABRIDGE_ROOT}/src" "${FFMPEG_INCLUDE_DIR}")
+target_link_libraries(AveMediaBridgeReaderMediaFactsTests PRIVATE AveMediaBridge
+    "${FFMPEG_LIB_DIR}/avformat.lib" "${FFMPEG_LIB_DIR}/avcodec.lib" "${FFMPEG_LIB_DIR}/avutil.lib")
+set_property(TARGET AveMediaBridgeReaderMediaFactsTests PROPERTY C_STANDARD 11)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderMediaFactsTests)
+add_test(NAME AveMediaBridgeTests.reader_media_facts COMMAND AveMediaBridgeReaderMediaFactsTests)
+set(AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/reader-facts-data" CACHE PATH
+    "Isolated data root for reader media facts tests")
+file(MAKE_DIRECTORY "${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT}")
+set_tests_properties(AveMediaBridgeTests.reader_media_facts PROPERTIES RUN_SERIAL TRUE TIMEOUT 90
+    ENVIRONMENT "AVEVOICE_DATA_ROOT=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT};TEMP=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT};TMP=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT}")
+set(AVEMEDIABRIDGE_READER_FACTS_FIXTURE_ROOT "" CACHE PATH
+    "Explicit generated cover/single/two-video fixture root")
+if(AVEMEDIABRIDGE_READER_FACTS_FIXTURE_ROOT)
+    foreach(fixture IN ITEMS reader_cover_only_aac.mp4 reader_single_video_aac.mp4
+            reader_two_video_aac.mp4)
+        if(NOT EXISTS "${AVEMEDIABRIDGE_READER_FACTS_FIXTURE_ROOT}/${fixture}")
+            message(FATAL_ERROR "Missing media facts fixture: ${fixture}")
+        endif()
+    endforeach()
+    add_test(NAME AveMediaBridgeTests.reader_media_facts_real
+        COMMAND AveMediaBridgeReaderMediaFactsTests "${AVEMEDIABRIDGE_READER_FACTS_FIXTURE_ROOT}")
+    set_tests_properties(AveMediaBridgeTests.reader_media_facts_real PROPERTIES
+        RUN_SERIAL TRUE TIMEOUT 180
+        ENVIRONMENT "AVEVOICE_DATA_ROOT=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT};TEMP=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT};TMP=${AVEMEDIABRIDGE_READER_FACTS_DATA_ROOT}")
+endif()
+
 set(AVEMEDIABRIDGE_READER_FIXTURE_ROOT "" CACHE PATH
     "Existing absolute directory of generated reader MP4/AAC fixtures")
 set(AVEMEDIABRIDGE_READER_LAB_ROOT "" CACHE PATH

@@ -85,6 +85,7 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/MatroskaAacSequentialPresentation.cpp
     src/Probe/MediaOpenValidator.cpp
     src/Probe/MediaProbeService.cpp
+    src/Probe/ReaderMediaFacts.cpp
     src/Probe/Mp4Mp3SampleEditTablePresentation.cpp
     src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
