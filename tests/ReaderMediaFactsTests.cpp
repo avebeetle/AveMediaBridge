@@ -158,6 +158,40 @@ int main(int argc, char** argv) {
             timedImageCodec.timedVideoCount == 1 && timedImageCodec.videoStreamIndex == 1 &&
             timedImageCodec.videoTrackId == 7 && timedImageCodec.videoCodecId == AV_CODEC_ID_JPEG2000,
             "TimedJpeg2000StreamRemainsVideo");
+        struct ImageCodecCase { AVCodecID id; const char* name; };
+        const ImageCodecCase imageCodecsWithoutMime[] = {
+            {AV_CODEC_ID_PPM, "ppm"}, {AV_CODEC_ID_PBM, "pbm"},
+            {AV_CODEC_ID_PGM, "pgm"}, {AV_CODEC_ID_PGMYUV, "pgmyuv"},
+            {AV_CODEC_ID_PFM, "pfm"}, {AV_CODEC_ID_PHM, "phm"},
+            {AV_CODEC_ID_LJPEG, "ljpeg"}, {AV_CODEC_ID_JPEGLS, "jpegls"},
+            {AV_CODEC_ID_ALIAS_PIX, "alias_pix"}, {AV_CODEC_ID_DDS, "dds"},
+            {AV_CODEC_ID_TARGA, "targa"}, {AV_CODEC_ID_SGI, "sgi"},
+            {AV_CODEC_ID_PTX, "ptx"}, {AV_CODEC_ID_PHOTOCD, "photocd"},
+            {AV_CODEC_ID_QDRAW, "qdraw"}, {AV_CODEC_ID_PICTOR, "pictor"},
+            {AV_CODEC_ID_SUNRAST, "sunrast"}, {AV_CODEC_ID_DPX, "dpx"},
+            {AV_CODEC_ID_EXR, "exr"}, {AV_CODEC_ID_XFACE, "xface"},
+            {AV_CODEC_ID_GEM, "gem"}, {AV_CODEC_ID_VBN, "vbn"},
+            {AV_CODEC_ID_QOI, "qoi"}, {AV_CODEC_ID_RADIANCE_HDR, "radiance_hdr"},
+            {AV_CODEC_ID_WBMP, "wbmp"}, {AV_CODEC_ID_TXD, "txd"},
+            {AV_CODEC_ID_BRENDER_PIX, "brender_pix"}, {AV_CODEC_ID_PSD, "psd"},
+            {AV_CODEC_ID_FITS, "fits"},
+        };
+        for (const auto& imageCodec : imageCodecsWithoutMime) {
+            jpeg2000->codecpar->codec_id = imageCodec.id;
+            jpeg2000->duration = AV_NOPTS_VALUE;
+            jpeg2000->avg_frame_rate = {0, 1};
+            jpeg2000->r_frame_rate = {0, 1};
+            const auto untimed = captureReaderMediaFacts(imageContext, binding);
+            if (untimed.videoClassification != "none" || untimed.timedVideoCount != 0)
+                throw std::runtime_error(std::string("UntimedStillImageNotIgnored: ") + imageCodec.name);
+            jpeg2000->duration = 1000;
+            jpeg2000->avg_frame_rate = {1, 1};
+            const auto timed = captureReaderMediaFacts(imageContext, binding);
+            if (timed.videoClassification != "singleTimed" || timed.timedVideoCount != 1 ||
+                timed.videoStreamIndex != 1 || timed.videoTrackId != 7 ||
+                timed.videoCodecId != imageCodec.id)
+                throw std::runtime_error(std::string("TimedImageCodecNotVideo: ") + imageCodec.name);
+        }
         jpeg2000->codecpar->codec_id = AV_CODEC_ID_H264;
         jpeg2000->duration = AV_NOPTS_VALUE;
         jpeg2000->avg_frame_rate = {0, 1};
@@ -179,6 +213,14 @@ int main(int argc, char** argv) {
         check(av1WithoutTiming.videoClassification == "unknown" &&
             av1WithoutTiming.timedVideoCount == 0,
             "AmbiguousAv1WithoutTimingRemainsUnknown");
+        for (const auto& videoCodec : std::array<ImageCodecCase, 2>{
+                 ImageCodecCase{AV_CODEC_ID_HEVC, "hevc"},
+                 ImageCodecCase{AV_CODEC_ID_RAWVIDEO, "rawvideo"}}) {
+            jpeg2000->codecpar->codec_id = videoCodec.id;
+            const auto unknownVideo = captureReaderMediaFacts(imageContext, binding);
+            if (unknownVideo.videoClassification != "unknown" || unknownVideo.timedVideoCount != 0)
+                throw std::runtime_error(std::string("UntimedGeneralVideoNotUnknown: ") + videoCodec.name);
+        }
         avformat_free_context(imageContext);
         std::uint32_t required = 0;
         check(AveMediaBridge_ReaderGetMediaFactsV1(nullptr, nullptr, 0, &required) == AMBR_INVALID_ARGUMENT,

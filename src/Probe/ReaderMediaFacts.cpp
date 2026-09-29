@@ -16,6 +16,21 @@ bool isStillImage(AVCodecID codec) {
     case AV_CODEC_ID_MJPEG: case AV_CODEC_ID_PNG: case AV_CODEC_ID_BMP:
     case AV_CODEC_ID_GIF: case AV_CODEC_ID_TIFF: case AV_CODEC_ID_WEBP:
         return true;
+    // Dedicated still-image formats in FFmpeg 7.1's image2 map or codec
+    // descriptors which lack image/ MIME metadata. Do not use INTRA_ONLY:
+    // that also describes ordinary video codecs and raw video.
+    case AV_CODEC_ID_PPM: case AV_CODEC_ID_PBM: case AV_CODEC_ID_PGM:
+    case AV_CODEC_ID_PGMYUV: case AV_CODEC_ID_PFM: case AV_CODEC_ID_PHM:
+    case AV_CODEC_ID_LJPEG: case AV_CODEC_ID_JPEGLS:
+    case AV_CODEC_ID_ALIAS_PIX: case AV_CODEC_ID_DDS: case AV_CODEC_ID_TARGA:
+    case AV_CODEC_ID_SGI: case AV_CODEC_ID_PTX: case AV_CODEC_ID_PHOTOCD:
+    case AV_CODEC_ID_QDRAW: case AV_CODEC_ID_PICTOR: case AV_CODEC_ID_SUNRAST:
+    case AV_CODEC_ID_DPX: case AV_CODEC_ID_EXR: case AV_CODEC_ID_XFACE:
+    case AV_CODEC_ID_GEM: case AV_CODEC_ID_VBN: case AV_CODEC_ID_QOI:
+    case AV_CODEC_ID_RADIANCE_HDR: case AV_CODEC_ID_WBMP:
+    case AV_CODEC_ID_TXD: case AV_CODEC_ID_BRENDER_PIX:
+    case AV_CODEC_ID_PSD: case AV_CODEC_ID_FITS:
+        return true;
     default: return false;
     }
 }
