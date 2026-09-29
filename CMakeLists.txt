@@ -70,6 +70,9 @@ target_link_libraries(AveMediaBridgeCore
 )
 
 set(AVEMEDIABRIDGE_DLL_SOURCES
+    src/Dll/ContainerProbeExports.cpp
+    src/Probe/ContainerDependency.cpp
+    src/Probe/MovSingleFilePolicy.cpp
     src/Dll/AveMediaBridgeDll.cpp
     src/Dll/AveMediaBridgeExportDll.cpp
     src/Export/StreamingExportJob.cpp

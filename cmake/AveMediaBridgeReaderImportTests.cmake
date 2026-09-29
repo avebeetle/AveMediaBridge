@@ -1,3 +1,22 @@
+add_executable(AveMediaBridgeContainerDependencyTests
+    tests/ContainerDependencyTests.cpp tests/ContainerDependencyAbiC.c
+    src/Probe/ContainerDependency.cpp src/Probe/MovSingleFilePolicy.cpp src/Input/StableInputContract.cpp)
+target_include_directories(AveMediaBridgeContainerDependencyTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include" "${AVEMEDIABRIDGE_ROOT}/src")
+target_link_libraries(AveMediaBridgeContainerDependencyTests PRIVATE AveMediaBridge bcrypt)
+set_property(TARGET AveMediaBridgeContainerDependencyTests PROPERTY C_STANDARD 11)
+copy_ffmpeg_runtime_dlls(AveMediaBridgeContainerDependencyTests)
+set(AVEMEDIABRIDGE_CONTAINER_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/p1b" CACHE PATH "Isolated P1 test root")
+file(MAKE_DIRECTORY "${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT}")
+add_test(NAME AveMediaBridgeTests.container_dependency COMMAND AveMediaBridgeContainerDependencyTests)
+set_tests_properties(AveMediaBridgeTests.container_dependency PROPERTIES RUN_SERIAL TRUE TIMEOUT 90
+    ENVIRONMENT "AVEVOICE_DATA_ROOT=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT};TEMP=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT};TMP=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT}")
+set(AVEMEDIABRIDGE_CONTAINER_FIXTURE_ROOT "" CACHE PATH "Generated P1 H264/AAC fixtures")
+if(AVEMEDIABRIDGE_CONTAINER_FIXTURE_ROOT)
+    add_test(NAME AveMediaBridgeTests.container_dependency_real COMMAND AveMediaBridgeContainerDependencyTests "${AVEMEDIABRIDGE_CONTAINER_FIXTURE_ROOT}")
+    set_tests_properties(AveMediaBridgeTests.container_dependency_real PROPERTIES RUN_SERIAL TRUE TIMEOUT 180
+        ENVIRONMENT "AVEVOICE_DATA_ROOT=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT};TEMP=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT};TMP=${AVEMEDIABRIDGE_CONTAINER_DATA_ROOT}")
+endif()
+
 add_executable(AveMediaBridgeReaderImportAbiTests tests/ReaderImportAbiTests.cpp tests/ReaderImportAbiC.c)
 target_include_directories(AveMediaBridgeReaderImportAbiTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")
 target_link_libraries(AveMediaBridgeReaderImportAbiTests PRIVATE AveMediaBridge)
