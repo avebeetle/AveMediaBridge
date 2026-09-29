@@ -2,10 +2,16 @@
 #include "../Utils/JsonUtils.hpp"
 #include <algorithm>
 #include <limits>
+#include <string_view>
 
 namespace AveMediaBridge::Probe {
 namespace {
 bool isStillImage(AVCodecID codec) {
+    const AVCodecDescriptor* descriptor = avcodec_descriptor_get(codec);
+    if (descriptor && descriptor->mime_types) {
+        for (const char* const* mime = descriptor->mime_types; *mime; ++mime)
+            if (std::string_view(*mime).substr(0, 6) == "image/") return true;
+    }
     switch (codec) {
     case AV_CODEC_ID_MJPEG: case AV_CODEC_ID_PNG: case AV_CODEC_ID_BMP:
     case AV_CODEC_ID_GIF: case AV_CODEC_ID_TIFF: case AV_CODEC_ID_WEBP:

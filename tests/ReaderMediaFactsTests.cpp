@@ -136,6 +136,50 @@ int main(int argc, char** argv) {
         auto unsupported = captureReaderMediaFacts(ctx, binding);
         check(unsupported.videoClassification == "unknown", "UnsupportedVideoCodec");
         avformat_free_context(ctx);
+        auto* imageContext = avformat_alloc_context();
+        check(imageContext != nullptr, "image context allocation");
+        stream(imageContext, AVMEDIA_TYPE_AUDIO, AV_CODEC_ID_AAC, 0, 1, 1000);
+        auto* jpeg2000 = stream(imageContext, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_JPEG2000,
+            0, 7, AV_NOPTS_VALUE);
+        jpeg2000->avg_frame_rate = {0, 1};
+        jpeg2000->r_frame_rate = {0, 1};
+        const auto* jpeg2000Descriptor = avcodec_descriptor_get(AV_CODEC_ID_JPEG2000);
+        check(jpeg2000Descriptor != nullptr, "installed JPEG2000 codec descriptor");
+        std::cout << "JPEG2000 descriptor=" << jpeg2000Descriptor->name << " mime=" <<
+            (jpeg2000Descriptor->mime_types && jpeg2000Descriptor->mime_types[0]
+                ? jpeg2000Descriptor->mime_types[0] : "<none>") << '\n';
+        const auto image = captureReaderMediaFacts(imageContext, binding);
+        check(image.videoClassification == "none" && image.timedVideoCount == 0,
+            "NonAttachedJpeg2000StillImageIsNotTimedVideo");
+        jpeg2000->duration = 1000;
+        jpeg2000->avg_frame_rate = {1, 1};
+        const auto timedImageCodec = captureReaderMediaFacts(imageContext, binding);
+        check(timedImageCodec.videoClassification == "singleTimed" &&
+            timedImageCodec.timedVideoCount == 1 && timedImageCodec.videoStreamIndex == 1 &&
+            timedImageCodec.videoTrackId == 7 && timedImageCodec.videoCodecId == AV_CODEC_ID_JPEG2000,
+            "TimedJpeg2000StreamRemainsVideo");
+        jpeg2000->codecpar->codec_id = AV_CODEC_ID_H264;
+        jpeg2000->duration = AV_NOPTS_VALUE;
+        jpeg2000->avg_frame_rate = {0, 1};
+        const auto unknownTiming = captureReaderMediaFacts(imageContext, binding);
+        check(unknownTiming.videoClassification == "unknown" &&
+            unknownTiming.timedVideoCount == 0, "UnrecognizedUntimedVideoRemainsUnknown");
+        jpeg2000->codecpar->codec_id = AV_CODEC_ID_PRORES;
+        const auto intraVideoWithoutTiming = captureReaderMediaFacts(imageContext, binding);
+        check(intraVideoWithoutTiming.videoClassification == "unknown" &&
+            intraVideoWithoutTiming.timedVideoCount == 0,
+            "IntraOnlyVideoWithoutTimingRemainsUnknown");
+        jpeg2000->codecpar->codec_id = AV_CODEC_ID_AV1;
+        const auto* av1Descriptor = avcodec_descriptor_get(AV_CODEC_ID_AV1);
+        check(av1Descriptor != nullptr, "installed AV1 codec descriptor");
+        std::cout << "AV1 descriptor=" << av1Descriptor->name << " mime=" <<
+            (av1Descriptor->mime_types && av1Descriptor->mime_types[0]
+                ? av1Descriptor->mime_types[0] : "<none>") << '\n';
+        const auto av1WithoutTiming = captureReaderMediaFacts(imageContext, binding);
+        check(av1WithoutTiming.videoClassification == "unknown" &&
+            av1WithoutTiming.timedVideoCount == 0,
+            "AmbiguousAv1WithoutTimingRemainsUnknown");
+        avformat_free_context(imageContext);
         std::uint32_t required = 0;
         check(AveMediaBridge_ReaderGetMediaFactsV1(nullptr, nullptr, 0, &required) == AMBR_INVALID_ARGUMENT,
             "null handle refused");
