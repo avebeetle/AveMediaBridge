@@ -23,7 +23,7 @@ public:
         check(avformat_alloc_output_context2(&format_, nullptr, "wav", nullptr), "WAV muxer unavailable");
         if (!format_) throw std::runtime_error("WAV context unavailable");
         format_->pb = scratch_.context();
-        format_->flags |= AVFMT_FLAG_CUSTOM_IO;
+        format_->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_BITEXACT;
         stream_ = avformat_new_stream(format_, nullptr);
         if (!stream_) throw std::bad_alloc();
         codec_ = avcodec_alloc_context3(codec);

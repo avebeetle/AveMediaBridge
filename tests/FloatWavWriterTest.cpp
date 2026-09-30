@@ -23,6 +23,16 @@ static uint32_t rateFromFmt(const std::vector<uint8_t>& b) {
     }
     return 0;
 }
+static bool hasInfoList(const std::vector<uint8_t>& b) {
+    for (size_t p = 12; p + 8 <= b.size();) {
+        const auto n = u32(b, p + 4);
+        if (n > b.size() - p - 8) return false;
+        if (std::memcmp(b.data() + p, "LIST", 4) == 0 && n >= 4 &&
+            std::memcmp(b.data() + p + 8, "INFO", 4) == 0) return true;
+        p += 8 + n + (n & 1);
+    }
+    return false;
+}
 static std::vector<uint8_t> bytes(const fs::path& p) { std::ifstream f(p, std::ios::binary); return {std::istreambuf_iterator<char>(f), {}}; }
 static std::vector<uint32_t> dataBits(const std::vector<uint8_t>& b) {
     for (size_t p = 12; p + 8 <= b.size();) {
@@ -68,6 +78,7 @@ int main() {
         if (wav.size() >= 44) {
             expect(rateFromFmt(wav) == rate, "native sample rate in WAV fmt chunk");
             expect(dataBits(wav) == bits, "finite PCM bits unchanged");
+            expect(!hasInfoList(wav), "ordinary WAV has no unrequested INFO encoder metadata");
         }
         if (rate == 48000) {
             wchar_t evidence[MAX_PATH]{};
@@ -102,6 +113,7 @@ int main() {
             std::memcmp(wav.data() + 12, "ds64", 4) == 0, "forced RF64 has ds64 header");
         if (wav.size() >= 80) {
             expect(u64(wav, 28) == 20 && u64(wav, 36) == 5, "RF64 ds64 has exact data bytes and frames");
+            expect(!hasInfoList(wav), "forced RF64 has no unrequested INFO encoder metadata");
             std::vector<uint32_t> lastBits;
             for (size_t p = wav.size() - 20; p < wav.size(); p += 4) lastBits.push_back(u32(wav,p));
             expect(lastBits == monoBits, "RF64 data bits unchanged");
