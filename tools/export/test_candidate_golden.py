@@ -34,7 +34,7 @@ class GoldenBindingControls(unittest.TestCase):
 
     def test_public_entry_rejects_wrong_runtime_bridge_and_reused_output(self):
         command = [sys.executable, str(Path(candidate.__file__)),
-                   "--bridge-repo", "D:/rvc/c++/DragonianVoice/AveMediaBridge_audio_export",
+                   "--bridge-repo", str(Path(__file__).resolve().parents[2]),
                    "--voice-repo", "C:/Users/USER/.codex/worktrees/audio-export/AveVoice",
                    "--bridge-build", "D:/ave-t7-bridge", "--voice-build", "D:/ave-t7-build",
                    "--bridge-dll", "D:/ave-t7-bridge/Release/AveMediaBridge.dll",

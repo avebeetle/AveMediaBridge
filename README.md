@@ -40,6 +40,8 @@ This folder is not committed.
 
 ## Build
 
+For the active export-development FFmpeg configuration and the separately accepted AveVoice runtime, see [WorkingRuntime.md](docs/WorkingRuntime.md). Use its configure command when creating a fresh build directory. Local builds do not deploy files to AveVoice.
+
 ```bat
 build_release.bat
 ```
