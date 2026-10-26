@@ -1,6 +1,9 @@
 # AveMediaBridge Agent Instructions
 
 - Keep changes small and reviewable.
+- Continue development in `AveMediaBridge_audio_export` on `codex/audio-export`; keep the separate `AveMediaBridge` checkout in place.
+- Preserve the accepted AveVoice DLL and FFmpeg set recorded in `tools/runtime/accepted-runtime-20261027.json`; see `docs/WorkingRuntime.md`.
+- Do not merge, remove, or rename these working folders, or replace the deployed AveVoice runtime, without a new explicit user request. Local builds do not authorize deployment.
 - Do not commit build artifacts, FFmpeg binaries, generated output, or credentials.
 - Do not expose FFmpeg types in public DLL ABI.
 - Do not pass C++ classes, `std::string`, `std::vector`, or ownership-bearing types across DLL boundary.

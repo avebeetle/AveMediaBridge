@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "avevoice-working-runtime-20261027",
+  "acceptedDate": "2026-10-27",
+  "runtimeDirectoryRelativeToDragonianVoice": "AveVoice/build/product/Release",
+  "bridgeSourceReference": {
+    "commit": "b2934663ba17884e99b0f66732f8e3e4e4be60b5",
+    "evidenceRelativeToDragonianVoice": "AveVoice/out/pcm-save-export-20261024/export-runtime-qualified-manifest.json",
+    "identityAuthority": "The exact accepted binary is identified by its SHA256, not by a rebuild of this source reference."
+  },
+  "development": {
+    "checkout": "AveMediaBridge_audio_export",
+    "branch": "codex/audio-export",
+    "sourceCheckpointAtPin": "b4a37ad75db37871d6ef76d1d4d716ed3eba5952"
+  },
+  "ffmpeg": {
+    "version": "7.1.4",
+    "profile": "wav-f32-native-v1",
+    "candidate": "candidate-002",
+    "sourceProfile": "tools/export/export-runtime-profile.json"
+  },
+  "files": [
+    {
+      "path": "Modules/AveMediaBridge.dll",
+      "bytes": 622592,
+      "sha256": "B26FB5CB2620A156F42B89247DC3548602CFCAE62D04A9030830415B38CB3764"
+    },
+    {
+      "path": "Lib/ffmpeg/avcodec-61.dll",
+      "bytes": 2489344,
+      "sha256": "BEFCC050C78990DE3EA828ABCC5ED27628BD8A84AF9677FC08F4BF6F3A646802"
+    },
+    {
+      "path": "Lib/ffmpeg/avformat-61.dll",
+      "bytes": 1657344,
+      "sha256": "530D88DE7D36A330CB3D0E24EFC3D9AC41DFDB77EDA63210B412E1319B46BBF7"
+    },
+    {
+      "path": "Lib/ffmpeg/avutil-59.dll",
+      "bytes": 2098176,
+      "sha256": "757F0A7C58F6B0BC30763DD25CCF68BF35D560173E425032F39C03B0CCE0B38B"
+    },
+    {
+      "path": "Lib/ffmpeg/swresample-5.dll",
+      "bytes": 743936,
+      "sha256": "343B16190A48ADABDC2641062E06CABB25A03F1B4B25D3845B63AB8E08E476E1"
+    }
+  ]
+}
