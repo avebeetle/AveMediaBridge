@@ -19,10 +19,23 @@ endif()
 
 add_executable(AveMediaBridgeReaderImportAbiTests tests/ReaderImportAbiTests.cpp tests/ReaderImportAbiC.c)
 target_include_directories(AveMediaBridgeReaderImportAbiTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")
-target_link_libraries(AveMediaBridgeReaderImportAbiTests PRIVATE AveMediaBridge)
+add_dependencies(AveMediaBridgeReaderImportAbiTests AveMediaBridge)
 set_property(TARGET AveMediaBridgeReaderImportAbiTests PROPERTY C_STANDARD 11)
 copy_ffmpeg_runtime_dlls(AveMediaBridgeReaderImportAbiTests)
-add_test(NAME AveMediaBridgeTests.reader_import_abi COMMAND AveMediaBridgeReaderImportAbiTests)
+set(AVEMEDIABRIDGE_READER_ABI_FIXTURE "" CACHE FILEPATH
+    "Optional generated MOV/AAC fixture for reader ABI lifetime checks")
+if(AVEMEDIABRIDGE_READER_ABI_FIXTURE AND NOT EXISTS "${AVEMEDIABRIDGE_READER_ABI_FIXTURE}")
+    message(FATAL_ERROR "Missing reader ABI fixture: ${AVEMEDIABRIDGE_READER_ABI_FIXTURE}")
+endif()
+set(_reader_module_mode unload)
+if(AVEMEDIABRIDGE_ENABLE_ASAN)
+    # FFmpeg is a prebuilt, uninstrumented dependency. Exercise real unload in Release.
+    set(_reader_module_mode keep-loaded)
+endif()
+add_test(NAME AveMediaBridgeTests.reader_import_abi COMMAND AveMediaBridgeReaderImportAbiTests
+    "$<TARGET_FILE:AveMediaBridge>" "${_reader_module_mode}"
+    "${CMAKE_CURRENT_BINARY_DIR}/reader-abi-data" "${AVEMEDIABRIDGE_READER_ABI_FIXTURE}")
+unset(_reader_module_mode)
 set_tests_properties(AveMediaBridgeTests.reader_import_abi PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
 
 add_executable(AveMediaBridgeReaderMediaFactsTests

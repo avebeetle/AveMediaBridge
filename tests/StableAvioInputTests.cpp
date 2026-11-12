@@ -9,6 +9,8 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +18,7 @@ extern "C" {
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -47,6 +50,20 @@ struct Checks {
     }
 };
 
+struct ReadOverlap {
+    std::mutex mutex;
+    std::condition_variable change;
+    unsigned entered = 0;
+    bool release = false;
+
+    void hold() {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++entered;
+        change.notify_all();
+        change.wait(lock, [&] { return release; });
+    }
+};
+
 struct Bytes {
     enum class Fault { None, ShortOk, IoError, Throw };
     std::vector<uint8_t> data;
@@ -59,12 +76,14 @@ struct Bytes {
     std::atomic<int> cancelOnceAfterReads{-1};
     std::atomic<int> errorOnceAfterReads{-1};
     Fault fault = Fault::None;
+    ReadOverlap* overlap = nullptr;
 };
 
 AMBI_Status __cdecl readBytes(void* user, uint64_t offset, void* destination,
     uint32_t count, uint32_t* actual) {
     auto& b = *static_cast<Bytes*>(user);
     const int nth = ++b.reads;
+    if (b.overlap) b.overlap->hold();
     b.maxRequest.store(std::max(b.maxRequest.load(), static_cast<int>(count)));
     if (b.errorAfterReads.load() >= 0 && nth > b.errorAfterReads.load())
         return AMBI_IO_ERROR;
@@ -371,20 +390,20 @@ int main() {
     if (canceledFormat) check.expect(canceledFormat->open(av_find_input_format("wav")) ==
         AVERROR(EINVAL), "repeat canceled open rejected");
     Bytes lifetime; lifetime.data = makeWav(pcm);
-    for (int i = 0; i < 100; ++i) {
+    int completedLifecycles = 0;
+    for (; completedLifecycles < 100; ++completedLifecycles) {
         std::unique_ptr<StableAvioInput> item;
         if (StableAvioInput::create(sourceFor(lifetime), item) != 0 || !item ||
-            item->open(av_find_input_format("wav")) != 0) {
-            check.expect(false, "100 lifecycle opens");
-            break;
-        }
+            item->open(av_find_input_format("wav")) != 0) break;
         AVPacket* packet = av_packet_alloc();
-        const bool read = av_read_frame(item->format(), packet) == 0;
+        const bool read = packet && av_read_frame(item->format(), packet) == 0 &&
+            packet->size == static_cast<int>(pcm.size()) &&
+            std::memcmp(packet->data, pcm.data(), pcm.size()) == 0;
         av_packet_free(&packet);
-        if (!read) { check.expect(false, "100 lifecycle reads"); break; }
+        if (!read) break;
     }
-    check.expect(lifetime.reads > 0 && lifetime.checks > 0,
-        "lifecycle callbacks used live source");
+    check.expect(completedLifecycles == 100 && lifetime.reads >= 100 && lifetime.checks >= 100,
+        "100 open/read/destroy cycles used the live shared source and produced exact PCM");
     auto invalid = sourceFor(lifetime);
     invalid.readAt = nullptr;
     std::unique_ptr<StableAvioInput> invalidInput;
@@ -405,7 +424,8 @@ int main() {
         noFileInput && noFileInput->open(&noFile) == AVERROR(EINVAL),
         "NOFILE demuxer rejected");
 
-    Bytes threaded; threaded.data = sequence(1024 * 1024);
+    ReadOverlap overlap;
+    Bytes threaded; threaded.data = sequence(1024 * 1024); threaded.overlap = &overlap;
     std::unique_ptr<StableAvioInput> threadA, threadB;
     const bool createdPair = StableAvioInput::create(sourceFor(threaded), threadA) == 0 &&
         StableAvioInput::create(sourceFor(threaded), threadB) == 0;
@@ -421,6 +441,14 @@ int main() {
         };
         std::thread one(readPart, threadA.get(), 700000, std::ref(exactA));
         std::thread two(readPart, threadB.get(), 100000, std::ref(exactB));
+        {
+            std::unique_lock<std::mutex> lock(overlap.mutex);
+            const bool enteredTogether = overlap.change.wait_for(lock, std::chrono::seconds(5),
+                [&] { return overlap.entered >= 2; });
+            check.expect(enteredTogether, "two AVIO contexts overlap in the same source callback");
+            overlap.release = true;
+        }
+        overlap.change.notify_all();
         one.join(); two.join();
     }
     check.expect(createdPair && exactA && exactB,

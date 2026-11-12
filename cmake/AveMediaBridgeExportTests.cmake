@@ -13,6 +13,7 @@ add_executable(AveMediaBridgeExportJobStateTests
 target_include_directories(AveMediaBridgeExportJobStateTests PRIVATE
     "${AVEMEDIABRIDGE_ROOT}/include" "${AVEMEDIABRIDGE_ROOT}/src")
 add_test(NAME AveMediaBridgeTests.export_state COMMAND AveMediaBridgeExportJobStateTests)
+set_tests_properties(AveMediaBridgeTests.export_state PROPERTIES TIMEOUT 60)
 
 add_executable(AveMediaBridgeFloatWavTests tests/FloatWavWriterTest.cpp
     src/Export/FfmpegFloatWavWriter.cpp src/Export/ExportScratchIo.cpp src/Export/StreamingExportJob.cpp)

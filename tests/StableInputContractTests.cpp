@@ -134,6 +134,10 @@ int main() {
     expectRead(6, 0, nullptr, AMBI_INVALID_ARGUMENT, 0, "empty read beyond EOF");
     expectRead(UINT64_MAX, 2, data, AMBI_INVALID_ARGUMENT, 0, "overflow offset");
     expectRead(0, AMBI_MAX_READ_BYTES + 1, data, AMBI_INVALID_ARGUMENT, 0, "oversized read");
+    expectRead(UINT64_MAX - 1, UINT32_MAX, data, AMBI_INVALID_ARGUMENT, 0,
+        "overflow offset and count never reach callbacks");
+    expectRead(4, UINT32_MAX, data, AMBI_INVALID_ARGUMENT, 0,
+        "maximum unsigned count is invalid even when only one byte remains");
     expectRead(0, 1, nullptr, AMBI_INVALID_ARGUMENT, 0, "null destination");
     check.expect(fixture.reads == reads, "invalid and EOF reads do not dispatch");
 
@@ -154,8 +158,11 @@ int main() {
     fixture.mode = Fixture::Mode::Normal;
     fixture.cancelStatus = AMBI_CANCELED;
     const auto readsBeforeCancel = fixture.reads;
+    const auto checksBeforeCancel = fixture.cancelChecks;
     expectRead(0, 1, data, AMBI_CANCELED, 0, "cancel before dispatch");
     check.expect(fixture.reads == readsBeforeCancel, "cancel prevents read callback");
+    check.expect(fixture.cancelChecks == checksBeforeCancel + 1,
+        "cancel callback runs once before dispatch");
     fixture.cancelStatus = AMBI_IO_ERROR;
     expectRead(0, 1, data, AMBI_IO_ERROR, 0, "cancel query I/O error");
     fixture.cancelStatus = AMBI_EOF;
