@@ -76,6 +76,7 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/ContainerDependency.cpp
     src/Probe/MovSingleFilePolicy.cpp
     src/Dll/AveMediaBridgeDll.cpp
+    src/Dll/ImportPcmWriter.cpp
     src/Dll/AveMediaBridgeExportDll.cpp
     src/Export/StreamingExportJob.cpp
     src/Export/FfmpegFloatWavWriter.cpp
@@ -108,11 +109,17 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
 
 function(add_bridge_dll target)
     add_library(${target} SHARED ${AVEMEDIABRIDGE_DLL_SOURCES})
-    target_link_libraries(${target} PRIVATE AveMediaBridgeCore)
+    target_link_libraries(${target} PRIVATE AveMediaBridgeCore advapi32)
     target_include_directories(${target} PRIVATE "${FFMPEG_INCLUDE_DIR}" "${AVEMEDIABRIDGE_ROOT}/src")
     target_compile_definitions(${target} PRIVATE AVEMEDIABRIDGE_BUILD_DLL)
 endfunction()
 add_bridge_dll(AveMediaBridge)
+
+add_executable(AveMediaBridgeGuardedImportTests tests/GuardedImportTests.cpp)
+target_link_libraries(AveMediaBridgeGuardedImportTests PRIVATE AveMediaBridge)
+target_include_directories(AveMediaBridgeGuardedImportTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")
+copy_ffmpeg_runtime_dlls(AveMediaBridgeGuardedImportTests)
+add_test(NAME AveMediaBridgeTests.guarded_import COMMAND AveMediaBridgeGuardedImportTests)
 
 option(AVEMEDIABRIDGE_ENABLE_EXPORT_IO_TEST_DLLS "TEST_ONLY private writer-fault Bridge variants" OFF)
 if(AVEMEDIABRIDGE_ENABLE_EXPORT_IO_TEST_DLLS)

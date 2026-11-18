@@ -45,6 +45,8 @@ typedef struct AMBR_ImportOptionsV1 {
 AMBR_API int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1*, AMBR_PreparedInput**);
 AMBR_API int __cdecl AveMediaBridge_ReaderWriteProbeJsonV1(AMBR_PreparedInput*, const wchar_t*);
 AMBR_API int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput*, const AMBR_ImportOptionsV1*);
+// Opt-in guarded output has the same source ownership and cancel contract.
+AMBR_API int __cdecl AveMediaBridge_ReaderImportGuardedV1(AMBR_PreparedInput*, const AMBR_ImportOptionsV1*);
 AMBR_API void __cdecl AveMediaBridge_ReaderDestroyV1(AMBR_PreparedInput*);
 #ifdef __cplusplus
 }
