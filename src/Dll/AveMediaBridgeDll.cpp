@@ -26,6 +26,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include "ImportPcmWriter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +43,7 @@
 
 namespace {
 
+namespace PcmOutput = AveMediaBridge::PcmOutput;
 namespace ClipDiag = AveMediaBridge::Diagnostics;
 namespace Decode = AveMediaBridge::Decode;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
@@ -1159,7 +1161,7 @@ int writeConvertedStreamingSamples(
     StreamingSwrState& swr,
     const AVFrame* frame,
     const AVCodecContext* decoder,
-    std::ofstream& output,
+    PcmOutput::Writer& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
@@ -1292,7 +1294,7 @@ int writeConvertedStreamingSamples(
 
 int flushStreamingSwr(
     StreamingSwrState& swr,
-    std::ofstream& output,
+    PcmOutput::Writer& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
@@ -1383,7 +1385,7 @@ int receiveStreamingFrames(
     AVCodecContext* decoder,
     AVFrame* frame,
     StreamingSwrState& swr,
-    std::ofstream& output,
+    PcmOutput::Writer& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
@@ -1413,7 +1415,7 @@ int sendStreamingPacketAndReceive(
     AVPacket* packet,
     AVFrame* frame,
     StreamingSwrState& swr,
-    std::ofstream& output,
+    PcmOutput::Writer& output,
     StreamingStatsAccumulator& stats,
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
@@ -1456,7 +1458,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     FullScaleClipDiagnostic fullScaleDiagnostic;
     fullScaleDiagnostic.enabled = fullScaleClipDiagEnabledFromEnvironment();
     fullScaleDiagnostic.path = path;
-    std::ofstream output;
+    PcmOutput::Writer output;
 
     auto cleanup = [&]() {
         if (output.is_open()) {
@@ -1597,7 +1599,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         return result;
     }
 
-    output.open(audioDataPath, std::ios::binary | std::ios::trunc);
+    output.open(audioDataPath);
     if (!output) {
         result.error = "failed to open original_f32.bin";
         cleanup();
@@ -2130,6 +2132,10 @@ bool writeStreamingMetadataJson(
 }
 
 void removeFileIfExists(const std::filesystem::path& path) {
+    if (path.filename() == L"original_f32.bin" && PcmOutput::ImportScope::current && PcmOutput::ImportScope::current->requested) {
+        PcmOutput::removeOwnedFile(path);
+        return;
+    }
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
 }
@@ -2169,11 +2175,22 @@ bool prepareStreamingLiveImportArtifacts(
     const std::filesystem::path& audioInfoTmpPath,
     const std::filesystem::path& metadataTmpPath,
     std::string& error) {
-    return removeFileIfExistsChecked(audioInfoTmpPath, "audio_info.json.tmp", error) &&
-        removeFileIfExistsChecked(metadataTmpPath, "metadata.json.tmp", error) &&
-        removeFileIfExistsChecked(audioInfoPath, "audio_info.json", error) &&
-        removeFileIfExistsChecked(metadataPath, "metadata.json", error) &&
-        removeFileIfExistsChecked(audioDataPath, "original_f32.bin", error);
+    if (!PcmOutput::ImportScope::current->requested) {
+        return removeFileIfExistsChecked(audioInfoTmpPath, "audio_info.json.tmp", error) &&
+            removeFileIfExistsChecked(metadataTmpPath, "metadata.json.tmp", error) &&
+            removeFileIfExistsChecked(audioInfoPath, "audio_info.json", error) &&
+            removeFileIfExistsChecked(metadataPath, "metadata.json", error) &&
+            removeFileIfExistsChecked(audioDataPath, "original_f32.bin", error);
+    }
+    for (const auto& path : {audioDataPath, audioInfoTmpPath, metadataTmpPath, audioInfoPath, metadataPath}) {
+        std::error_code ec;
+        const auto status = std::filesystem::symlink_status(path, ec);
+        if ((ec && ec != std::errc::no_such_file_or_directory) || std::filesystem::exists(status)) {
+            error = "protected import requires a fresh media directory";
+            return false;
+        }
+    }
+    return true;
 }
 
 bool writeStreamingImportPlaceholderJson(
@@ -2394,7 +2411,8 @@ int AveMediaBridge_ProbeFrameCountCandidatesToJson(
     }
 }
 
-int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* options) {
+static int importAudioToSession(const AveMediaBridgeImportOptions* options, bool requestGuard) {
+    PcmOutput::ImportScope activeImport(requestGuard);
     try {
         constexpr std::size_t kImportOptionsBaseSize =
             offsetof(AveMediaBridgeImportOptions, onWaveformChunk);
@@ -2497,6 +2515,14 @@ int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* opt
     }
 }
 
+int AveMediaBridge_ImportAudioToSessionEx(const AveMediaBridgeImportOptions* options) {
+    return importAudioToSession(options, false);
+}
+
+int __cdecl AveMediaBridge_ImportAudioToSessionGuardedV1(const AveMediaBridgeImportOptions* options) {
+    return importAudioToSession(options, true);
+}
+
 int AveMediaBridge_ImportAudioToSession(const wchar_t* inputPath, const wchar_t* sessionMediaDir) {
     AveMediaBridgeImportOptions options{};
     options.structSize = sizeof(options);
@@ -2569,7 +2595,8 @@ int __cdecl AveMediaBridge_ReaderWriteProbeJsonV1(AMBR_PreparedInput* handle, co
     catch (...) { setLastErrorText("unexpected exception writing reader probe"); return AMBR_INTERNAL_ERROR; }
 }
 
-int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* options) {
+static int readerImport(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* options, bool requestGuard) {
+    PcmOutput::ImportScope activeImport(requestGuard);
     try {
         if (!handle || !validReaderOptions(options) || !options->sessionMediaDir || !*options->sessionMediaDir)
             return invalidReaderArgument("reader import options are invalid");
@@ -2618,6 +2645,12 @@ int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput* handle, const AMBR
         clearLastError(); return AMBR_OK;
     } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
     catch (...) { setLastErrorText("unexpected exception importing reader input"); return AMBR_INTERNAL_ERROR; }
+}
+int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* options) {
+    return readerImport(handle, options, false);
+}
+int __cdecl AveMediaBridge_ReaderImportGuardedV1(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* options) {
+    return readerImport(handle, options, true);
 }
 void __cdecl AveMediaBridge_ReaderDestroyV1(AMBR_PreparedInput* handle) { delete handle; }
 int __cdecl AveMediaBridge_ReaderGetMediaFactsV1(AMBR_PreparedInput* handle, char* utf8,
