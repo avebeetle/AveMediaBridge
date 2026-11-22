@@ -1,5 +1,13 @@
 # Accepted runtime and development checkout
 
+## Combined Matroska AAC source inspection, 2026-11-22
+
+The accepted DLL exports `AveMediaBridge_InspectMatroskaAacSourceV1`. On an eligible video MKV it hashes the pinned file while proving the selected AAC-LC track's frame count. It publishes both values only after checking the relevant CRCs, track mapping, continuity and physical EOF. If stronger existing evidence applies or the scan cannot establish the result, the caller uses its ordinary import path. Cancellation and non-success leave the output arguments untouched. [Five-file receipt](../tools/runtime/accepted-runtime-20261122.json)
+
+The exact qualified DLL and four FFmpeg libraries are archived under `out/runtime-baselines/2026-11-22-combined-mkv/`. Its evidence directory contains the original Release build log and cache, an archive of the exact sources used, per-file qualification results, and the tests from the production source checkout. The 175-file source archive is identified in the receipt. With line endings normalized, 102 of its 103 files under `src/` and `include/` match the recorded production source commit exactly. The remaining public header differs only in its description of the optional export. The production build includes that export by default. The earlier qualification build enabled it explicitly with the same compiler, linker inputs for the new files, and pinned FFmpeg package.
+
+At qualification, the user recording contained 70,286,336 decoded frames per channel. A generated positive control and a copy missing one interior AAC block exercise the combined proof and clean fallback. The regression test recalculates the cluster CRC on the edited fixture, so the missing interval still has to be detected. It also checks cancellation, independence of the file cursor, and SHA-256 against a separate reader. The complete Release CTest run passed 18 tests and skipped nine historical external-fixture suites. Previous October and November 18 runtime snapshots are retained.
+
 ## Guarded progressive imports, 2026-11-18
 
 The five production file sizes and SHA256 hashes are recorded in [accepted-runtime-20261118.json](../tools/runtime/accepted-runtime-20261118.json). The Bridge DLL was built from `3394d2a95dcc05755efa444b9ff6fc07cc1eaf60` with the external FFmpeg 7.1.4 `candidate-002` package. All four FFmpeg DLLs retain their October hashes. The output layout is `AveVoice/build/product/Release/Modules` and `Lib/ffmpeg`.

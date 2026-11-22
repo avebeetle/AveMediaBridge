@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "avevoice-combined-matroska-aac-20261122",
+  "acceptedDate": "2026-11-22",
+  "runtimeDirectoryRelativeToDragonianVoice": "AveVoice/build/product/Release",
+  "snapshotRelativeToBridge": "out/runtime-baselines/2026-11-22-combined-mkv",
+  "bridgeSourceReference": {
+    "commit": "1860bd11556d2bc24012ab1cb877499db95903c7",
+    "evidenceRelativeToDragonianVoice": "AveMediaBridge/docs/WorkingRuntime.md",
+    "qualificationBaseCommit": "d35ea9ce08c752eb07a72ff65f100572923fcb61",
+    "qualifiedSourceArchiveRelativeToSnapshot": "evidence/qualified-bridge-source.zip",
+    "qualifiedSourceArchiveSha256": "9DA6953EEB4FD44008391D696F57CAC783D5BA649623C26E641CA3C8049A19D5",
+    "identityAuthority": "The runtime SHA256 identifies the exact qualified binary. Production sources include the same optional export by default. Rebuilding from the source commit may yield a different DLL hash."
+  },
+  "development": {
+    "checkout": "AveMediaBridge",
+    "branch": "main",
+    "sourceCheckpointAtPin": "1860bd11556d2bc24012ab1cb877499db95903c7"
+  },
+  "ffmpeg": {
+    "version": "7.1.4",
+    "profile": "wav-f32-native-v1",
+    "candidate": "candidate-002",
+    "sourceProfile": "tools/export/export-runtime-profile.json"
+  },
+  "files": [
+    {
+      "path": "Modules/AveMediaBridge.dll",
+      "bytes": 645120,
+      "sha256": "DAAB11A992E0CDD7A45D05D757B428ABB46C4D678CE50B49302CB9DAA14FBB51"
+    },
+    {
+      "path": "Lib/ffmpeg/avcodec-61.dll",
+      "bytes": 2489344,
+      "sha256": "BEFCC050C78990DE3EA828ABCC5ED27628BD8A84AF9677FC08F4BF6F3A646802"
+    },
+    {
+      "path": "Lib/ffmpeg/avformat-61.dll",
+      "bytes": 1657344,
+      "sha256": "530D88DE7D36A330CB3D0E24EFC3D9AC41DFDB77EDA63210B412E1319B46BBF7"
+    },
+    {
+      "path": "Lib/ffmpeg/avutil-59.dll",
+      "bytes": 2098176,
+      "sha256": "757F0A7C58F6B0BC30763DD25CCF68BF35D560173E425032F39C03B0CCE0B38B"
+    },
+    {
+      "path": "Lib/ffmpeg/swresample-5.dll",
+      "bytes": 743936,
+      "sha256": "343B16190A48ADABDC2641062E06CABB25A03F1B4B25D3845B63AB8E08E476E1"
+    }
+  ]
+}
