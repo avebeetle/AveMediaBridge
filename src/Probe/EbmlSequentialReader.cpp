@@ -66,10 +66,13 @@ std::uint32_t updateCrc32(
 ForwardFileReader::ForwardFileReader(
     const std::filesystem::path& path,
     std::size_t bufferBytes,
-    std::uint64_t forceReadErrorAfterBytes)
-    : buffer_((std::max)(bufferBytes, std::size_t{1})),
+    std::uint64_t forceReadErrorAfterBytes,
+    const MatroskaScanInput* input)
+    : input_(input),
+      buffer_((std::max)(bufferBytes, std::size_t{1})),
       forceReadErrorAfterBytes_(forceReadErrorAfterBytes) {
-    handle_ = CreateFileW(
+    handle_ = input ? ReOpenFile(input->pinnedFile, GENERIC_READ,
+        FILE_SHARE_READ, FILE_FLAG_SEQUENTIAL_SCAN) : CreateFileW(
         path.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ,
@@ -145,6 +148,10 @@ bool ForwardFileReader::refill() {
     bytesReturned_ += returned;
     if (returned == 0) {
         physicalEof_ = true;
+        return false;
+    }
+    if (input_ && !input_->onRead(input_->context, buffer_.data(), returned)) {
+        error_ = "read_failed";
         return false;
     }
     return true;

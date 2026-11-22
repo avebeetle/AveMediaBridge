@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PresentationBudgetPolicy.hpp"
+#include "MatroskaScanInput.hpp"
 #include "../Ffmpeg/FfmpegHeaders.hpp"
 
 #include <cstddef>
@@ -107,6 +108,7 @@ struct MatroskaAacSequentialTestHooks {
 struct MatroskaAacSequentialProbeOptions {
     std::size_t readBufferBytes = kMatroskaAacSequentialReadBufferBytes;
     const MatroskaAacSequentialTestHooks* testHooks = nullptr;
+    const MatroskaScanInput* input = nullptr;
 };
 
 struct MatroskaAacSequentialPresentationResult {

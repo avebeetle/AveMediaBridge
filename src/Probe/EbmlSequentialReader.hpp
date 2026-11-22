@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MatroskaScanInput.hpp"
+
 #include <Windows.h>
 
 #include <cstddef>
@@ -34,7 +36,8 @@ public:
         const std::filesystem::path& path,
         std::size_t bufferBytes,
         std::uint64_t forceReadErrorAfterBytes =
-            (std::numeric_limits<std::uint64_t>::max)());
+            (std::numeric_limits<std::uint64_t>::max)(),
+        const MatroskaScanInput* input = nullptr);
     ~ForwardFileReader();
 
     ForwardFileReader(const ForwardFileReader&) = delete;
@@ -60,6 +63,7 @@ private:
     bool refill();
 
     HANDLE handle_ = INVALID_HANDLE_VALUE;
+    const MatroskaScanInput* input_ = nullptr;
     std::vector<std::uint8_t> buffer_;
     std::size_t cursor_ = 0;
     std::size_t available_ = 0;

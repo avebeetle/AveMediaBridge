@@ -41,6 +41,8 @@ std::string rationalToString(AVRational value);
 StreamSummary makeStreamSummary(int index, const AVStream* stream);
 
 FastProbeResult runFastProbe(const std::string& path);
+MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
+    const std::string& path, AVFormatContext* context);
 FastProbeResult runFastProbe(const Input::MediaInputSource& source);
 #ifdef AVEMEDIABRIDGE_TEST_ONLY
 FastProbeResult runFastProbeWithTestPadding(const Input::MediaInputSource& source);

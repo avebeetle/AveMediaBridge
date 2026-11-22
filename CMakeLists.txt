@@ -115,6 +115,18 @@ function(add_bridge_dll target)
 endfunction()
 add_bridge_dll(AveMediaBridge)
 
+target_sources(AveMediaBridge PRIVATE
+    src/Dll/MatroskaInspectExport.cpp src/Probe/QueuedSourceSha256.cpp)
+target_link_libraries(AveMediaBridge PRIVATE bcrypt)
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
+if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
+    add_test(NAME AveMediaBridgeTests.combined_matroska_source
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/CombinedMatroskaSource.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+endif()
+
 add_executable(AveMediaBridgeGuardedImportTests tests/GuardedImportTests.cpp)
 target_link_libraries(AveMediaBridgeGuardedImportTests PRIVATE AveMediaBridge)
 target_include_directories(AveMediaBridgeGuardedImportTests PRIVATE "${AVEMEDIABRIDGE_ROOT}/include")

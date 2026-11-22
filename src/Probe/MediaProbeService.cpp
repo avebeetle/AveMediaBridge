@@ -1261,6 +1261,42 @@ StreamSummary makeStreamSummary(int index, const AVStream* stream) {
     return summary;
 }
 
+MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
+    const std::string& path, AVFormatContext* context) {
+    if (!context) return {};
+    bool hasVideo = false;
+    for (unsigned i = 0; i < context->nb_streams; ++i) {
+        const auto* stream = context->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            hasVideo = true;
+            break;
+        }
+    }
+    if (!hasVideo) return {};
+    const auto selection = Ffmpeg::selectBestAudioStreamStrict(context);
+    if (selection.streamIndex < 0 || !selection.decoder) return {};
+    const auto* audio = context->streams[selection.streamIndex];
+    const auto* codec = audio->codecpar;
+    if (!codec || codec->codec_id != AV_CODEC_ID_AAC || codec->profile != AV_PROFILE_AAC_LOW ||
+        codec->initial_padding != 0 || codec->trailing_padding != 0) return {};
+    // The tested LC configuration uses indexed rate, plain GASpecificConfig
+    // and, optionally, the explicit "SBR absent" sync extension.
+    const auto* asc = codec->extradata;
+    if (!asc || (codec->extradata_size != 2 && codec->extradata_size != 5) ||
+        (asc[1] & 7) != 0 ||
+        (codec->extradata_size == 5 && (asc[2] != 0x56 || asc[3] != 0xe5 || asc[4] != 0))) return {};
+    FastProbeResult baseline;
+    fillFastSourceInfo(baseline, context);
+    fillFastSelectedAudio(baseline, audio, selection.decoder);
+    estimateFastDurationAndFrames(baseline, context, audio);
+    if (baseline.document.decodedSampleFramesKind != "estimated" ||
+        baseline.document.decodedSampleFramesSource != "format_duration_estimate" ||
+        shouldScanPacketFrameCountCandidates(makeFrameCountPolicyState(baseline.document))) return {};
+    return evaluateMatroskaAacSequentialEligibility(path, context, audio,
+        baseline.totalPresentation.trust == PresentationTotalTrust::SampleExact);
+}
+
 static FastProbeResult runFastProbeImpl(
     const Input::MediaInputSource& source, bool forceTestPadding) {
     FastProbeResult result;

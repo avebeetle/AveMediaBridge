@@ -15,6 +15,7 @@
 #include <new>
 #include <optional>
 #include <string_view>
+#include <unordered_set>
 
 namespace AveMediaBridge::Probe {
 
@@ -42,6 +43,7 @@ struct SequentialSelectedStream {
 };
 
 struct SequentialTrackInfo {
+    bool encodedOrTransformed = false;
     std::uint64_t trackNumber = 0;
     std::uint64_t trackUid = 0;
     std::uint64_t trackType = 0;
@@ -112,6 +114,14 @@ constexpr std::uint64_t ID_INFO = 0x1549A966;
 constexpr std::uint64_t ID_TIMESTAMP_SCALE = 0x2AD7B1;
 constexpr std::uint64_t ID_DURATION = 0x4489;
 constexpr std::uint64_t ID_TRACKS = 0x1654AE6B;
+constexpr std::uint64_t ID_CONTENT_ENCODINGS = 0x6D80;
+constexpr std::uint64_t ID_TRACK_OFFSET = 0x537F;
+constexpr std::uint64_t ID_TRACK_OPERATION = 0xE2;
+constexpr std::uint64_t ID_CODEC_STATE = 0xA4;
+constexpr std::uint64_t ID_BLOCK_ADDITIONS = 0x75A1;
+constexpr std::uint64_t ID_SLICES = 0x8E;
+constexpr std::uint64_t ID_ENCRYPTED_BLOCK = 0xAF;
+constexpr std::uint64_t ID_SILENT_TRACKS = 0x5854;
 constexpr std::uint64_t ID_TRACK_ENTRY = 0xAE;
 constexpr std::uint64_t ID_TRACK_NUMBER = 0xD7;
 constexpr std::uint64_t ID_TRACK_UID = 0x73C5;
@@ -355,6 +365,9 @@ bool parseTrackEntry(
             }
             seekPreRollSeen = true;
             track.seekPreRollNs = readUnsigned(payload, size);
+        } else if (element.id == ID_CONTENT_ENCODINGS || element.id == ID_TRACK_OFFSET ||
+                   element.id == ID_TRACK_OPERATION) {
+            track.encodedOrTransformed = true;
         } else if (element.id == ID_TRACK_TIMESTAMP_SCALE) {
             if (timestampScaleSeen || (size != 4 && size != 8)) {
                 return false;
@@ -639,6 +652,7 @@ bool delayToFrames(std::uint64_t ns, int sampleRate, std::uint64_t& frames) noex
 struct ScanState {
     SequentialScanState* result = nullptr;
     const SequentialSelectedStream* selected = nullptr;
+    bool combined = false;
     bool selectedTrackSeen = false;
     bool selectedBlockSeen = false;
     std::optional<std::int64_t> previousTimestampNs;
@@ -683,6 +697,13 @@ void processSelectedBlock(
     if (block.trackNumber != result.selectedTrackNumber) {
         return;
     }
+    // With coarser ticks the duration of a missing AU can fall inside the
+    // rounding tolerance for two adjacent valid block timestamps.
+    if (state.combined && result.timestampScaleNs >= 512000000000ULL /
+            static_cast<std::uint64_t>(state.selected->sampleRate)) {
+        fail(state, "unsupported", "timestamp_quantization_ambiguous");
+        return;
+    }
     if (state.currentLastDiscardPaddingPresent) {
         fail(state, "conflict", "discard_padding_before_final_selected_block");
         return;
@@ -695,6 +716,11 @@ void processSelectedBlock(
     if (accessUnits == 0 || result.selectedAccessUnits >
         (std::numeric_limits<std::uint64_t>::max)() - accessUnits) {
         fail(state, "conflict", "access_unit_count_overflow");
+        return;
+    }
+    if (clusterTimestamp > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)()) -
+            static_cast<std::uint64_t>((std::max)(0, static_cast<int>(block.relativeTimestamp)))) {
+        fail(state, "conflict", "timestamp_overflow");
         return;
     }
     const std::int64_t ticks = static_cast<std::int64_t>(clusterTimestamp) +
@@ -772,6 +798,10 @@ bool parseBlockGroup(
                 return false;
             }
             block = readBlockLayout(reader, child.size);
+        } else if (state.combined && (child.id == ID_CODEC_STATE ||
+                   child.id == ID_BLOCK_ADDITIONS || child.id == ID_SLICES)) {
+            fail(state, "unsupported", "block_transformation_unsupported");
+            return false;
         } else if (child.id == ID_BLOCK_DURATION || child.id == ID_DISCARD_PADDING) {
             if (child.size == 0 || child.size > 8) {
                 return false;
@@ -855,6 +885,9 @@ bool parseCluster(
             }
             timestamp = readUnsigned(data, static_cast<std::size_t>(child.size));
             timestampSeen = true;
+        } else if (state.combined && (child.id == ID_ENCRYPTED_BLOCK || child.id == ID_SILENT_TRACKS)) {
+            fail(state, "unsupported", "cluster_transformation_unsupported");
+            return false;
         } else if (child.id == ID_SIMPLE_BLOCK) {
             if (!timestampSeen) {
                 fail(state, "invalid_media", "block_before_cluster_timestamp");
@@ -909,12 +942,13 @@ SequentialScanState scanMatroskaSelectedAacImpl(
     const std::filesystem::path& path,
     const SequentialSelectedStream& selected,
     std::size_t bufferBytes,
-    std::uint64_t forceReadErrorAfterBytes) {
+    std::uint64_t forceReadErrorAfterBytes,
+    const MatroskaScanInput* input) {
     const auto wallBegin = Clock::now();
     const double cpuBegin = threadCpuMs();
     SequentialScanState result;
-    ScanState state{&result, &selected};
-    ForwardFileReader reader(path, bufferBytes, forceReadErrorAfterBytes);
+    ScanState state{&result, &selected, input != nullptr};
+    ForwardFileReader reader(path, bufferBytes, forceReadErrorAfterBytes, input);
     result.maximumWorkingBytes = reader.bufferBytes();
     if (!reader.valid()) {
         result.status = "io_error";
@@ -1006,6 +1040,16 @@ SequentialScanState scanMatroskaSelectedAacImpl(
                     fail(state, "invalid_media", "invalid_tracks");
                     break;
                 }
+                if (state.combined) {
+                    std::unordered_set<std::uint64_t> numbers, uids;
+                    for (const auto& track : result.tracks) {
+                        if (!numbers.insert(track.trackNumber).second || !uids.insert(track.trackUid).second) {
+                            fail(state, "conflict", "selected_track_mapping_conflict");
+                            break;
+                        }
+                    }
+                    if (state.fatal) break;
+                }
                 tracksParsed = true;
                 std::size_t matches = 0;
                 int audioOrdinal = 0;
@@ -1017,6 +1061,7 @@ SequentialScanState scanMatroskaSelectedAacImpl(
                     const bool selectedNumber = selected.trackNumber == 0 ||
                         track.trackNumber == selected.trackNumber;
                     if (selectedOrdinal && selectedNumber && track.codecId == "A_AAC" &&
+                        (!state.combined || !track.encodedOrTransformed) &&
                         track.codecPrivate == selected.codecPrivate &&
                         static_cast<int>(std::llround(track.samplingFrequency)) == selected.sampleRate &&
                         static_cast<int>(track.channels) == selected.channels &&
@@ -1497,7 +1542,7 @@ MatroskaAacSequentialPresentationResult probeMatroskaAacSequentialPresentation(
             std::filesystem::u8path(path),
             scanSelected,
             (std::max)(options.readBufferBytes, std::size_t{1}),
-            forcedReadError);
+            forcedReadError, options.input);
     } catch (const std::bad_alloc&) {
         result.status = MatroskaAacSequentialStatus::IoError;
         result.reason = MatroskaAacSequentialReason::MetadataElementTooLarge;
