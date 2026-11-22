@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Archive,
     [Parameter(Mandatory)][string]$LabRoot,
-    [Parameter(Mandatory)][string]$OutputRoot
+    [Parameter(Mandatory)][string]$OutputRoot,
+    [switch]$ShortVorbis
 )
 $ErrorActionPreference = 'Stop'
 $archive = (Resolve-Path -LiteralPath $Archive).Path
@@ -34,6 +35,15 @@ if ($LASTEXITCODE) { throw '7z tar extraction failed' }
 if ($LASTEXITCODE) { throw 'Backport check failed' }
 & git -C $source apply --no-index --include=libavformat/matroskadec.c $patch
 if ($LASTEXITCODE) { throw 'Backport apply failed' }
+if ($ShortVorbis) {
+    $vorbisPatch = Join-Path $repo 'third_party\ffmpeg\patches\ogg-vorbis-single-audio-page.patch'
+    $vorbisHash = (Get-FileHash -LiteralPath $vorbisPatch -Algorithm SHA256).Hash
+    if ($vorbisHash -ne '77F1D438C0B4C94D54E4B7B7FAB0296A4B0DC75961F0327D88E248D36220A0BC') {
+        throw 'Unexpected Vorbis patch'
+    }
+    & git -C $source apply --no-index $vorbisPatch
+    if ($LASTEXITCODE) { throw 'Vorbis patch apply failed' }
+}
 function To-Msys([string]$value) { return (($value.Replace('\','/') -replace '^([A-Za-z]):','/$1').ToLowerInvariant()) }
 $sourceMsys = To-Msys $source; $buildMsys = To-Msys $build; $installMsys = To-Msys $install
 $lines = Get-Content -LiteralPath $recipe | Where-Object { $_ -match '^set "OPTS=' }
@@ -68,6 +78,12 @@ $manifest = [ordered]@{
     sourceDirectory = $source; buildDirectory = $build; installDirectory = $install
     configureOptions = $options; compiler = (& cmd /c "`"$vcvars`" >nul && cl" 2>&1 | Select-Object -First 2 | Out-String).Trim()
     runtimeDlls = @(); importLibraries = @()
+}
+if ($ShortVorbis) {
+    $manifest.profile = 'wav-f32-native-v1-short-vorbis'
+    $manifest.vorbisPatch = $vorbisPatch
+    $manifest.vorbisPatchSha256 = $vorbisHash
+    $manifest.patchedFiles += 'libavformat/oggparsevorbis.c'
 }
 foreach ($name in @('avcodec-61.dll','avformat-61.dll','avutil-59.dll','swresample-5.dll')) {
     $item = Join-Path $install "bin\$name"

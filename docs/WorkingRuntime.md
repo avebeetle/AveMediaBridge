@@ -1,5 +1,11 @@
 # Accepted runtime and development checkout
 
+## Short Vorbis streams, 2026-11-22
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261122-vorbis.json) identifies the Product runtime for short Ogg, OGA and OGV files. It uses the previously qualified Bridge, codec, resampler and utilities, plus a full MSVC build of the Ogg demuxer. The demuxer accounts for initial Vorbis overlap when the first audio packet is on the final audio page, including packets spanning multiple lacing segments. Exact packet boundaries keep the terminal duration and trim consistent with the decoded signal.
+
+The exact set is archived under `out/runtime-baselines/2026-11-22-short-vorbis/` with qualification evidence. Rebuild FFmpeg with `tools/export/BuildExportRuntime.ps1 -Archive <ffmpeg-7.1.4.tar.xz> -LabRoot <lab> -OutputRoot <new-directory-under-lab> -ShortVorbis`. The build manifest records the original archive, the Matroska and Vorbis patches, compiler and configuration. Packaging selects the new `avformat-61.dll` and verifies the other four runtime files against the previous receipt. The earlier MKV snapshot is retained. The CTest `short_vorbis_import` generates single-page and multi-page versions of identical compressed audio, then checks every PCM frame at five lengths in each container.
+
 ## Combined Matroska AAC source inspection, 2026-11-22
 
 The accepted DLL exports `AveMediaBridge_InspectMatroskaAacSourceV1`. On an eligible video MKV it hashes the pinned file while proving the selected AAC-LC track's frame count. It publishes both values only after checking the relevant CRCs, track mapping, continuity and physical EOF. If stronger existing evidence applies or the scan cannot establish the result, the caller uses its ordinary import path. Cancellation and non-success leave the output arguments untouched. [Five-file receipt](../tools/runtime/accepted-runtime-20261122.json)
@@ -44,10 +50,10 @@ The AveVoice executable is outside this five-file baseline and is not included i
 
 ## Local development build
 
-The active development dependency is the same external `candidate-002` package previously used by `AveMediaBridge_audio_export`. The retained `ffmpeg/` directory is the older local package. Configure a fresh build explicitly from the repository root:
+For a build against the short-Vorbis runtime, use the headers and import libraries under the completed FFmpeg build's `install/`. Populate the SDK's `bin/` with the four FFmpeg DLLs from the accepted snapshot when qualifying the exact shipped set. Configure a fresh Bridge build with that SDK from the repository root:
 
 ```bat
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DAVEMEDIABRIDGE_FFMPEG_ROOT="../ffmpeglab/research/audio_export_foundation_20260928/candidate-002/install"
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DAVEMEDIABRIDGE_FFMPEG_ROOT="<qualified-ffmpeg-sdk>"
 cmake --build build --config Release
 cmake -E env AMBE_EXPECT_FLOAT_WAV=1 ctest --test-dir build -C Release -j1 --output-on-failure
 ```

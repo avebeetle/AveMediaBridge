@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "avevoice-short-ogg-vorbis-20261122",
+  "acceptedDate": "2026-11-22",
+  "runtimeDirectoryRelativeToDragonianVoice": "AveVoice/build/product/Release",
+  "snapshotRelativeToBridge": "out/runtime-baselines/2026-11-22-short-vorbis",
+  "bridgeSourceReference": {
+    "commit": "1860bd11556d2bc24012ab1cb877499db95903c7",
+    "evidenceRelativeToDragonianVoice": "AveMediaBridge/docs/WorkingRuntime.md",
+    "qualificationBaseCommit": "d35ea9ce08c752eb07a72ff65f100572923fcb61",
+    "qualifiedSourceArchiveRelativeToSnapshot": "evidence/qualified-bridge-source.zip",
+    "qualifiedSourceArchiveSha256": "9DA6953EEB4FD44008391D696F57CAC783D5BA649623C26E641CA3C8049A19D5",
+    "identityAuthority": "The runtime SHA256 identifies the exact qualified binary. Production sources include the same optional export by default. Rebuilding from the source commit may yield a different DLL hash."
+  },
+  "development": {
+    "checkout": "AveMediaBridge",
+    "branch": "main",
+    "sourceCheckpointAtPin": "1860bd11556d2bc24012ab1cb877499db95903c7"
+  },
+  "ffmpeg": {
+    "version": "7.1.4",
+    "profile": "wav-f32-native-v1-short-vorbis",
+    "candidate": "full 7.1.4 rebuild for avformat; other FFmpeg binaries from candidate-002",
+    "baseProfile": "tools/export/export-runtime-profile.json",
+    "buildRecipe": "tools/export/BuildExportRuntime.ps1 -ShortVorbis",
+    "vorbisPatch": "third_party/ffmpeg/patches/ogg-vorbis-single-audio-page.patch",
+    "vorbisPatchSha256": "77F1D438C0B4C94D54E4B7B7FAB0296A4B0DC75961F0327D88E248D36220A0BC",
+    "previousReceipt": "tools/runtime/accepted-runtime-20261122.json"
+  },
+  "files": [
+    {
+      "path": "Modules/AveMediaBridge.dll",
+      "bytes": 645120,
+      "sha256": "DAAB11A992E0CDD7A45D05D757B428ABB46C4D678CE50B49302CB9DAA14FBB51"
+    },
+    {
+      "path": "Lib/ffmpeg/avcodec-61.dll",
+      "bytes": 2489344,
+      "sha256": "BEFCC050C78990DE3EA828ABCC5ED27628BD8A84AF9677FC08F4BF6F3A646802"
+    },
+    {
+      "path": "Lib/ffmpeg/avformat-61.dll",
+      "bytes": 1655808,
+      "sha256": "CB46E3D78F8D158EADD76979F76E24EFEC7DEEC2DD0ABF66940D92E17554ADAD"
+    },
+    {
+      "path": "Lib/ffmpeg/avutil-59.dll",
+      "bytes": 2098176,
+      "sha256": "757F0A7C58F6B0BC30763DD25CCF68BF35D560173E425032F39C03B0CCE0B38B"
+    },
+    {
+      "path": "Lib/ffmpeg/swresample-5.dll",
+      "bytes": 743936,
+      "sha256": "343B16190A48ADABDC2641062E06CABB25A03F1B4B25D3845B63AB8E08E476E1"
+    }
+  ]
+}
