@@ -23,6 +23,7 @@
 namespace AveMediaBridge::Probe {
 
 inline constexpr char kSelectedTrackDurationTagEstimate[] = "selected_track_duration_tag_estimate";
+inline constexpr char kMatroskaAacMovieDurationEstimate[] = "matroska_aac_movie_duration_estimate";
 
 struct FastProbeResult {
     FastProbeJsonDocument document;

@@ -1237,6 +1237,16 @@ void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audi
     applyFrameCountPolicyState(result.document, policyState);
 }
 
+bool hasVideoTrack(const AVFormatContext* context) {
+    if (!context) return false;
+    for (unsigned i = 0; i < context->nb_streams; ++i) {
+        const auto* stream = context->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC)) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 std::string rationalToString(AVRational value) {
@@ -1265,17 +1275,7 @@ StreamSummary makeStreamSummary(int index, const AVStream* stream) {
 
 MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
     const std::string& path, AVFormatContext* context) {
-    if (!context) return {};
-    bool hasVideo = false;
-    for (unsigned i = 0; i < context->nb_streams; ++i) {
-        const auto* stream = context->streams[i];
-        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
-            hasVideo = true;
-            break;
-        }
-    }
-    if (!hasVideo) return {};
+    if (!hasVideoTrack(context)) return {};
     const auto selection = Ffmpeg::selectBestAudioStreamStrict(context);
     if (selection.streamIndex < 0 || !selection.decoder) return {};
     const auto* audio = context->streams[selection.streamIndex];
@@ -1604,19 +1604,22 @@ bool estimateDecodedBytesForPreflight(
     applyFastFrameCountPolicies(
         estimate, source, audioStream, false);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
-    if (estimate.document.decodedSampleFramesSource == "format_duration_estimate") {
+    const auto& document = estimate.document;
+    estimatedFrames = document.decodedSampleFrames;
+    estimatedBytes = document.estimatedDecodedBytes;
+    estimateKind = document.estimatedDecodedBytesKind;
+    if (document.decodedSampleFramesSource == "format_duration_estimate") {
         const auto selected = estimateMatroskaVorbisTrack(formatContext, audioStream);
         if (selected.has_value()) {
             // The movie's end cannot gate free space for a shorter audio track.
             estimatedFrames = *selected;
-            estimatedBytes = estimatedFrames * estimate.document.selectedAudio.channels * sizeof(float);
+            estimatedBytes = estimatedFrames * document.selectedAudio.channels * sizeof(float);
             estimateKind = estimatedBytes > 0 ? kSelectedTrackDurationTagEstimate : "unknown";
-            return estimatedBytes > 0;
+        } else if (document.formatName == "matroska,webm" &&
+            document.selectedAudio.codecId == AV_CODEC_ID_AAC && hasVideoTrack(formatContext)) {
+            estimateKind = kMatroskaAacMovieDurationEstimate;
         }
     }
-    estimatedFrames = estimate.document.decodedSampleFrames;
-    estimatedBytes = estimate.document.estimatedDecodedBytes;
-    estimateKind = estimate.document.estimatedDecodedBytesKind;
     return estimatedBytes > 0 && estimateKind != "unknown";
 }
 

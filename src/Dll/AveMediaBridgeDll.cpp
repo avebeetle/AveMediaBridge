@@ -1009,8 +1009,9 @@ bool checkDiskPreflight(
     StreamingImportResult& result,
     std::string& error) {
     result.diskPreflightChecked = true;
-    if (result.preflightEstimateKind == Probe::kSelectedTrackDurationTagEstimate) {
-        // This track tag supplies progress only. Actual writes can still fail.
+    if (result.preflightEstimateKind == Probe::kSelectedTrackDurationTagEstimate ||
+        result.preflightEstimateKind == Probe::kMatroskaAacMovieDurationEstimate) {
+        // These durations can guide progress but cannot establish required disk space.
         return true;
     }
     if (result.preflightEstimatedBytes <= 0) {

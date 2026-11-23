@@ -68,6 +68,13 @@ incomplete evidence retains the existing provisional and typed-reconcile paths.
 
 ## Current Codec And Container Rules
 
+### Matroska video with AAC audio
+
+When only the movie duration is known, the native importer can use it for
+progress. It checks actual PCM writes as usual. A longer picture track cannot
+cause a disk-space refusal for the selected audio based on that duration.
+An independently established audio estimate retains its usual preflight checks.
+
 ### Matroska/WebM video with Vorbis audio
 
 For a seekable file up to 1 MiB with a finite, complete Matroska segment, one video

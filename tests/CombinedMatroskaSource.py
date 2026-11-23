@@ -1,9 +1,11 @@
 """Compare pinned-file inspection to an independent decode and exercise clean fallback."""
 import ctypes as C
 import hashlib
+import json
 import msvcrt
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,6 +101,46 @@ def main(dll_path, ffmpeg_dir, ffmpeg):
         assert decode(gap) == frames - 1024
         check(gap, 0)
         check(media, -1, cancel=True)
+
+        # Keep the exact same AAC packets and move the later pictures far enough
+        # away that treating the whole movie as PCM would exceed the free disk.
+        long_video = root / 'long-picture.mkv'
+        free = shutil.disk_usage(root).free
+        delay_ms = 2 * free // (48000 * 2 * 4 // 1000) + 1000
+        shifted = f"setts=pts='PTS+gt(N,0)*{delay_ms}':dts='DTS+gt(N,0)*{delay_ms}'"
+        ff('-i', str(media), '-map', '0', '-c', 'copy', '-bsf:v',
+           shifted, str(long_video))
+        probe = dll.AveMediaBridge_ProbeToJson
+        probe.argtypes = [C.c_wchar_p, C.c_wchar_p]
+        document = root / 'long-picture.json'
+        assert probe(str(long_video), str(document)) == 0
+        details = json.loads(document.read_text(encoding='utf-8-sig'))
+        assert details['decodedSampleFramesSource'] == 'format_duration_estimate', details
+        assert details['estimatedDecodedBytes'] > free, (details['estimatedDecodedBytes'], free)
+
+        importer = dll.AveMediaBridge_ImportAudioToSession
+        importer.argtypes = [C.c_wchar_p, C.c_wchar_p]
+        get_error = dll.AveMediaBridge_GetLastErrorText
+        get_error.argtypes = [C.POINTER(C.c_wchar), C.c_int]
+        reason = C.create_unicode_buffer(1024)
+        native_pcm = []
+        for source in (media, long_video):
+            output = root / source.stem
+            if importer(str(source), str(output)) != 0:
+                get_error(reason, len(reason))
+                raise AssertionError(f'{source.name}: {reason.value}')
+            native_pcm.append((output / 'original_f32.bin').read_bytes())
+        assert len(native_pcm[0]) == frames * 8 and native_pcm[0] == native_pcm[1]
+
+        # With no picture track, the same large duration is still subject to
+        # the existing disk preflight. No large file is written by this test.
+        audio_only = root / 'audio-only.mka'
+        ff('-i', str(media), '-map', '0:a:0', '-c', 'copy', '-bsf:a', shifted, str(audio_only))
+        refused = root / 'refused'
+        assert importer(str(audio_only), str(refused)) != 0
+        get_error(reason, len(reason))
+        assert 'not enough free disk space' in reason.value, reason.value
+        assert not (refused / 'original_f32.bin').exists()
 
 
 if __name__ == '__main__':
