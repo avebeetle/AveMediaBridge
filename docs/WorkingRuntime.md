@@ -1,5 +1,18 @@
 # Accepted runtime and development checkout
 
+## Video track inventory, 2026-11-23
+
+The quick probe reports whether the bundled decoder found a video stream
+without the attached-picture disposition. A Matroska MJPEG movie returned true.
+An AAC file with an attached JPEG, an AAC file with subtitles and a file with
+two audio streams all returned false.
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261123-matroska-video-track.json)
+records the Bridge and the same four FFmpeg DLLs. Its snapshot includes the
+source archive, Release test log and comparison of all 73 corpus probes.
+The previous JSON fields matched apart from elapsed scan times. Twenty tests
+passed and nine required unavailable external fixtures.
+
 ## Matroska AAC import with a longer picture track, 2026-11-23
 
 The previous Bridge rejected a short stereo AAC track when the movie duration

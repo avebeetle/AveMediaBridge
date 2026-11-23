@@ -2,7 +2,7 @@
 
 - Keep changes small and reviewable.
 - Continue development in the `AveMediaBridge` working folder on `main`. Do not create sibling working copies unless explicitly requested.
-- Preserve the qualified AveVoice DLL and FFmpeg set recorded in `tools/runtime/accepted-runtime-20261123-matroska-aac-disk.json` and retain previous runtime snapshots; see `docs/WorkingRuntime.md`.
+- Preserve the qualified AveVoice DLL and FFmpeg set recorded in `tools/runtime/accepted-runtime-20261123-matroska-video-track.json` and retain previous runtime snapshots; see `docs/WorkingRuntime.md`.
 - Do not replace the deployed AveVoice DLL or FFmpeg set without a new explicit user request. Local builds and working-folder cleanup do not authorize deployment.
 - Do not commit build artifacts, FFmpeg binaries, generated output, or credentials.
 - Do not expose FFmpeg types in public DLL ABI.
