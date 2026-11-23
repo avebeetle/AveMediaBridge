@@ -1,5 +1,19 @@
 # Accepted runtime and development checkout
 
+## Matroska AAC import with a longer picture track, 2026-11-23
+
+The previous Bridge rejected a short stereo AAC track when the movie duration
+implied approximately 97 GB of decoded audio on a volume with less space
+available. The updated Bridge opens the same audio even when the pictures span
+that interval. The decoded PCM matched the reference byte for byte. An
+audio-only Matroska control retained its disk-space check.
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261123-matroska-aac-disk.json)
+records the Bridge and the four previously qualified FFmpeg DLLs. The snapshot
+under `out/runtime-baselines/2026-11-23-matroska-aac-disk/` includes the source
+archive, the original refusal, the Release CTest report and the probe comparison
+for 73 files. Twenty tests passed. Nine tests require separate external fixtures.
+
 ## Selected Vorbis audio in Matroska and WebM video, 2026-11-23
 
 The bounded probe measures native Vorbis packet overlap for the initial waveform
