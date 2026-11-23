@@ -1,5 +1,20 @@
 # Accepted runtime and development checkout
 
+## Extended Ogg Vorbis length verification, 2026-11-23
+
+When the bounded check of an audio-only Vorbis file exhausts its budget, AveVoice
+can request a cancellable sequential check on a pinned source. The prepared
+reader then imports from that same source. At qualification the files with a
+large comment and with 32 chained streams reached Ready, with all 48,011 and
+193,538,144 frames respectively compared to Xiph. Corrupt tails, unsupported
+channel changes, and cancellation were also checked.
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261123-vorbis-extended.json)
+records the new Bridge DLL and the four FFmpeg DLLs from the previous runtime.
+`out/runtime-baselines/2026-11-23-vorbis-extended/` contains the verified five
+files, a Git archive of the exact Bridge source commit, and qualification results.
+The full CTest run recorded 18 passes and 9 skipped corpus-dependent tests.
+
 ## Chained Ogg Vorbis, 2026-11-23
 
 The [runtime receipt](../tools/runtime/accepted-runtime-20261123-vorbis-links.json) pins
