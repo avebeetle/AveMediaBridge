@@ -47,6 +47,32 @@ def omit_audio_packet(source, target):
     raise AssertionError('No interior AAC block in fixture')
 
 
+def check_video_inventory(root, media, ff, probe):
+    cover = root / 'cover.jpg'
+    ff('-i', str(media), '-map', '0:v:0', '-frames:v', '1', '-c:v', 'mjpeg', str(cover))
+    attached = root / 'attached.mka'
+    ff('-i', str(media), '-map', '0:a', '-c', 'copy', '-attach', str(cover),
+       '-metadata:s:t:0', 'mimetype=image/jpeg', '-metadata:s:t:0', 'filename=cover.jpg', str(attached))
+    two_audio = root / 'two-audio.mka'
+    ff('-i', str(media), '-map', '0:a', '-map', '0:a', '-c', 'copy', str(two_audio))
+    captions = root / 'captions.srt'
+    captions.write_text('1\n00:00:00,000 --> 00:00:02,000\nTest\n', encoding='utf-8')
+    subtitled = root / 'subtitles.mkv'
+    ff('-i', str(media), '-i', str(captions), '-map', '0:a', '-map', '1:s', '-c', 'copy', str(subtitled))
+
+    for source, types, has_video in (
+        (media, ['video', 'audio'], True),
+        (attached, ['audio', 'video'], False),
+        (two_audio, ['audio', 'audio'], False),
+        (subtitled, ['audio', 'subtitle'], False),
+    ):
+        document = root / (source.stem + '-tracks.json')
+        assert probe(str(source), str(document)) == 0
+        facts = json.loads(document.read_text(encoding='utf-8-sig'))
+        assert [s['mediaType'] for s in facts['streams']] == types, source.name
+        assert facts.get('hasVideoTrack') is has_video, (source.name, facts.get('hasVideoTrack'))
+
+
 def main(dll_path, ffmpeg_dir, ffmpeg):
     cancel_type = C.CFUNCTYPE(C.c_int, C.c_void_p)
     with os.add_dll_directory(ffmpeg_dir):
@@ -112,6 +138,7 @@ def main(dll_path, ffmpeg_dir, ffmpeg):
            shifted, str(long_video))
         probe = dll.AveMediaBridge_ProbeToJson
         probe.argtypes = [C.c_wchar_p, C.c_wchar_p]
+        check_video_inventory(root, media, ff, probe)
         document = root / 'long-picture.json'
         assert probe(str(long_video), str(document)) == 0
         details = json.loads(document.read_text(encoding='utf-8-sig'))

@@ -151,6 +151,11 @@ void fillFastSourceInfo(FastProbeResult& result, const AVFormatContext* formatCo
     }
 }
 
+bool isVideoTrack(const AVStream* stream) {
+    return stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+        !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC);
+}
+
 void fillFastStreamDetails(FastProbeResult& result, const AVFormatContext* formatContext) {
     if (!formatContext) {
         return;
@@ -162,6 +167,7 @@ void fillFastStreamDetails(FastProbeResult& result, const AVFormatContext* forma
         if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             ++result.document.audioStreamCount;
         }
+        if (isVideoTrack(stream)) result.document.hasVideoTrack = true;
         result.document.streams.push_back(makeStreamSummary(static_cast<int>(i), stream));
     }
 }
@@ -1240,9 +1246,7 @@ void finalizeFrameCountTrustPolicy(FastProbeResult& result, const AVStream* audi
 bool hasVideoTrack(const AVFormatContext* context) {
     if (!context) return false;
     for (unsigned i = 0; i < context->nb_streams; ++i) {
-        const auto* stream = context->streams[i];
-        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC)) return true;
+        if (isVideoTrack(context->streams[i])) return true;
     }
     return false;
 }

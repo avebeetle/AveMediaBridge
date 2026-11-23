@@ -20,6 +20,7 @@ struct FastProbeJsonDocument {
     int streamCount = 0;
     int audioStreamCount = 0;
     bool hasAudio = false;
+    bool hasVideoTrack = false;
     int bestAudioStreamIndex = -1;
     SelectedAudioStreamInfo selectedAudio;
     std::string channelLayout;

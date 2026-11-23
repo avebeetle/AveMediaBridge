@@ -38,6 +38,14 @@ Probe JSON frame-count fields include:
 
 These fields are additive compatibility data. Do not remove or rename them without coordinating AveVoice.
 
+The optional top-level Boolean `hasVideoTrack` reports whether the discovered
+streams include a video track without the attached-picture disposition. A cover
+image may appear as `video` in the `streams` list while this flag is false. Older
+probes and results without a stream inventory omit the field.
+The result describes the bundled FFmpeg stream inventory. For example, this
+audio-oriented build reports audio streams only in the MPEG-PS and VOB samples
+50 and 51, where a full FFmpeg build also identifies MPEG-2 video.
+
 ## Authoritative Versus Provisional
 
 Authoritative decoded frame counts are exact enough to define final source length. AveVoice should not align them upward or replace them with duration-derived estimates.

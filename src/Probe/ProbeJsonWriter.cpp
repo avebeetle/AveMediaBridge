@@ -116,6 +116,9 @@ bool writeProbeJson(
     json << "  \"sourcePath\": " << jsonString(document.sourcePath) << ",\n";
     json << "  \"probeMode\": \"fast_v2\",\n";
     json << "  \"hasAudio\": " << (document.hasAudio ? "true" : "false") << ",\n";
+    if (!document.streams.empty()) {
+        json << "  \"hasVideoTrack\": " << (document.hasVideoTrack ? "true" : "false") << ",\n";
+    }
     json << "  \"bestAudioStreamIndex\": " << document.bestAudioStreamIndex << ",\n";
     json << "  \"selectedAudioStreamIndex\": " << document.selectedAudio.index << ",\n";
     json << "  \"containerFormat\": " << jsonString(document.containerFormat) << ",\n";
