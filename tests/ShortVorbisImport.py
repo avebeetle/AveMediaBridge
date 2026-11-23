@@ -1,6 +1,7 @@
 """Check the whole decoded signal against the same packets on separate Ogg pages."""
 from array import array
 import ctypes
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -78,6 +79,61 @@ def main(bridge_dll, ffmpeg_dir, ffmpeg):
                 assert len(pcm) == length, (single.name, len(pcm), length)
                 assert max(abs(a-b) for a, b in zip(pcm, reference)) < 1e-5, single.name
                 print(f'{single.name}: all {length} frames verified')
+
+        # A terminal granule describes one link, not the entire physical Ogg.
+        chain = root / 'two-links.oga'
+        lengths = (1023, 2048)
+        chain.write_bytes(b''.join((root / f'single-{n}.ogg').read_bytes() for n in lengths))
+        evidence = root / 'probe.json'
+        probe = dll.AveMediaBridge_ProbeToJson
+        probe.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p)
+        assert probe(str(chain), str(evidence)) == 0
+        facts = json.loads(evidence.read_text(encoding='utf-8-sig'))
+        assert facts['decodedSampleFramesKind'] == 'exact'
+        assert facts['decodedSampleFrames'] == sum(lengths), facts['decodedSampleFrames']
+        result = root / 'chain-import'
+        assert import_audio(str(chain), str(result)) == 0
+        pcm = (result / 'original_f32.bin').read_bytes()
+        expected = b''.join((root / f'import-{n}-ogg' / 'original_f32.bin').read_bytes()
+                            for n in lengths)
+        assert pcm == expected
+
+        # The first audio page may be EOS, or contain only the priming packet.
+        # Both page arrangements must preserve the same six distinct channels.
+        tones = '|'.join(f'0.1*sin(2*PI*{hz}*t)' for hz in (431, 587, 643, 53, 839, 1009))
+        audio = ('-f', 'lavfi', '-i', f'aevalsrc={tones}:s=48000:c=5.1',
+                 '-af', 'atrim=end_sample=1023', '-c:a', 'libvorbis', '-q:a', '4')
+        single = root / 'six-single.ogg'
+        split = root / 'six-split.ogg'
+        ff(*audio, str(single))
+        ff(*audio, '-page_duration', '1', str(split))
+        single_packets, single_pages = vorbis_packets(single)
+        split_packets, split_pages = vorbis_packets(split)
+        assert single_pages == 1 and split_pages > 1 and single_packets == split_packets
+        reference = array('f', ff('-i', str(split), '-map', '0:a:0', '-f', 'f32le', 'pipe:1'))
+        assert len(reference) == 1023 * 6
+        outputs = []
+        for surround in (single, split):
+            assert probe(str(surround), str(evidence)) == 0
+            facts = json.loads(evidence.read_text(encoding='utf-8-sig'))
+            assert (facts['decodedSampleFrames'], facts['channels'], facts['sampleRate']) == (1023, 6, 48000)
+            assert facts['decodedSampleFramesKind'] == 'exact'
+            session = root / (surround.stem + '-import')
+            assert import_audio(str(surround), str(session)) == 0
+            output = (session / 'original_f32.bin').read_bytes()
+            samples = array('f', output)
+            assert len(samples) == len(reference) and max(abs(a-b) for a,b in zip(samples, reference)) < 1e-5
+            outputs.append(output)
+        assert outputs[0] == outputs[1]
+
+        changed_layout = root / 'mono-then-six.ogg'
+        changed_layout.write_bytes((root / 'single-1023.ogg').read_bytes() + single.read_bytes())
+        assert probe(str(changed_layout), str(evidence)) != 0
+        facts = json.loads(evidence.read_text(encoding='utf-8-sig'))
+        assert facts['mediaOpenReason'] == 'unsupported_channel_layout'
+        session = root / 'changed-layout-import'
+        assert import_audio(str(changed_layout), str(session)) != 0
+        assert not (session / 'original_f32.bin').exists()
 
 
 if __name__ == '__main__':

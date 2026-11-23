@@ -22,7 +22,9 @@ enum class MediaTechnicalSupport {
     MissingDecoder,
     AmbiguousRawMedia,
     InvalidMedia,
-    IoError
+    IoError,
+    UnsupportedChannelLayout,
+    QuickScanLimit
 };
 
 enum class MediaCertificationLevel {
@@ -52,7 +54,9 @@ enum class MediaOpenReason {
     MissingDecoder,
     AmbiguousRawMedia,
     MissingRequiredAudioParameters,
-    ConflictingPresentationEvidence
+    ConflictingPresentationEvidence,
+    UnsupportedChannelLayout,
+    QuickScanLimit
 };
 
 struct MediaOpenAssessment {

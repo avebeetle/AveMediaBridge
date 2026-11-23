@@ -22,6 +22,7 @@
 #include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
 #include "../Probe/PresentationBudgetPolicy.hpp"
+#include "../Probe/VorbisLinkPolicy.hpp"
 #include "../Utils/JsonUtils.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -48,6 +49,7 @@ namespace ClipDiag = AveMediaBridge::Diagnostics;
 namespace Decode = AveMediaBridge::Decode;
 namespace Ffmpeg = AveMediaBridge::Ffmpeg;
 namespace Probe = AveMediaBridge::Probe;
+namespace Vorbis = AveMediaBridge::Vorbis;
 namespace Input = AveMediaBridge::Input;
 using AveMediaBridge::ffErrorString;
 using AveMediaBridge::Utils::jsonString;
@@ -1157,6 +1159,44 @@ bool addUnsignedFrames(
     return true;
 }
 
+int writeStreamingPcm(const float* pcm, int frames, PcmOutput::Writer& output,
+                      StreamingStatsAccumulator& stats, StreamingImportResult& result,
+                      StreamingImportCallbacks* callbacks, FullScaleClipDiagnostic* diagnostic) {
+    const std::size_t writtenSamples =
+        static_cast<std::size_t>(frames) * static_cast<std::size_t>(result.channels);
+    analyzePostSwrSamples(diagnostic, pcm, frames, result.channels);
+    const std::size_t writtenBytes = writtenSamples * sizeof(float);
+    output.write(reinterpret_cast<const char*>(pcm), static_cast<std::streamsize>(writtenBytes));
+    output.flush();
+    if (!output) {
+        result.error = "failed to write original_f32.bin";
+        return AVERROR(EIO);
+    }
+
+    stats.addSamples(pcm, writtenSamples);
+    const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
+    if (!addWrittenFrames(result, frames, result.error)) {
+        return AVERROR(EOVERFLOW);
+    }
+    if (!emitDraftWaveformSamples(
+            callbacks,
+            pcm,
+            frames,
+            result.channels,
+            result.sampleRate,
+            firstOutputFrame,
+            result.error)) {
+        return AVERROR_EXIT;
+    }
+    if (!emitImportProgress(callbacks, result, false, result.error)) {
+        return AVERROR_EXIT;
+    }
+    if (!pollImportCancel(callbacks, result)) {
+        return AVERROR_EXIT;
+    }
+    return 0;
+}
+
 int writeConvertedStreamingSamples(
     StreamingSwrState& swr,
     const AVFrame* frame,
@@ -1256,40 +1296,7 @@ int writeConvertedStreamingSamples(
         return 0;
     }
 
-    const std::size_t writtenSamples =
-        static_cast<std::size_t>(ret) * static_cast<std::size_t>(swr.channels);
-    analyzePostSwrSamples(diagnostic, swr.outputBuffer.data(), ret, swr.channels);
-    const std::size_t writtenBytes = writtenSamples * sizeof(float);
-    output.write(reinterpret_cast<const char*>(swr.outputBuffer.data()), static_cast<std::streamsize>(writtenBytes));
-    output.flush();
-    if (!output) {
-        result.error = "failed to write original_f32.bin";
-        return AVERROR(EIO);
-    }
-
-    stats.addSamples(swr.outputBuffer.data(), writtenSamples);
-    const std::uint64_t firstOutputFrame = nonNegativeToUint64(result.framesWritten);
-    if (!addWrittenFrames(result, ret, countError)) {
-        result.error = countError;
-        return AVERROR(EOVERFLOW);
-    }
-    if (!emitDraftWaveformSamples(
-            callbacks,
-            swr.outputBuffer.data(),
-            ret,
-            swr.channels,
-            swr.sampleRate,
-            firstOutputFrame,
-            result.error)) {
-        return AVERROR_EXIT;
-    }
-    if (!emitImportProgress(callbacks, result, false, result.error)) {
-        return AVERROR_EXIT;
-    }
-    if (!pollImportCancel(callbacks, result)) {
-        return AVERROR_EXIT;
-    }
-    return 0;
+    return writeStreamingPcm(swr.outputBuffer.data(), ret, output, stats, result, callbacks, diagnostic);
 }
 
 int flushStreamingSwr(
@@ -1438,6 +1445,58 @@ int sendStreamingPacketAndReceive(
     return receiveStreamingFrames(decoder, frame, swr, output, stats, result, callbacks, diagnostic);
 }
 
+struct VorbisImportSink {
+    PcmOutput::Writer& output;
+    StreamingStatsAccumulator& stats;
+    StreamingImportResult& result;
+    StreamingImportCallbacks* callbacks;
+    FullScaleClipDiagnostic* diagnostic;
+
+    static bool canceled(void* context) {
+        auto& sink = *static_cast<VorbisImportSink*>(context);
+        return !pollImportCancel(sink.callbacks, sink.result);
+    }
+    static int __cdecl emit(void* context, const float* pcm, int frames, int channels,
+                            int rate, int, std::uint64_t) {
+        auto& sink = *static_cast<VorbisImportSink*>(context);
+        auto& r = sink.result;
+        if (!pcm || frames <= 0 || channels != r.channels || rate != r.sampleRate ||
+            r.framesWritten > r.preflightEstimatedFrames ||
+            frames > r.preflightEstimatedFrames - r.framesWritten) {
+            r.error = "Vorbis PCM exceeds its verified presentation";
+            return 1;
+        }
+        ++r.decode.decodedFrames;
+        r.physicalInputFrames += frames;
+        r.acceptedInputFrames += frames;
+        r.producedOutputFrames += frames;
+        return writeStreamingPcm(pcm, frames, sink.output, sink.stats, r, sink.callbacks, sink.diagnostic) < 0;
+    }
+};
+
+bool importVorbisLinks(AVIOContext* io, const Vorbis::Plan& plan, VorbisImportSink& sink) {
+    auto& r = sink.result;
+    r.decode.outputSampleRate = r.sampleRate = plan.rate;
+    r.decode.outputChannels = r.channels = plan.channels;
+    r.decode.swrInitialized = std::any_of(plan.parts.begin(), plan.parts.end(),
+        [&](const Vorbis::Link& link) { return link.rate != plan.rate; });
+    Input::DemuxByteSource input(io);
+    std::uint64_t bytesRead = 0;
+    const auto status = input.valid()
+        ? Vorbis::decode(input.source({}), plan, &sink, &VorbisImportSink::emit, &VorbisImportSink::canceled, bytesRead)
+        : Vorbis::Status::IoError;
+    if (status != Vorbis::Status::Ok) {
+        if (r.error.empty()) r.error = Probe::vorbisFailureText(status);
+        return false;
+    }
+    r.decode.decoderOpened = true;
+    if (r.framesWritten != plan.frames) {
+        r.error = "Vorbis decode did not cover the verified presentation";
+        return false;
+    }
+    return true;
+}
+
 StreamingImportResult runStreamingSessionImportToLiveFile(
     const Input::MediaInputSource& source,
     const std::filesystem::path& sessionDir,
@@ -1534,67 +1593,46 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         decoder = avcodec_find_decoder(codecpar->codec_id);
     }
     fillStreamingSelectedAudioInfo(result, audioStream, decoder, nullptr);
-    result.diskPreflightEstimateKnown =
-        estimateDecodedBytesForPreflight(
-            formatContext,
-            audioStream,
-            source,
-            result.preflightEstimatedFrames,
-            result.preflightEstimatedBytes,
-            result.preflightEstimateKind);
-    resolveStreamingPresentationBudget(
-        result, source, sessionDir, formatContext, audioStream, expected);
+    Vorbis::Plan linkPlan;
+    bool decodeVorbisLinks = false;
+    if (Probe::isStandaloneVorbis(formatContext, audioStream)) {
+        const auto status = Probe::probeVorbisLinks(formatContext->pb, linkPlan);
+        const auto native = Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
+        const bool ordinary = (status == Vorbis::Status::Ok || status == Vorbis::Status::UnsupportedChannels) &&
+            Probe::nativeVorbisPresentation(linkPlan, audioStream, native);
+        const bool singlePageMultichannel = Probe::nativeVorbisSinglePage(status, linkPlan, audioStream);
+        if (!ordinary && !singlePageMultichannel && status != Vorbis::Status::Ok) {
+            result.error = Probe::vorbisFailureText(status);
+            return result;
+        }
+        decodeVorbisLinks = !ordinary && !singlePageMultichannel;
+        result.totalPresentationEvidence = ordinary ? native : Probe::vorbisLinkEvidence(linkPlan);
+        result.diskPreflightEstimateKnown = true;
+        result.preflightEstimatedFrames = linkPlan.frames;
+        result.preflightEstimatedBytes = linkPlan.frames * linkPlan.channels * sizeof(float);
+        result.preflightEstimateKind = "exact";
+        result.source.durationSeconds = static_cast<double>(linkPlan.frames) / linkPlan.rate;
+        result.presentationBudgetKnown = true;
+        result.presentationBudgetFrames = linkPlan.frames;
+        result.presentationBudgetSource = result.totalPresentationEvidence.source;
+        result.presentationBudgetReason = "verified_complete_vorbis_links";
+    } else {
+        result.diskPreflightEstimateKnown =
+            estimateDecodedBytesForPreflight(
+                formatContext,
+                audioStream,
+                source,
+                result.preflightEstimatedFrames,
+                result.preflightEstimatedBytes,
+                result.preflightEstimateKind);
+        resolveStreamingPresentationBudget(
+            result, source, sessionDir, formatContext, audioStream, expected);
+    }
     checkInput();
 
     std::string preflightError;
     if (!checkDiskPreflight(sessionDir, result, preflightError)) {
         result.error = preflightError;
-        cleanup();
-        return result;
-    }
-
-    if (!decoder) {
-        result.error = "decoder not found for codec " + result.selectedAudio.codecName;
-        cleanup();
-        return result;
-    }
-
-    decoderContext = avcodec_alloc_context3(decoder);
-    if (!decoderContext) {
-        result.error = "avcodec_alloc_context3 failed";
-        cleanup();
-        return result;
-    }
-
-    ret = avcodec_parameters_to_context(decoderContext, codecpar);
-    if (ret < 0) {
-        result.error = "avcodec_parameters_to_context failed: " + ffErrorString(ret);
-        cleanup();
-        return result;
-    }
-    decoderContext->pkt_timebase = audioStream->time_base;
-
-    if (decoderContext->ch_layout.nb_channels <= 0 && codecpar->ch_layout.nb_channels > 0) {
-        av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
-    }
-
-    ret = avcodec_open2(decoderContext, decoder, nullptr);
-    if (ret < 0) {
-        result.error = "avcodec_open2 failed: " + ffErrorString(ret);
-        cleanup();
-        return result;
-    }
-    result.decode.decoderOpened = true;
-    fillStreamingSelectedAudioInfo(result, audioStream, decoder, decoderContext);
-    if (fullScaleDiagnostic.enabled) {
-        fullScaleDiagnostic.codecName = result.selectedAudio.codecName;
-        fullScaleDiagnostic.decoderName = result.selectedAudio.decoderName;
-    }
-
-    packet = av_packet_alloc();
-    frame = av_frame_alloc();
-    if (!packet || !frame) {
-        result.error = "unable to allocate AVPacket/AVFrame";
         cleanup();
         return result;
     }
@@ -1611,61 +1649,116 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         return result;
     }
 
-    while ((ret = av_read_frame(formatContext, packet)) >= 0) {
-        checkInput();
-        if (!pollImportCancel(callbacks, result)) {
-            av_packet_unref(packet);
+    if (decodeVorbisLinks) {
+        VorbisImportSink sink{output, stats, result, callbacks, &fullScaleDiagnostic};
+        if (!importVorbisLinks(formatContext->pb, linkPlan, sink)) return result;
+    } else {
+        if (!decoder) {
+            result.error = "decoder not found for codec " + result.selectedAudio.codecName;
             cleanup();
             return result;
         }
 
-        ++result.decode.packetsRead;
-        if (packet->stream_index == audioStreamIndex) {
-            ++result.decode.audioPackets;
-            const int decodeRet =
-                sendStreamingPacketAndReceive(
-                    decoderContext,
-                    packet,
-                    frame,
-                    swr,
-                    output,
-                    stats,
-                    result,
-                    callbacks,
-                    &fullScaleDiagnostic);
-            av_packet_unref(packet);
-            if (decodeRet < 0) {
+        decoderContext = avcodec_alloc_context3(decoder);
+        if (!decoderContext) {
+            result.error = "avcodec_alloc_context3 failed";
+            cleanup();
+            return result;
+        }
+
+        ret = avcodec_parameters_to_context(decoderContext, codecpar);
+        if (ret < 0) {
+            result.error = "avcodec_parameters_to_context failed: " + ffErrorString(ret);
+            cleanup();
+            return result;
+        }
+        decoderContext->pkt_timebase = audioStream->time_base;
+
+        if (decoderContext->ch_layout.nb_channels <= 0 && codecpar->ch_layout.nb_channels > 0) {
+            av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
+        }
+
+        ret = avcodec_open2(decoderContext, decoder, nullptr);
+        if (ret < 0) {
+            result.error = "avcodec_open2 failed: " + ffErrorString(ret);
+            cleanup();
+            return result;
+        }
+        result.decode.decoderOpened = true;
+        fillStreamingSelectedAudioInfo(result, audioStream, decoder, decoderContext);
+        if (fullScaleDiagnostic.enabled) {
+            fullScaleDiagnostic.codecName = result.selectedAudio.codecName;
+            fullScaleDiagnostic.decoderName = result.selectedAudio.decoderName;
+        }
+
+        packet = av_packet_alloc();
+        frame = av_frame_alloc();
+        if (!packet || !frame) {
+            result.error = "unable to allocate AVPacket/AVFrame";
+            cleanup();
+            return result;
+        }
+
+        while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+            checkInput();
+            if (!pollImportCancel(callbacks, result)) {
+                av_packet_unref(packet);
                 cleanup();
                 return result;
             }
-        } else {
-            av_packet_unref(packet);
+
+            ++result.decode.packetsRead;
+            if (packet->stream_index == audioStreamIndex) {
+                ++result.decode.audioPackets;
+                const int decodeRet =
+                    sendStreamingPacketAndReceive(
+                        decoderContext,
+                        packet,
+                        frame,
+                        swr,
+                        output,
+                        stats,
+                        result,
+                        callbacks,
+                        &fullScaleDiagnostic);
+                av_packet_unref(packet);
+                if (decodeRet < 0) {
+                    cleanup();
+                    return result;
+                }
+            } else {
+                av_packet_unref(packet);
+            }
+        }
+
+        checkInput();
+        if (ret != AVERROR_EOF) {
+            result.error = "av_read_frame failed: " + ffErrorString(ret);
+            cleanup();
+            return result;
+        }
+
+        ret = avcodec_send_packet(decoderContext, nullptr);
+        if (ret < 0 && ret != AVERROR_EOF) {
+            result.error = "decoder flush send failed: " + ffErrorString(ret);
+            cleanup();
+            return result;
+        }
+
+        ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result, callbacks, &fullScaleDiagnostic);
+        if (ret < 0) {
+            cleanup();
+            return result;
+        }
+
+        ret = flushStreamingSwr(swr, output, stats, result, callbacks, &fullScaleDiagnostic);
+        if (ret < 0) {
+            cleanup();
+            return result;
         }
     }
-
-    checkInput();
-    if (ret != AVERROR_EOF) {
-        result.error = "av_read_frame failed: " + ffErrorString(ret);
-        cleanup();
-        return result;
-    }
-
-    ret = avcodec_send_packet(decoderContext, nullptr);
-    if (ret < 0 && ret != AVERROR_EOF) {
-        result.error = "decoder flush send failed: " + ffErrorString(ret);
-        cleanup();
-        return result;
-    }
-
-    ret = receiveStreamingFrames(decoderContext, frame, swr, output, stats, result, callbacks, &fullScaleDiagnostic);
-    if (ret < 0) {
-        cleanup();
-        return result;
-    }
-
-    ret = flushStreamingSwr(swr, output, stats, result, callbacks, &fullScaleDiagnostic);
-    if (ret < 0) {
-        cleanup();
+    if (linkPlan.frames > 0 && result.framesWritten != linkPlan.frames) {
+        result.error = "Vorbis decode did not cover the verified presentation";
         return result;
     }
     if (result.presentationBudgetKnown &&
@@ -2364,7 +2457,7 @@ int AveMediaBridge_ProbeToJson(const wchar_t* inputPath, const wchar_t* outputJs
             return 3;
         }
 
-        if (!probe.document.errors.empty() && !probe.streamInfoFound) {
+        if (!probe.document.errors.empty() && !probe.mediaOpenAssessment.canImport) {
             setLastErrorText(probe.document.errors.front());
             return 2;
         }
@@ -2398,7 +2491,7 @@ int AveMediaBridge_ProbeFrameCountCandidatesToJson(
             return 3;
         }
 
-        if (!probe.document.errors.empty() && !probe.streamInfoFound) {
+        if (!probe.document.errors.empty() && !probe.mediaOpenAssessment.canImport) {
             setLastErrorText(probe.document.errors.front());
             return 2;
         }

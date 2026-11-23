@@ -10,6 +10,7 @@
 #include "OggOpusSequentialPresentation.hpp"
 #include "PacketScan.hpp"
 #include "PresentationBudgetPolicy.hpp"
+#include "VorbisLinkPolicy.hpp"
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
@@ -1297,6 +1298,61 @@ MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
         baseline.totalPresentation.trust == PresentationTotalTrust::SampleExact);
 }
 
+static void resolveVorbisProbe(FastProbeResult& result, AVFormatContext* context,
+                               const AVStream* stream) {
+    auto& doc = result.document;
+    Vorbis::Plan plan;
+    const auto status = probeVorbisLinks(context->pb, plan);
+    if ((status == Vorbis::Status::Ok || status == Vorbis::Status::UnsupportedChannels) &&
+        nativeVorbisPresentation(plan, stream, result.totalPresentation)) {
+        result.mediaOpenAssessment = assessMediaOpen(doc, result.totalPresentation, true);
+        return;
+    }
+    if (status == Vorbis::Status::Ok || nativeVorbisSinglePage(status, plan, stream)) {
+        result.totalPresentation = vorbisLinkEvidence(plan);
+        doc.selectedAudio.sampleRate = plan.rate;
+        doc.selectedAudio.channels = plan.channels;
+        if (plan.channels <= 2)
+            doc.channelLayout = plan.channels == 1 ? "mono" : "stereo";
+        doc.decodedSampleFrames = plan.frames;
+        doc.decodedSampleFramesKind = "exact";
+        doc.decodedSampleFramesTrust = "authoritative";
+        doc.decodedSampleFramesSource = presentationTotalSourceName(result.totalPresentation.source);
+        doc.frameCountPolicyReason = "duration of all Vorbis links in final document samples";
+        doc.durationSec = static_cast<double>(plan.frames) / plan.rate;
+        doc.durationKind = "exact";
+        doc.durationEstimationMethod = "from_vorbis_links";
+        updateEstimatedDecodedBytes(doc);
+        result.mediaOpenAssessment = assessMediaOpen(doc, result.totalPresentation, true);
+        return;
+    }
+    result.totalPresentation = {};
+    doc.decodedSampleFrames = 0;
+    doc.decodedSampleFramesSource = doc.decodedSampleFramesTrust = doc.decodedSampleFramesKind = "unknown";
+    doc.durationSec = 0;
+    doc.durationEstimationMethod = doc.durationKind = "unknown";
+    doc.estimatedDecodedBytes = 0;
+    doc.estimatedDecodedBytesKind = "unknown";
+    doc.frameCountPolicyReason = vorbisFailureText(status);
+    doc.errors.emplace_back(doc.frameCountPolicyReason);
+    auto& assessment = result.mediaOpenAssessment;
+    assessment = assessMediaOpen(doc, {}, false);
+    assessment.presentationEvidenceReused = false;
+    if (status == Vorbis::Status::UnsupportedChannels) {
+        assessment.reason = MediaOpenReason::UnsupportedChannelLayout;
+        assessment.technicalSupport = MediaTechnicalSupport::UnsupportedChannelLayout;
+        assessment.userMessageKey = plan.unsupportedChannels == 6 ? "media.vorbis_5_1_layout" : "media.vorbis_multichannel_layout";
+    } else if (status == Vorbis::Status::QuickScanLimit) {
+        assessment.reason = MediaOpenReason::QuickScanLimit;
+        assessment.technicalSupport = MediaTechnicalSupport::QuickScanLimit;
+        assessment.userMessageKey = "media.quick_scan_limit";
+    } else if (status == Vorbis::Status::IoError) {
+        assessment.reason = MediaOpenReason::InputIoError;
+        assessment.technicalSupport = MediaTechnicalSupport::IoError;
+        assessment.userMessageKey = "media.io_error";
+    }
+}
+
 static FastProbeResult runFastProbeImpl(
     const Input::MediaInputSource& source, bool forceTestPadding) {
     FastProbeResult result;
@@ -1403,6 +1459,11 @@ static FastProbeResult runFastProbeImpl(
     }
     fillFastSelectedAudio(result, audioStream, decoder);
     estimateFastDurationAndFrames(result, context, audioStream);
+    if (isStandaloneVorbis(context, audioStream)) {
+        finalizeFrameCountTrustPolicy(result, audioStream);
+        resolveVorbisProbe(result, context, audioStream);
+        return result;
+    }
     // Each direct parser first evaluates MOV/AAC eligibility and returns
     // before its pathname opener. This retains its ineligible diagnostics.
     applyMp3HeaderPresentationAuthority(result, path, context, audioStream);

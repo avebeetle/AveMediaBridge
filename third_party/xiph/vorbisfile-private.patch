@@ -1,0 +1,204 @@
+--- a/lib/vorbisfile.c
++++ b/lib/vorbisfile.c
+@@ -167,6 +167,7 @@
+         offset=ret;
+       }
+     }
++    if(!begin && offset<0)return OV_EBADLINK;
+   }
+ 
+   /* In a fully compliant, non-multiplexed stream, we'll still be
+@@ -267,7 +268,7 @@
+     /*We started from the beginning of the stream and found nothing.
+       This should be impossible unless the contents of the stream changed out
+       from under us after we read from it.*/
+-    if(!begin&&vf->offset<0)return OV_EBADLINK;
++    if(!begin&&offset<0)return OV_EBADLINK;
+   }
+ 
+   /* we're not interested in the page... just the serialno and granpos. */
+@@ -421,7 +422,8 @@
+    next page.  Consumes the page in the process without decoding
+    audio, however this is only called during stream parsing upon
+    seekable open. */
+-static ogg_int64_t _initial_pcmoffset(OggVorbis_File *vf, vorbis_info *vi){
++static ogg_int64_t _initial_pcmoffset(OggVorbis_File *vf, vorbis_info *vi, int *origin_kind){
++  int preserve_zero_offset = 0;
+   ogg_page    og;
+   ogg_int64_t accumulated=0;
+   long        lastblock=-1;
+@@ -450,8 +452,21 @@
+     }
+ 
+     if(ogg_page_granulepos(&og)!=-1){
+-      /* pcm offset of last packet on the first audio page */
+-      accumulated= ogg_page_granulepos(&og)-accumulated;
++      const ogg_int64_t granule=ogg_page_granulepos(&og);
++      /* A page with only the priming packet emits no PCM. Keep upstream's
++         zero offset from it, while gathering evidence at the first audible
++         page for an unchanged multichannel native decode. */
++      if(origin_kind && vi->channels>2 && accumulated==0 && granule==0 && !ogg_page_eos(&og)){
++        preserve_zero_offset=1;
++        continue;
++      }
++      if(origin_kind && accumulated>0){
++        if(!ogg_page_eos(&og) && granule==accumulated)
++          *origin_kind=AMBR_VORBIS_ZERO_ORIGIN;
++        else if(vi->channels>2 && ogg_page_eos(&og) && granule>0 && granule<=accumulated)
++          *origin_kind=AMBR_VORBIS_TERMINAL_AUDIO_PAGE;
++      }
++      accumulated=preserve_zero_offset ? 0 : granule-accumulated;
+       break;
+     }
+   }
+@@ -486,6 +501,12 @@
+   ogg_int64_t ret,last;
+   int serialno = vf->os.serialno;
+ 
++  if(m>=128){
++    if(vf->callbacks.link_limit_func)
++      vf->callbacks.link_limit_func(vf->datasource);
++    return OV_EBADLINK;
++  }
++
+   /* invariants:
+      we have the headers and serialnos for the link beginning at 'begin'
+      we have the offset and granpos of the last page in the file (potentially
+@@ -503,6 +524,7 @@
+     while(endserial != serialno){
+       endserial = serialno;
+       searched=_get_prev_page_serial(vf,searched,currentno_list,currentnos,&endserial,&endgran);
++      if(searched<0)return (int)searched;
+     }
+ 
+     vf->links=m+1;
+@@ -563,25 +585,32 @@
+     while(testserial != serialno){
+       testserial = serialno;
+       searched = _get_prev_page_serial(vf,searched,currentno_list,currentnos,&testserial,&searchgran);
++      if(searched<0)return (int)searched;
+     }
+ 
+     ret=_seek_helper(vf,next);
+     if(ret)return(ret);
+ 
+     ret=_fetch_headers(vf,&vi,&vc,&next_serialno_list,&next_serialnos,NULL);
+-    if(ret)return(ret);
++    if(ret){
++      if(next_serialno_list)_ogg_free(next_serialno_list);
++      return(ret);
++    }
+     serialno = vf->os.serialno;
+     dataoffset = vf->offset;
+ 
+     /* this will consume a page, however the next bisection always
+        starts with a raw seek */
+-    pcmoffset = _initial_pcmoffset(vf,&vi);
++    pcmoffset = _initial_pcmoffset(vf,&vi,NULL);
+ 
+     ret=_bisect_forward_serialno(vf,next,vf->offset,end,endgran,endserial,
+                                  next_serialno_list,next_serialnos,m+1);
+-    if(ret)return(ret);
+-
+     if(next_serialno_list)_ogg_free(next_serialno_list);
++    if(ret){
++      vorbis_info_clear(&vi);
++      vorbis_comment_clear(&vc);
++      return(ret);
++    }
+ 
+     vf->offsets[m+1]=next;
+     vf->serialnos[m+1]=serialno;
+@@ -624,7 +653,7 @@
+      storage in vf */
+ 
+   /* fetch initial PCM offset */
+-  ogg_int64_t pcmoffset = _initial_pcmoffset(vf,vf->vi);
++  ogg_int64_t pcmoffset = _initial_pcmoffset(vf,vf->vi,&vf->first_audio_origin_kind);
+ 
+   /* we can seek, so set out learning all about this file */
+   if(vf->callbacks.seek_func && vf->callbacks.tell_func){
+@@ -874,7 +903,7 @@
+    fseek64 */
+ static int _fseek64_wrap(FILE *f,ogg_int64_t off,int whence){
+   if(f==NULL)return(-1);
+-  return fseek(f,off,whence);
++  return _fseeki64(f,off,whence);
+ }
+ 
+ static int _ov_open1(void *f,OggVorbis_File *vf,const char *initial,
+@@ -1004,7 +1033,7 @@
+     (size_t (*)(void *, size_t, size_t, void *))  fread,
+     (int (*)(void *, ogg_int64_t, int))              _fseek64_wrap,
+     (int (*)(void *))                             fclose,
+-    (long (*)(void *))                            ftell
++    (ogg_int64_t (*)(void *))                     _ftelli64
+   };
+ 
+   return ov_open_callbacks((void *)f, vf, initial, ibytes, callbacks);
+@@ -1074,7 +1103,7 @@
+     (size_t (*)(void *, size_t, size_t, void *))  fread,
+     (int (*)(void *, ogg_int64_t, int))              _fseek64_wrap,
+     (int (*)(void *))                             fclose,
+-    (long (*)(void *))                            ftell
++    (ogg_int64_t (*)(void *))                     _ftelli64
+   };
+ 
+   return ov_test_callbacks((void *)f, vf, initial, ibytes, callbacks);
+--- a/include/vorbis/vorbisfile.h
++++ b/include/vorbis/vorbisfile.h
+@@ -39,7 +39,8 @@
+   size_t (*read_func)  (void *ptr, size_t size, size_t nmemb, void *datasource);
+   int    (*seek_func)  (void *datasource, ogg_int64_t offset, int whence);
+   int    (*close_func) (void *datasource);
+-  long   (*tell_func)  (void *datasource);
++  ogg_int64_t (*tell_func)  (void *datasource);
++  void   (*link_limit_func)(void *datasource); /* Private bounded probe callback. */
+ } ov_callbacks;
+ 
+ #ifndef OV_EXCLUDE_STATIC_CALLBACKS
+@@ -75,28 +76,28 @@
+   (size_t (*)(void *, size_t, size_t, void *))  fread,
+   (int (*)(void *, ogg_int64_t, int))           _ov_header_fseek_wrap,
+   (int (*)(void *))                             fclose,
+-  (long (*)(void *))                            ftell
++  (ogg_int64_t (*)(void *))                            _ftelli64
+ };
+ 
+ static ov_callbacks OV_CALLBACKS_NOCLOSE = {
+   (size_t (*)(void *, size_t, size_t, void *))  fread,
+   (int (*)(void *, ogg_int64_t, int))           _ov_header_fseek_wrap,
+   (int (*)(void *))                             NULL,
+-  (long (*)(void *))                            ftell
++  (ogg_int64_t (*)(void *))                            _ftelli64
+ };
+ 
+ static ov_callbacks OV_CALLBACKS_STREAMONLY = {
+   (size_t (*)(void *, size_t, size_t, void *))  fread,
+   (int (*)(void *, ogg_int64_t, int))           NULL,
+   (int (*)(void *))                             fclose,
+-  (long (*)(void *))                            NULL
++  (ogg_int64_t (*)(void *))                            NULL
+ };
+ 
+ static ov_callbacks OV_CALLBACKS_STREAMONLY_NOCLOSE = {
+   (size_t (*)(void *, size_t, size_t, void *))  fread,
+   (int (*)(void *, ogg_int64_t, int))           NULL,
+   (int (*)(void *))                             NULL,
+-  (long (*)(void *))                            NULL
++  (ogg_int64_t (*)(void *))                            NULL
+ };
+ 
+ #endif
+@@ -107,8 +108,11 @@
+ #define  STREAMSET 3
+ #define  INITSET   4
+ 
++/* Private evidence for choosing the qualified native multichannel decode path. */
++enum { AMBR_VORBIS_ORIGIN_UNKNOWN, AMBR_VORBIS_ZERO_ORIGIN, AMBR_VORBIS_TERMINAL_AUDIO_PAGE };
+ typedef struct OggVorbis_File {
+   void            *datasource; /* Pointer to a FILE *, etc. */
++  int              first_audio_origin_kind; /* Private first-page evidence, before origin clamping. */
+   int              seekable;
+   ogg_int64_t      offset;
+   ogg_int64_t      end;

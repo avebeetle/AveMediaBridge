@@ -29,12 +29,14 @@ enum class PresentationTotalSource {
     AdtsAacSequentialPresentation,
     Ac3SequentialPresentation,
     Eac3SequentialPresentation,
-    ExactPacketPresentation
+    ExactPacketPresentation,
+    OggVorbisLinkPresentation
 };
 
 enum class PresentationSampleDomain {
     Unknown,
-    NativeStreamSamples
+    NativeStreamSamples,
+    DocumentSamples
 };
 
 enum class PresentationTotalValidation {

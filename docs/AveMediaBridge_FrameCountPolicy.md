@@ -68,6 +68,28 @@ incomplete evidence retains the existing provisional and typed-reconcile paths.
 
 ## Current Codec And Container Rules
 
+### Audio-only Ogg Vorbis
+
+For an Ogg input with one selected Vorbis stream, the initial probe checks the
+constituent logical streams against the open media handle. The final granule
+of one logical stream cannot establish the length of a concatenation. When
+sample rates differ, the result is the accumulated duration rounded at link
+boundaries in the document's output sample rate. Its JSON authority source is
+`ogg_vorbis_link_presentation` and its domain is `document_samples`.
+
+A single link with a verified ordinary start, matching native shape and exact
+frame count keeps the FFmpeg decoder. A single multichannel link whose first
+audible page also ends the stream uses the verified link length with that same
+decoder. A separate page containing only the priming packet contributes zero
+frames. Mixed mono/stereo links use the measured
+link boundaries for PCM and the waveform. A change to an unsupported channel
+layout gets a distinct refusal. Reaching the bounded probe's read, seek or link
+limit reports `quick_scan_limit` and leaves the length unknown.
+
+Ordinary and guarded path imports use the same open handle for measurement and
+decoding. The prepared-reader ABI retains its existing MOV/AAC scope. Ogg
+containers with a separate video stream retain their existing FFmpeg route.
+
 ### MP3
 
 Two-sided MP3 gapless side data:

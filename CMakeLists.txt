@@ -107,6 +107,9 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Utils/JsonUtils.cpp
 )
 
+include(cmake/AveMediaBridgeVorbis.cmake)
+target_link_libraries(AveMediaBridgeCore PUBLIC AveBridgeVorbis)
+
 function(add_bridge_dll target)
     add_library(${target} SHARED ${AVEMEDIABRIDGE_DLL_SOURCES})
     target_link_libraries(${target} PRIVATE AveMediaBridgeCore advapi32)

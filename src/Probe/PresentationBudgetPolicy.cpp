@@ -280,6 +280,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "exact_pcm_stream_duration";
         case PresentationTotalSource::OggEosGranule:
             return "ogg_eos_granule";
+        case PresentationTotalSource::OggVorbisLinkPresentation:
+            return "ogg_vorbis_link_presentation";
         case PresentationTotalSource::FlacStreamInfoTotalSamples:
             return "flac_streaminfo_total_samples";
         case PresentationTotalSource::NutBoundedTailSelectedStreamEnd:
@@ -310,6 +312,8 @@ const char* presentationSampleDomainName(PresentationSampleDomain domain) noexce
             return "unknown";
         case PresentationSampleDomain::NativeStreamSamples:
             return "native_stream_samples";
+        case PresentationSampleDomain::DocumentSamples:
+            return "document_samples";
     }
     return "unknown";
 }

@@ -292,6 +292,8 @@ const char* mediaTechnicalSupportName(MediaTechnicalSupport value) noexcept {
     case MediaTechnicalSupport::UnsupportedContainer: return "unsupported_container";
     case MediaTechnicalSupport::UnsupportedAudioCodec: return "unsupported_audio_codec";
     case MediaTechnicalSupport::UnsupportedCodecProfile: return "unsupported_codec_profile";
+    case MediaTechnicalSupport::UnsupportedChannelLayout: return "unsupported_channel_layout";
+    case MediaTechnicalSupport::QuickScanLimit: return "quick_scan_limit";
     case MediaTechnicalSupport::MissingDecoder: return "missing_decoder";
     case MediaTechnicalSupport::AmbiguousRawMedia: return "ambiguous_raw_media";
     case MediaTechnicalSupport::InvalidMedia: return "invalid_media";
@@ -331,6 +333,8 @@ const char* mediaOpenReasonName(MediaOpenReason value) noexcept {
     case MediaOpenReason::MissingAudioStream: return "missing_audio_stream";
     case MediaOpenReason::UnsupportedAudioCodec: return "unsupported_audio_codec";
     case MediaOpenReason::UnsupportedCodecProfile: return "unsupported_codec_profile";
+    case MediaOpenReason::UnsupportedChannelLayout: return "unsupported_channel_layout";
+    case MediaOpenReason::QuickScanLimit: return "quick_scan_limit";
     case MediaOpenReason::MissingDecoder: return "missing_decoder";
     case MediaOpenReason::AmbiguousRawMedia: return "ambiguous_raw_media";
     case MediaOpenReason::MissingRequiredAudioParameters: return "missing_required_audio_parameters";

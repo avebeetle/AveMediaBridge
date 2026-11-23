@@ -7,6 +7,7 @@
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
 third_party/ffmpeg/patches/*.patch text eol=lf whitespace=-trailing-space
+third_party/xiph/*.patch text eol=lf whitespace=-trailing-space
 
 *.bat text eol=crlf
 
