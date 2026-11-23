@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "avevoice-ogg-vorbis-links-20261123",
+  "acceptedDate": "2026-11-23",
+  "runtimeDirectoryRelativeToDragonianVoice": "AveVoice/build/product/Release",
+  "snapshotRelativeToBridge": "out/runtime-baselines/2026-11-23-vorbis-links",
+  "bridgeSourceReference": {
+    "commit": "661da866a8b13a3196bf2c25dc024639789b1e3e",
+    "qualifiedSourceArchiveRelativeToSnapshot": "evidence/qualified-bridge-source.zip",
+    "qualifiedSourceArchiveSha256": "8128C8B306C2BF53607E9598E8B0E19D363DE75EC3F4B9632AE5865DA0EF09FC"
+  },
+  "development": {
+    "checkout": "AveMediaBridge",
+    "branch": "main",
+    "sourceCheckpointAtPin": "661da866a8b13a3196bf2c25dc024639789b1e3e"
+  },
+  "ffmpeg": {
+    "version": "7.1.4",
+    "profile": "wav-f32-native-v1-short-vorbis",
+    "candidate": "The four FFmpeg DLLs are byte-identical to the short Vorbis baseline.",
+    "baseProfile": "tools/export/export-runtime-profile.json",
+    "buildRecipe": "tools/export/BuildExportRuntime.ps1 -ShortVorbis",
+    "vorbisPatch": "third_party/ffmpeg/patches/ogg-vorbis-single-audio-page.patch",
+    "vorbisPatchSha256": "77F1D438C0B4C94D54E4B7B7FAB0296A4B0DC75961F0327D88E248D36220A0BC",
+    "previousReceipt": "tools/runtime/accepted-runtime-20261122-vorbis.json"
+  },
+  "xiph": {
+    "libogg": "1.3.5",
+    "libvorbis": "1.3.7",
+    "build": "cmake/AveMediaBridgeVorbis.cmake",
+    "patch": "third_party/xiph/vorbisfile-private.patch",
+    "patchSha256": "842DAA17BBE21C845828579BEC220DAD147ABD0B2AAFA1737E4827D182D60F81"
+  },
+  "files": [
+    {
+      "path": "Modules/AveMediaBridge.dll",
+      "bytes": 837120,
+      "sha256": "5744A1F9249708A2746E8997557C06A0A045F642C6AD0D97CB6F62FCB193C446"
+    },
+    {
+      "path": "Lib/ffmpeg/avcodec-61.dll",
+      "bytes": 2489344,
+      "sha256": "BEFCC050C78990DE3EA828ABCC5ED27628BD8A84AF9677FC08F4BF6F3A646802"
+    },
+    {
+      "path": "Lib/ffmpeg/avformat-61.dll",
+      "bytes": 1655808,
+      "sha256": "CB46E3D78F8D158EADD76979F76E24EFEC7DEEC2DD0ABF66940D92E17554ADAD"
+    },
+    {
+      "path": "Lib/ffmpeg/avutil-59.dll",
+      "bytes": 2098176,
+      "sha256": "757F0A7C58F6B0BC30763DD25CCF68BF35D560173E425032F39C03B0CCE0B38B"
+    },
+    {
+      "path": "Lib/ffmpeg/swresample-5.dll",
+      "bytes": 743936,
+      "sha256": "343B16190A48ADABDC2641062E06CABB25A03F1B4B25D3845B63AB8E08E476E1"
+    }
+  ]
+}

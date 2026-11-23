@@ -1,5 +1,21 @@
 # Accepted runtime and development checkout
 
+## Chained Ogg Vorbis, 2026-11-23
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261123-vorbis-links.json) pins
+the new Bridge and the four previously shipped FFmpeg DLLs. The Bridge includes
+the private Xiph code described in the [build instructions](../third_party/xiph/README.md).
+The archived package, source and qualification results are under
+`out/runtime-baselines/2026-11-23-vorbis-links/`. The short-Vorbis runtime below is retained.
+
+The selected audio-only Ogg path verifies logical stream boundaries before import.
+On the short mixed-rate regression it imports all 48,044 document frames. Two guarded
+imports exceeding 2 GiB matched the qualified full PCM hashes. Native single-link
+six-channel audio is supported, including very short files. A switch from stereo to
+5.1 during a chain produces an explicit refusal. Files that exhaust the quick probe
+also receive a distinct refusal. This includes a previously importable single-link
+file with a 1.4 MB comment. No partial document is published in that case.
+
 ## Short Vorbis streams, 2026-11-22
 
 The [five-file receipt](../tools/runtime/accepted-runtime-20261122-vorbis.json) identifies the Product runtime for short Ogg, OGA and OGV files. It uses the previously qualified Bridge, codec, resampler and utilities, plus a full MSVC build of the Ogg demuxer. The demuxer accounts for initial Vorbis overlap when the first audio packet is on the final audio page, including packets spanning multiple lacing segments. Exact packet boundaries keep the terminal duration and trim consistent with the decoded signal.
