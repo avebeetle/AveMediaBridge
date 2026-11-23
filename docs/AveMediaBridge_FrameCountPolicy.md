@@ -54,6 +54,21 @@ Unsafe estimates may still be useful for progress UI or provisional Loading layo
 
 Coverage is always driven by real decoded chunks. The policy never creates fake silence, fake samples, or artificial right-tail audio.
 
+### CAF with Apple Lossless packets
+
+The optional pinned-source CAF inspector can establish the initial scale during the
+ordinary SHA-256 pass. For supported mono and stereo ALAC layouts it checks the
+CAF audio description, magic cookie, packet table and data boundaries. It sums
+the decoded frame counts from **every** packet header. An explicit short packet
+can occur anywhere in the stream. A nominal count multiplied by packet capacity
+can overstate the decoded length even in a 40-minute recording.
+
+The bounded metadata lookup accepts unedited data with zero priming and remainder.
+If the layout is unsupported, the caller uses its existing estimate and the importer
+still decodes through EOF. A late rejection after the source hash has finished
+can return that hash alone. See the C ABI in
+[`AveMediaBridgeSourceInspectApi.h`](../include/AveMediaBridge/AveMediaBridgeSourceInspectApi.h).
+
 ## Exact Packet Presentation Evidence
 
 A complete shared demux traversal may establish a stronger initial authority than rounded container duration metadata when all of the following are known in one sample domain:
