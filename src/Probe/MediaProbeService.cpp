@@ -4,6 +4,7 @@
 #include "Ac3Eac3SequentialPresentation.hpp"
 #include "FrameCountPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
+#include "MatroskaVorbisTrack.hpp"
 #include "Mp4Mp3SampleEditTablePresentation.hpp"
 #include "Mp3HeaderPresentation.hpp"
 #include "NutBoundedTailAuthority.hpp"
@@ -1506,6 +1507,34 @@ static FastProbeResult runFastProbeImpl(
     if (forceTestPadding && audioStream && audioStream->codecpar)
         audioStream->codecpar->initial_padding = 1;
     applyFastFrameCountPolicies(result, source, audioStream, true);
+    auto& doc = result.document;
+    if (result.totalPresentation.trust != PresentationTotalTrust::SampleExact &&
+        !result.totalPresentation.conflict && doc.decodedSampleFramesKind != "exact") {
+        const auto track = probeMatroskaVorbisTrack(context, audioStream);
+        if (track.exactFrames > 0) {
+            doc.decodedSampleFramesBeforeCorrection = doc.decodedSampleFrames;
+            result.totalPresentation = {static_cast<std::uint64_t>(track.exactFrames),
+                PresentationTotalTrust::SampleExact, PresentationTotalSource::MatroskaVorbisPacketPresentation,
+                PresentationSampleDomain::NativeStreamSamples, audioStream->codecpar->sample_rate, true, false,
+                PresentationTotalValidation::LoadingExtentOnly};
+            doc.decodedSampleFrames = track.exactFrames;
+            doc.decodedSampleFramesKind = "exact";
+            doc.decodedSampleFramesTrust = "authoritative";
+            doc.decodedSampleFramesSource = presentationTotalSourceName(result.totalPresentation.source);
+            doc.durationEstimationMethod = "from_matroska_vorbis_packets";
+            doc.frameCountPolicyReason = "complete selected Vorbis packet sequence with native overlap sizes";
+            doc.durationKind = "exact";
+        } else if (track.estimatedFrames > 0 && doc.decodedSampleFramesSource == "format_duration_estimate") {
+            doc.decodedSampleFramesBeforeCorrection = doc.decodedSampleFrames;
+            doc.decodedSampleFrames = track.estimatedFrames;
+            doc.decodedSampleFramesSource = kSelectedTrackDurationTagEstimate;
+            doc.durationEstimationMethod = "from_selected_track_duration_tag";
+        }
+        if (track.exactFrames > 0 || doc.decodedSampleFramesSource == kSelectedTrackDurationTagEstimate) {
+            doc.durationSec = static_cast<double>(doc.decodedSampleFrames) / doc.selectedAudio.sampleRate;
+            updateEstimatedDecodedBytes(doc);
+        }
+    }
     if (source.isStable() && stableSession->inputError() < 0) {
         const int failure = stableSession->inputError();
         throw Input::ReaderInputError(
@@ -1575,6 +1604,16 @@ bool estimateDecodedBytesForPreflight(
     applyFastFrameCountPolicies(
         estimate, source, audioStream, false);
     finalizeFrameCountTrustPolicy(estimate, audioStream);
+    if (estimate.document.decodedSampleFramesSource == "format_duration_estimate") {
+        const auto selected = estimateMatroskaVorbisTrack(formatContext, audioStream);
+        if (selected.has_value()) {
+            // The movie's end cannot gate free space for a shorter audio track.
+            estimatedFrames = *selected;
+            estimatedBytes = estimatedFrames * estimate.document.selectedAudio.channels * sizeof(float);
+            estimateKind = estimatedBytes > 0 ? kSelectedTrackDurationTagEstimate : "unknown";
+            return estimatedBytes > 0;
+        }
+    }
     estimatedFrames = estimate.document.decodedSampleFrames;
     estimatedBytes = estimate.document.estimatedDecodedBytes;
     estimateKind = estimate.document.estimatedDecodedBytesKind;

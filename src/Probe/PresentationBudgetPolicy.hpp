@@ -30,7 +30,8 @@ enum class PresentationTotalSource {
     Ac3SequentialPresentation,
     Eac3SequentialPresentation,
     ExactPacketPresentation,
-    OggVorbisLinkPresentation
+    OggVorbisLinkPresentation,
+    MatroskaVorbisPacketPresentation
 };
 
 enum class PresentationSampleDomain {
@@ -41,7 +42,8 @@ enum class PresentationSampleDomain {
 
 enum class PresentationTotalValidation {
     PacketCrossCheckRequired,
-    SelfContainedMetadata
+    SelfContainedMetadata,
+    LoadingExtentOnly
 };
 
 struct TotalPresentationEvidence {

@@ -216,6 +216,12 @@ bool runPolicyTruthTable() {
     ok &= check(slice(1024, 1023).acceptedInputSamples == 1023, "physical_1024_budget_1023");
     ok &= check(slice(1024, 1024).acceptedInputSamples == 1024, "budget_equals_physical");
     auto exactZero = completeBudgetInput();
+    auto extentOnly = completeBudgetInput();
+    extentOnly.streamTotal = exactTotal(63, Probe::PresentationTotalSource::MatroskaVorbisPacketPresentation);
+    extentOnly.streamTotal.validation = Probe::PresentationTotalValidation::LoadingExtentOnly;
+    extentOnly.exactPacketTotal = extentOnly.streamTotal;
+    extentOnly.packetDurationSumFrames = 63;
+    ok &= check(!Probe::resolveStreamingPresentationBudget(extentOnly).accepted, "loading_extent_never_trims_pcm");
     exactZero.streamTotal = exactTotal(0);
     const auto exactZeroDecision = Probe::resolveStreamingPresentationBudget(exactZero);
     ok &= check(
@@ -284,7 +290,7 @@ bool runPolicyTruthTable() {
         Probe::remainingPresentationInputFrames(100, acceptedInput) == 40,
         "input_output_accounting_independent");
 
-    return ok && expect(passed == 12, "policy_truth_table_count");
+    return ok && expect(passed == 13, "policy_truth_table_count");
 }
 
 struct ImportExpectation {
@@ -391,6 +397,9 @@ bool runGolden06(const std::filesystem::path& media) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--policy-only") {
+        return runPolicyTruthTable() ? 0 : 1;
+    }
     if (argc != 4) {
         std::cout << "AVEMEDIABRIDGE_EXACT_TOTAL_PRESENTATION_BUDGET_SKIPPED: "
                      "EA102, EA120, and GOLDEN-06 paths are required\n";

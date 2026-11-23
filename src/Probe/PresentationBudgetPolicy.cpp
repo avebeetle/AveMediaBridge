@@ -185,8 +185,10 @@ TotalPresentationEvidence makeMp3HeaderTotalPresentationEvidence(
 StreamingPresentationBudgetDecision resolveStreamingPresentationBudget(
     const StreamingPresentationBudgetInput& input) {
     StreamingPresentationBudgetDecision result;
-    const bool streamExact = validExactTotal(input.streamTotal);
-    const bool packetExact = validExactTotal(input.exactPacketTotal);
+    const bool streamExact = validExactTotal(input.streamTotal) &&
+        input.streamTotal.validation != PresentationTotalValidation::LoadingExtentOnly;
+    const bool packetExact = validExactTotal(input.exactPacketTotal) &&
+        input.exactPacketTotal.validation != PresentationTotalValidation::LoadingExtentOnly;
     if ((input.streamTotal.trust == PresentationTotalTrust::SampleExact &&
          input.streamTotal.conflict) ||
         (input.exactPacketTotal.trust == PresentationTotalTrust::SampleExact &&
@@ -282,6 +284,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "ogg_eos_granule";
         case PresentationTotalSource::OggVorbisLinkPresentation:
             return "ogg_vorbis_link_presentation";
+        case PresentationTotalSource::MatroskaVorbisPacketPresentation:
+            return "matroska_vorbis_packet_presentation";
         case PresentationTotalSource::FlacStreamInfoTotalSamples:
             return "flac_streaminfo_total_samples";
         case PresentationTotalSource::NutBoundedTailSelectedStreamEnd:
@@ -325,6 +329,8 @@ const char* presentationTotalValidationName(
             return "packet_cross_check_required";
         case PresentationTotalValidation::SelfContainedMetadata:
             return "self_contained_metadata";
+        case PresentationTotalValidation::LoadingExtentOnly:
+            return "loading_extent_only";
     }
     return "packet_cross_check_required";
 }

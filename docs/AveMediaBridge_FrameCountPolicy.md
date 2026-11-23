@@ -68,6 +68,30 @@ incomplete evidence retains the existing provisional and typed-reconcile paths.
 
 ## Current Codec And Container Rules
 
+### Matroska/WebM video with Vorbis audio
+
+For a seekable file up to 1 MiB with a finite, complete Matroska segment, one video
+track and one mono/stereo Vorbis track, the probe may count the selected packets
+using the native Vorbis overlap sizes. The first packet primes the decoder.
+The pass accepts millisecond timestamps starting at zero, continuous to within
+one tick, without packet side data, padding, discarded packets or codec changes.
+It stops after 16,384 demuxed packets or 120 seconds of selected audio. On a
+clean EOF, `matroska_vorbis_packet_presentation` supplies the Loading extent.
+
+The probe owns this demuxer. Import opens a fresh reader, decodes through EOF
+and publishes actual PCM, including its final frame. The packet count cannot
+be used as a decoder trimming or padding budget, even if the probed packets
+and the output of a damaged stream differ.
+
+For inputs outside the scan bounds, a selected stream duration takes priority.
+If only the movie duration is available, a canonical zero-origin
+`DURATION` tag on the selected audio track supplies a provisional estimate
+(`selected_track_duration_tag_estimate`). Neither this tag nor the whole
+movie duration can gate free disk space in this two-track profile. A valid tag
+can supply progress even if its declared size exceeds available disk space.
+Import preflight reads the metadata without consuming packets. Actual PCM writes
+still report disk errors.
+
 ### Audio-only Ogg Vorbis
 
 For an Ogg input with one selected Vorbis stream, the initial probe checks the

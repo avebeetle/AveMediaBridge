@@ -1009,6 +1009,10 @@ bool checkDiskPreflight(
     StreamingImportResult& result,
     std::string& error) {
     result.diskPreflightChecked = true;
+    if (result.preflightEstimateKind == Probe::kSelectedTrackDurationTagEstimate) {
+        // This track tag supplies progress only. Actual writes can still fail.
+        return true;
+    }
     if (result.preflightEstimatedBytes <= 0) {
         addStreamingWarning(result, "disk preflight decoded byte estimate unknown; continuing without size gate");
         return true;

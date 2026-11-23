@@ -22,6 +22,8 @@
 
 namespace AveMediaBridge::Probe {
 
+inline constexpr char kSelectedTrackDurationTagEstimate[] = "selected_track_duration_tag_estimate";
+
 struct FastProbeResult {
     FastProbeJsonDocument document;
     TotalPresentationEvidence totalPresentation;

@@ -89,6 +89,7 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/AacAudioSpecificConfig.cpp
     src/Probe/EbmlSequentialReader.cpp
     src/Probe/MatroskaAacSequentialPresentation.cpp
+    src/Probe/MatroskaVorbisTrack.cpp
     src/Probe/MediaOpenValidator.cpp
     src/Probe/MediaProbeService.cpp
     src/Probe/ReaderMediaFacts.cpp
@@ -125,6 +126,9 @@ target_link_libraries(AveMediaBridge PRIVATE bcrypt)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
 if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
+    add_test(NAME AveMediaBridgeTests.matroska_vorbis_track
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/MatroskaVorbisTrack.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     add_test(NAME AveMediaBridgeTests.combined_matroska_source
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/CombinedMatroskaSource.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
@@ -135,6 +139,7 @@ if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/ExtendedVorbisReader.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     set_tests_properties(AveMediaBridgeTests.short_vorbis_import AveMediaBridgeTests.extended_vorbis_reader
+        AveMediaBridgeTests.matroska_vorbis_track
         PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
@@ -369,6 +374,8 @@ target_include_directories(AveMediaBridgeExactTotalPresentationBudgetTests PRIVA
     "${FFMPEG_INCLUDE_DIR}"
 )
 copy_ffmpeg_runtime_dlls(AveMediaBridgeExactTotalPresentationBudgetTests)
+add_test(NAME AveMediaBridgeTests.presentation_budget_policy
+    COMMAND AveMediaBridgeExactTotalPresentationBudgetTests --policy-only)
 
 add_test(
     NAME AveMediaBridgeTests.exact_total_presentation_budget
