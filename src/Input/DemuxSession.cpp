@@ -23,9 +23,9 @@ int DemuxSession::open(const MediaInputSource& source, DemuxOpenOptions options,
         if (!stable) return AVERROR(EINVAL);
         int result = StableAvioInput::create(*stable, session->stableContext_);
         if (result < 0) return result;
-        const AVInputFormat* mov = av_find_input_format("mov");
-        if (!mov) return AVERROR_DEMUXER_NOT_FOUND;
-        result = session->stableContext_->open(mov, options);
+        const AVInputFormat* format = av_find_input_format(options.stableVorbis ? "ogg" : "mov");
+        if (!format) return AVERROR_DEMUXER_NOT_FOUND;
+        result = session->stableContext_->open(format, options);
         if (result < 0) return result;
     } else {
         const std::string* path = source.legacyPath();

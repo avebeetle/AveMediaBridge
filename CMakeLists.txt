@@ -131,7 +131,11 @@ if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
     add_test(NAME AveMediaBridgeTests.short_vorbis_import
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/ShortVorbisImport.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
-    set_tests_properties(AveMediaBridgeTests.short_vorbis_import PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME AveMediaBridgeTests.extended_vorbis_reader
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/ExtendedVorbisReader.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    set_tests_properties(AveMediaBridgeTests.short_vorbis_import AveMediaBridgeTests.extended_vorbis_reader
+        PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 add_executable(AveMediaBridgeGuardedImportTests tests/GuardedImportTests.cpp)

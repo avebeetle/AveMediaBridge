@@ -52,6 +52,7 @@ inline const char* vorbisFailureText(Vorbis::Status status) {
     switch (status) {
     case Vorbis::Status::QuickScanLimit: return "Could not confirm the audio length within the quick scan limit.";
     case Vorbis::Status::UnsupportedChannels: return "Vorbis import supports mono and stereo audio.";
+    case Vorbis::Status::ExtendedLimit: return "This Vorbis file exceeds the supported number of logical streams.";
     case Vorbis::Status::IoError: return "Could not read the Vorbis audio.";
     case Vorbis::Status::Cancelled: return "Vorbis import canceled.";
     default: return "The Vorbis audio structure is invalid or truncated.";

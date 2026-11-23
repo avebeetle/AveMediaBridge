@@ -43,6 +43,11 @@ typedef struct AMBR_ImportOptionsV1 {
    destroy. Operations on a handle are synchronous, serialized, non-reentrant.
    One valid import attempt consumes the handle. Probe JSON is diagnostic only. */
 AMBR_API int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1*, AMBR_PreparedInput**);
+/* Optional extended Ogg Vorbis preparation. Invoke after quick_scan_limit on a
+   worker. The source must remain immutable and pinned until ReaderDestroyV1.
+   This scans the physical Ogg pages and measures packet presentation without
+   producing PCM. The same reader JSON, import and destroy functions apply. */
+AMBR_API int __cdecl AveMediaBridge_ReaderPrepareVorbisV1(const AMBR_PrepareOptionsV1*, AMBR_PreparedInput**);
 AMBR_API int __cdecl AveMediaBridge_ReaderWriteProbeJsonV1(AMBR_PreparedInput*, const wchar_t*);
 AMBR_API int __cdecl AveMediaBridge_ReaderImportV1(AMBR_PreparedInput*, const AMBR_ImportOptionsV1*);
 // Opt-in guarded output has the same source ownership and cancel contract.

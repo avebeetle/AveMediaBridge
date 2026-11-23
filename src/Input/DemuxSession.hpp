@@ -13,6 +13,7 @@ struct DemuxOpenOptions {
     bool useProbeLimits = false;
     int64_t probeSizeBytes = 0;
     int64_t analyzeDurationUs = 0;
+    bool stableVorbis = false;
 };
 
 class DemuxSession final {

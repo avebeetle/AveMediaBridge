@@ -5,7 +5,7 @@
 #include <vector>
 
 namespace AveMediaBridge::Vorbis {
-enum class Status { Ok, Invalid, UnsupportedChannels, QuickScanLimit, IoError, Cancelled };
+enum class Status { Ok, Invalid, UnsupportedChannels, QuickScanLimit, ExtendedLimit, IoError, Cancelled };
 struct Link {
     int rate, channels;
     std::int64_t frames, output;
@@ -20,6 +20,8 @@ struct Plan {
 
 // A plan is evidence for this source only. Keep the same source pin for decoding.
 Status probe(const Input::MediaInputSource& source, Plan& result);
+// Sequential, verified packet count for the immutable source after a quick probe limit.
+Status measure(const Input::MediaInputSource& source, Plan& result);
 using Emit = int (__cdecl *)(void* user, const float* audio, int frames, int channels,
     int rate, int link, std::uint64_t sourceBytes);
 using Cancel = bool (*)(void* user);

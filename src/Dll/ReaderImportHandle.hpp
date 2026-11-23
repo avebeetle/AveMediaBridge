@@ -8,6 +8,7 @@
 struct AMBR_PreparedInput {
     AveMediaBridge::Input::MediaInputSource source;
     AveMediaBridge::Probe::FastProbeResult probe;
+    std::optional<AveMediaBridge::Vorbis::Plan> vorbis;
     std::string mediaFactsJson;
     bool attempted = false;
 };

@@ -28,5 +28,5 @@ private:
 std::uint32_t little32(const std::uint8_t* data);
 std::uint32_t pageChecksum(const Bytes& page);
 Status readPackets(Source& source, void* consumer, Emit emit, void* cancelUser,
-    Cancel cancel, std::uint64_t& sourceBytes);
+    Cancel cancel, std::uint64_t& sourceBytes, Plan* measured = nullptr);
 }

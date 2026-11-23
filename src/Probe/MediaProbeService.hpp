@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AdtsAacSequentialPresentation.hpp"
+#include "../Decode/VorbisPresentation.hpp"
 #include "Ac3Eac3SequentialPresentation.hpp"
 #include "PresentationBudgetPolicy.hpp"
 #include "MatroskaAacSequentialPresentation.hpp"
@@ -44,6 +45,7 @@ FastProbeResult runFastProbe(const std::string& path);
 MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
     const std::string& path, AVFormatContext* context);
 FastProbeResult runFastProbe(const Input::MediaInputSource& source);
+FastProbeResult prepareVorbisProbe(const Input::MediaInputSource& source, Vorbis::Plan& plan);
 #ifdef AVEMEDIABRIDGE_TEST_ONLY
 FastProbeResult runFastProbeWithTestPadding(const Input::MediaInputSource& source);
 #endif

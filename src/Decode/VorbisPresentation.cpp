@@ -167,6 +167,25 @@ static void verifySmallPages(File &f, long expectedLinks) {
     }
     require(!active && seen.size() == static_cast<size_t>(expectedLinks), "unclosed logical stream");
 }
+static void finishDuration(Plan &p) {
+    int64_t hz = 1;
+    for (const auto &part : p.parts) {
+        const int64_t mul = part.rate / std::gcd(hz, static_cast<int64_t>(part.rate));
+        require(hz <= INT64_MAX / mul, "source clock overflow");
+        hz *= mul;
+    }
+    int64_t ticks = 0;
+    for (auto &part : p.parts) {
+        const int64_t scale = hz / part.rate;
+        require(part.frames <= (INT64_MAX - ticks) / scale, "duration overflow");
+        ticks += part.frames * scale;
+        const int64_t bound = av_rescale_rnd(ticks, p.rate, hz, AV_ROUND_NEAR_INF);
+        require(bound > p.frames && bound <= INT64_MAX / (4 * p.channels), "output extent");
+        part.output = bound - p.frames;
+        p.frames = bound;
+    }
+}
+
 static Plan readPlan(File &a) {
     ov_callbacks cb{readCb, seekCb, nullptr, tellCb, [](void* opaque) {
         auto& file = *static_cast<File*>(opaque);
@@ -184,7 +203,6 @@ static Plan readPlan(File &a) {
     require(links > 0 && links <= 128, "unsupported link count");
     p.ordinarySingleLink = links == 1 && vf.first_audio_origin_kind == AMBR_VORBIS_ZERO_ORIGIN;
     p.singlePageMultichannel = links == 1 && vf.first_audio_origin_kind == AMBR_VORBIS_TERMINAL_AUDIO_PAGE;
-    int64_t hz = 1;
     for (int i = 0; i < links; ++i) {
         auto *v = ov_info(&vf, i);
         const auto n = ov_pcm_total(&vf, i);
@@ -193,9 +211,6 @@ static Plan readPlan(File &a) {
                 "unsupported link format or count");
         if (v->channels > 2 && !p.unsupportedChannels)
             p.unsupportedChannels = v->channels;
-        const int64_t mul = v->rate / std::gcd(hz, static_cast<int64_t>(v->rate));
-        require(hz <= INT64_MAX / mul, "source clock overflow");
-        hz *= mul;
         p.rate = std::max(p.rate, int(v->rate));
         p.channels = std::max(p.channels, v->channels);
         p.parts.push_back({int(v->rate), v->channels, n, 0});
@@ -210,16 +225,7 @@ static Plan readPlan(File &a) {
                 verifyEnd(a, boundary, ov_serialnumber(&vf, i));
             }
     }
-    int64_t ticks = 0;
-    for (auto &part : p.parts) {
-        const int64_t scale = hz / part.rate;
-        require(part.frames <= (INT64_MAX - ticks) / scale, "duration overflow");
-        ticks += part.frames * scale;
-        const int64_t bound = av_rescale_rnd(ticks, p.rate, hz, AV_ROUND_NEAR_INF);
-        require(bound > p.frames && bound <= INT64_MAX / (4 * p.channels), "output extent");
-        part.output = bound - p.frames;
-        p.frames = bound;
-    }
+    finishDuration(p);
     require(!a.failed, "metadata read limits");
     return p;
 }
@@ -359,6 +365,26 @@ Status probe(const Input::MediaInputSource &input, Plan &result) {
         }
     } catch (const std::exception &) {
         return Status::IoError;
+    }
+}
+
+Status measure(const Input::MediaInputSource &input, Plan &result) {
+    result = {};
+    try {
+        detail::Source source(input);
+        if (source.status() != Status::Ok) return source.status();
+        Plan measured;
+        uint64_t bytes = 0;
+        const auto status = detail::readPackets(source, nullptr, nullptr, nullptr, nullptr, bytes, &measured);
+        if (status != Status::Ok) return status;
+        require(bytes == source.size() && !measured.parts.empty(), "incomplete Vorbis presentation");
+        finishDuration(measured);
+        result = std::move(measured);
+        return result.unsupportedChannels ? Status::UnsupportedChannels : Status::Ok;
+    } catch (const std::bad_alloc &) {
+        return Status::IoError;
+    } catch (const std::exception &) {
+        return Status::Invalid;
     }
 }
 

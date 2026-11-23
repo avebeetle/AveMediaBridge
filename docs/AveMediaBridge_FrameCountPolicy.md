@@ -87,8 +87,15 @@ layout gets a distinct refusal. Reaching the bounded probe's read, seek or link
 limit reports `quick_scan_limit` and leaves the length unknown.
 
 Ordinary and guarded path imports use the same open handle for measurement and
-decoding. The prepared-reader ABI retains its existing MOV/AAC scope. Ogg
-containers with a separate video stream retain their existing FFmpeg route.
+decoding. After `quick_scan_limit`, callers may pass an immutable, pinned Ogg
+input to `AveMediaBridge_ReaderPrepareVorbisV1`. This optional call reads the
+logical streams sequentially, counts Vorbis overlap and granule trimming, and
+checks page integrity. Cancellation interrupts the scan at read boundaries.
+Comment text is discarded as it is validated. The plan supports up to 65,536
+logical streams and compressed audio or setup packets up to 4 MiB each. A
+successful prepared reader supplies both the authoritative probe and the import
+from the same source. The original prepare entry point retains its MOV/AAC
+scope. Ogg containers with a separate video stream retain their FFmpeg route.
 
 ### MP3
 

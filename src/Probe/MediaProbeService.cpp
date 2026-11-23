@@ -1299,10 +1299,18 @@ MatroskaAacSequentialEligibility eligibleForCombinedMatroskaScan(
 }
 
 static void resolveVorbisProbe(FastProbeResult& result, AVFormatContext* context,
-                               const AVStream* stream) {
+                               const AVStream* stream, const Input::MediaInputSource& source,
+                               Vorbis::Plan* preparedPlan) {
     auto& doc = result.document;
-    Vorbis::Plan plan;
-    const auto status = probeVorbisLinks(context->pb, plan);
+    Vorbis::Plan localPlan;
+    auto& plan = preparedPlan ? *preparedPlan : localPlan;
+    // The explicit follow-up independently verifies every page on its immutable pin.
+    // Repeating the bounded check would reread the header without strengthening it.
+    const auto status = preparedPlan ? Vorbis::measure(source, plan) : probeVorbisLinks(context->pb, plan);
+    if (status == Vorbis::Status::Cancelled) throw Input::ReaderInputError(
+        Input::ReaderInputFailure::Canceled, vorbisFailureText(status));
+    if (status == Vorbis::Status::ExtendedLimit) throw Input::ReaderInputError(
+        Input::ReaderInputFailure::Unsupported, vorbisFailureText(status));
     if ((status == Vorbis::Status::Ok || status == Vorbis::Status::UnsupportedChannels) &&
         nativeVorbisPresentation(plan, stream, result.totalPresentation)) {
         result.mediaOpenAssessment = assessMediaOpen(doc, result.totalPresentation, true);
@@ -1354,7 +1362,7 @@ static void resolveVorbisProbe(FastProbeResult& result, AVFormatContext* context
 }
 
 static FastProbeResult runFastProbeImpl(
-    const Input::MediaInputSource& source, bool forceTestPadding) {
+    const Input::MediaInputSource& source, bool forceTestPadding, Vorbis::Plan* preparedVorbis = nullptr) {
     FastProbeResult result;
     const std::string& path = source.displayLabel();
     result.document.sourcePath = path;
@@ -1364,7 +1372,7 @@ static FastProbeResult runFastProbeImpl(
     int ret = 0;
     if (source.isStable()) {
         ret = Input::DemuxSession::open(source,
-            {true, kFastProbeSizeBytes, kFastProbeAnalyzeDurationUs}, stableSession);
+            {true, kFastProbeSizeBytes, kFastProbeAnalyzeDurationUs, preparedVorbis != nullptr}, stableSession);
         if (ret < 0) {
             throw Input::ReaderInputError(
                 ret == AVERROR_EXIT ? Input::ReaderInputFailure::Canceled
@@ -1444,7 +1452,11 @@ static FastProbeResult runFastProbeImpl(
     if (source.isStable()) {
         const std::string demuxer = context->iformat && context->iformat->name
             ? context->iformat->name : "";
-        if (demuxer.rfind("mov", 0) != 0 || !audioStream ||
+        if (preparedVorbis) {
+            if (!isStandaloneVorbis(context, audioStream))
+                throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
+                    "the pinned source is not standalone Ogg Vorbis");
+        } else if (demuxer.rfind("mov", 0) != 0 || !audioStream ||
             !audioStream->codecpar ||
             audioStream->codecpar->codec_id != AV_CODEC_ID_AAC) {
             throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported,
@@ -1452,7 +1464,7 @@ static FastProbeResult runFastProbeImpl(
         }
         result.stableBinding =
             Input::bindSelectedAudio(source, context, audioStreamIndex);
-        result.readerMediaFacts = captureReaderMediaFacts(context, *result.stableBinding);
+        if (!preparedVorbis) result.readerMediaFacts = captureReaderMediaFacts(context, *result.stableBinding);
     }
     if (!decoder && audioStream && audioStream->codecpar) {
         decoder = avcodec_find_decoder(audioStream->codecpar->codec_id);
@@ -1461,7 +1473,12 @@ static FastProbeResult runFastProbeImpl(
     estimateFastDurationAndFrames(result, context, audioStream);
     if (isStandaloneVorbis(context, audioStream)) {
         finalizeFrameCountTrustPolicy(result, audioStream);
-        resolveVorbisProbe(result, context, audioStream);
+        resolveVorbisProbe(result, context, audioStream, source, preparedVorbis);
+        if (preparedVorbis && stableSession->inputError() < 0) {
+            throw Input::ReaderInputError(stableSession->inputError() == AVERROR_EXIT
+                ? Input::ReaderInputFailure::Canceled : Input::ReaderInputFailure::InputFailed,
+                "pinned Vorbis read interrupted");
+        }
         return result;
     }
     // Each direct parser first evaluates MOV/AAC eligibility and returns
@@ -1500,6 +1517,10 @@ static FastProbeResult runFastProbeImpl(
     result.mediaOpenAssessment =
         assessMediaOpen(result.document, result.totalPresentation, true);
     return result;
+}
+
+FastProbeResult prepareVorbisProbe(const Input::MediaInputSource& source, Vorbis::Plan& plan) {
+    return runFastProbeImpl(source, false, &plan);
 }
 
 FastProbeResult runFastProbe(const Input::MediaInputSource& source) {

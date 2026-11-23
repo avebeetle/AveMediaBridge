@@ -1502,7 +1502,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     const std::filesystem::path& sessionDir,
     const std::filesystem::path& audioDataPath,
     StreamingImportCallbacks* callbacks,
-    const Input::SelectedAudioBinding* expected = nullptr) {
+    const Input::SelectedAudioBinding* expected = nullptr, const Vorbis::Plan* preparedVorbis = nullptr) {
     const auto& path = source.displayLabel();
     StreamingImportResult result;
     result.source.inputPath = path;
@@ -1553,7 +1553,9 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     };
 
     checkInput();
-    int ret = Input::DemuxSession::open(source, {}, demux);
+    Input::DemuxOpenOptions demuxOptions;
+    demuxOptions.stableVorbis = preparedVorbis != nullptr;
+    int ret = Input::DemuxSession::open(source, demuxOptions, demux);
     if (source.isStable() && ret == AVERROR_EXIT)
         throw Input::ReaderInputError(Input::ReaderInputFailure::Canceled, "reader open canceled");
     checkInput();
@@ -1593,10 +1595,13 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         decoder = avcodec_find_decoder(codecpar->codec_id);
     }
     fillStreamingSelectedAudioInfo(result, audioStream, decoder, nullptr);
-    Vorbis::Plan linkPlan;
+    Vorbis::Plan localPlan;
+    const auto& linkPlan = preparedVorbis ? *preparedVorbis : localPlan;
     bool decodeVorbisLinks = false;
     if (Probe::isStandaloneVorbis(formatContext, audioStream)) {
-        const auto status = Probe::probeVorbisLinks(formatContext->pb, linkPlan);
+        const auto status = preparedVorbis
+            ? (linkPlan.unsupportedChannels ? Vorbis::Status::UnsupportedChannels : Vorbis::Status::Ok)
+            : Probe::probeVorbisLinks(formatContext->pb, localPlan);
         const auto native = Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
         const bool ordinary = (status == Vorbis::Status::Ok || status == Vorbis::Status::UnsupportedChannels) &&
             Probe::nativeVorbisPresentation(linkPlan, audioStream, native);
@@ -2650,7 +2655,7 @@ int invalidReaderArgument(const char* message) {
 }
 }
 
-int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options, AMBR_PreparedInput** out) {
+static int readerPrepare(const AMBR_PrepareOptionsV1* options, AMBR_PreparedInput** out, bool extendedVorbis) {
     if (!out) return invalidReaderArgument("prepared output pointer is null");
     *out = nullptr;
     try {
@@ -2664,7 +2669,27 @@ int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options,
         }
         auto handle = std::make_unique<AMBR_PreparedInput>();
         handle->source = Input::MediaInputSource::fromStable(*options->source, wideToUtf8(label.c_str()));
-        handle->probe = Probe::runFastProbe(handle->source);
+        if (extendedVorbis) {
+            handle->probe = Probe::prepareVorbisProbe(handle->source, handle->vorbis.emplace());
+            const auto check = handle->source.stableSource()->checkCancel(handle->source.stableSource()->user);
+            if (check != AMBI_OK) {
+                setLastErrorText("Vorbis preparation interrupted");
+                return check == AMBI_CANCELED ? AMBR_CANCELED : AMBR_INPUT_FAILED;
+            }
+            if (!handle->probe.mediaOpenAssessment.canImport) {
+                if (handle->probe.mediaOpenAssessment.reason == Probe::MediaOpenReason::UnsupportedChannelLayout) {
+                    setLastErrorText(handle->vorbis->unsupportedChannels == 6
+                        ? "AveVoice cannot import the 5.1 channel layout in this Vorbis file."
+                        : "AveVoice cannot import the multichannel layout in this Vorbis file.");
+                    return AMBR_INPUT_FAILED;
+                }
+                const auto& errors = handle->probe.document.errors;
+                setLastErrorText(errors.empty() ? "could not verify the Ogg Vorbis presentation" : errors.front());
+                return AMBR_INPUT_FAILED;
+            }
+        } else {
+            handle->probe = Probe::runFastProbe(handle->source);
+        }
         if (!handle->probe.stableBinding)
             throw Input::ReaderInputError(Input::ReaderInputFailure::Unsupported, "reader supports selected MOV/AAC only");
         if (handle->probe.readerMediaFacts)
@@ -2673,6 +2698,13 @@ int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options,
         clearLastError(); return AMBR_OK;
     } catch (const Input::ReaderInputError& error) { return readerFailure(error); }
     catch (...) { setLastErrorText("unexpected exception preparing reader input"); return AMBR_INTERNAL_ERROR; }
+}
+
+int __cdecl AveMediaBridge_ReaderPrepareV1(const AMBR_PrepareOptionsV1* options, AMBR_PreparedInput** out) {
+    return readerPrepare(options, out, false);
+}
+int __cdecl AveMediaBridge_ReaderPrepareVorbisV1(const AMBR_PrepareOptionsV1* options, AMBR_PreparedInput** out) {
+    return readerPrepare(options, out, true);
 }
 
 int __cdecl AveMediaBridge_ReaderWriteProbeJsonV1(AMBR_PreparedInput* handle, const wchar_t* output) {
@@ -2726,7 +2758,8 @@ static int readerImport(AMBR_PreparedInput* handle, const AMBR_ImportOptionsV1* 
             !writeStreamingImportPlaceholderJson(metadataTmp, "metadata.json.tmp", error)) {
             setLastErrorText(error); return AMBR_OUTPUT_FAILED;
         }
-        auto result = runStreamingSessionImportToLiveFile(source, dir, data, &callbacks, &*handle->probe.stableBinding);
+        auto result = runStreamingSessionImportToLiveFile(source, dir, data, &callbacks, &*handle->probe.stableBinding,
+            handle->vorbis ? &*handle->vorbis : nullptr);
         if (!result.ok) { setLastErrorText(result.error); return result.canceled ? AMBR_CANCELED : AMBR_INPUT_FAILED; }
         if (!verifyStreamingDataFileSize(data, result, error) ||
             !writeStreamingAudioInfoJson(infoTmp, result, error) ||

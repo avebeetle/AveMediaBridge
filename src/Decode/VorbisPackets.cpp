@@ -1,4 +1,5 @@
 #include "Decode/VorbisInput.hpp"
+#include "Decode/VorbisCommentPacket.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <vector>
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/vorbis_parser.h>
 #include <libavutil/mem.h>
 }
 namespace AveMediaBridge::Vorbis::detail {
@@ -84,13 +86,19 @@ struct NativeLink {
     int h = 0, channels = 0, rate = 0;
     uint64_t audioPackets = 0;
     int64_t pos = 0;
-    bool anchored = false;
+    bool anchored = false, continued = false;
+    Plan* measurement;
+    int64_t pageFrames = 0;
+    AVVorbisParseContext* parser = nullptr;
+    CommentPacket comment;
+    explicit NativeLink(Plan* plan) : measurement(plan) {}
     AVCodecContext *dec = nullptr;
     AVFrame *frame = av_frame_alloc();
     AVPacket *pkt = av_packet_alloc();
     Bytes fragment;
     std::vector<float> pcm;
     ~NativeLink() {
+        av_vorbis_parse_free(&parser);
         avcodec_free_context(&dec);
         av_frame_free(&frame);
         av_packet_free(&pkt);
@@ -100,7 +108,8 @@ struct NativeLink {
         require(headers[0].size() == 30, "identification length");
         channels = headers[0][11];
         rate = int(little32(headers[0].data() + 12));
-        require((channels == 1 || channels == 2) && rate > 0 && rate <= 384000, "unsupported channel layout/rate");
+        require(channels > 0 && (measurement || channels <= 2) && rate > 0 && rate <= 384000,
+                "unsupported channel layout/rate");
         Bytes extra{2};
         for (int i = 0; i < 2; ++i) {
             size_t n = headers[i].size();
@@ -112,6 +121,17 @@ struct NativeLink {
         }
         for (auto &item : headers)
             extra.insert(extra.end(), item.begin(), item.end());
+        if (measurement) {
+            const int size = static_cast<int>(extra.size());
+            extra.resize(extra.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+            parser = av_vorbis_parse_init(extra.data(), size);
+            require(parser, "invalid Vorbis setup");
+            measurement->parts.push_back({rate, channels, 0, 0});
+            measurement->rate = std::max(measurement->rate, rate);
+            measurement->channels = std::max(measurement->channels, channels);
+            if (channels > 2 && !measurement->unsupportedChannels) measurement->unsupportedChannels = channels;
+            return;
+        }
         const auto *codec = avcodec_find_decoder(AV_CODEC_ID_VORBIS);
         require(codec && (dec = avcodec_alloc_context3(codec)) && pkt && frame, "decoder allocation");
         dec->extradata = static_cast<uint8_t *>(av_mallocz(extra.size() + AV_INPUT_BUFFER_PADDING_SIZE));
@@ -137,7 +157,20 @@ struct NativeLink {
         }
         require(rc == AVERROR(EAGAIN) || rc == AVERROR_EOF, "decode frame");
     }
+    void append(const uint8_t* data, uint8_t count) {
+        continued = count == 255;
+        if (h == 1) {
+            comment.append(data, count);
+        } else {
+            require(fragment.size() + count <= 4u * 1024u * 1024u, "packet exceeds supported size");
+            fragment.insert(fragment.end(), data, data + count);
+        }
+    }
     void completePacket() {
+        if (h == 1) {
+            require(comment.complete(), "incomplete Vorbis comment");
+            fragment = {3,'v','o','r','b','i','s',0,0,0,0,0,0,0,0,1};
+        }
         if (h < 3) {
             require(fragment.size() >= 7 && fragment[0] == uint8_t(1 + 2 * h) &&
                         !memcmp(fragment.data() + 1, "vorbis", 6),
@@ -148,6 +181,13 @@ struct NativeLink {
             return;
         }
         require(!fragment.empty() && !(fragment[0] & 1), "audio packet type");
+        if (measurement) {
+            const int duration = av_vorbis_parse_frame(parser, fragment.data(), static_cast<int>(fragment.size()));
+            require(duration > 0, "invalid Vorbis audio mode");
+            if (audioPackets++) pageFrames += duration; // first packet primes the overlap
+            fragment.clear();
+            return;
+        }
         require(av_new_packet(pkt, int(fragment.size())) == 0, "packet allocation");
         memcpy(pkt->data, fragment.data(), fragment.size());
         require(avcodec_send_packet(dec, pkt) >= 0, "decode packet");
@@ -158,20 +198,26 @@ struct NativeLink {
     }
     void emitPage(int64_t gp, bool eos, int index, Reader &r, Emit emit, void *user) {
         if (eos) {
-            require(dec && fragment.empty() && audioPackets > 0, "incomplete last page");
-            require(avcodec_send_packet(dec, nullptr) >= 0, "send EOF");
-            receive();
+            require((parser || dec) && !continued && audioPackets > 0, "incomplete last page");
+            if (dec) {
+                require(avcodec_send_packet(dec, nullptr) >= 0, "send EOF");
+                receive();
+            }
         }
-        if (pcm.empty()) {
+        const auto count = measurement ? pageFrames : static_cast<int64_t>(pcm.size() / std::max(1, channels));
+        if (!count) {
             require(!eos || (gp == pos && anchored), "missing final samples");
             return;
         }
         require(gp >= 0, "missing granule for completed audio");
-        const auto count = static_cast<int64_t>(pcm.size() / channels);
         if (!anchored) {
             pos = eos ? 0 : gp - count;
             if (pos != 0)
                 require(audioPackets == 2 && (pos >= 0 || -pos <= count), "unsupported beginning");
+            if (measurement && index == 0) {
+                measurement->ordinarySingleLink = pos == 0 && !eos;
+                measurement->singlePageMultichannel = eos;
+            }
             anchored = true;
         }
         require(pos <= std::numeric_limits<int64_t>::max() - count, "position overflow");
@@ -180,16 +226,22 @@ struct NativeLink {
         const int64_t start = std::max<int64_t>(0, pos);
         const int64_t frames = gp - start;
         if (frames > 0) {
-            require(emit(user, pcm.data() + size_t(start - pos) * channels, int(frames), channels, rate, index,
-                         r.bytes) == 0,
-                    "consumer stopped");
+            if (measurement) {
+                auto &total = measurement->parts.back().frames;
+                require(total <= INT64_MAX - frames, "Vorbis length overflow");
+                total += frames;
+            } else {
+                require(emit(user, pcm.data() + size_t(start - pos) * channels, int(frames), channels, rate,
+                             index, r.bytes) == 0, "consumer stopped");
+            }
         }
         pos = gp;
+        pageFrames = 0;
         pcm.clear();
     }
 };
 
-Status readPackets(Source &source, void *user, Emit emit, void *cancelUser, Cancel cancel, uint64_t &sourceBytes) {
+Status readPackets(Source &source, void *user, Emit emit, void *cancelUser, Cancel cancel, uint64_t &sourceBytes, Plan* measured) {
     Reader in{source};
     try {
         std::unique_ptr<NativeLink> link;
@@ -207,20 +259,25 @@ Status readPackets(Source &source, void *user, Emit emit, void *cancelUser, Canc
             if (bos) {
                 serial = little32(page.data() + 14);
                 require(!link && serials.insert(serial).second && !(flags & 1), "unexpected BOS");
-                link = std::make_unique<NativeLink>();
+                // Bound the per-stream serial set and prepared plan independently of file size.
+                if (measured && serials.size() > 65536) return Status::ExtendedLimit;
+                if (measured && index >= 0) {
+                    measured->ordinarySingleLink = false;
+                    measured->singlePageMultichannel = false;
+                }
+                link = std::make_unique<NativeLink>(measured);
                 next = 0;
                 ++index;
             }
             require(link && little32(page.data() + 14) == serial && little32(page.data() + 18) == next++,
                     "link order");
-            require(bool(flags & 1) == !link->fragment.empty(), "continued packet");
+            require(bool(flags & 1) == link->continued, "continued packet");
             int64_t gp;
             memcpy(&gp, page.data() + 6, 8);
             size_t at = 27 + page[26];
             for (unsigned i = 0; i < page[26]; ++i) {
                 const auto n = page[27 + i];
-                require(link->fragment.size() + n <= 4u * 1024u * 1024u, "packet exceeds supported size");
-                link->fragment.insert(link->fragment.end(), page.data() + at, page.data() + at + n);
+                link->append(page.data() + at, n);
                 at += n;
                 if (n < 255)
                     link->completePacket();
