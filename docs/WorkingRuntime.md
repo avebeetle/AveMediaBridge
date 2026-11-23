@@ -1,5 +1,20 @@
 # Accepted runtime and development checkout
 
+## Pinned CAF/ALAC sample counts, 2026-11-23
+
+The optional CAF export summed all ALAC packets in the 40-minute stereo corpus
+file and returned 105,840,000 frames per channel. The same pass established
+the source SHA-256. Qualification covered short mono and stereo recordings,
+short interior packets, six headers crossing input blocks and the ordinary
+fallback for unsupported edit, trim and packet layouts. The inspector passed
+40 cases. The importer matched the expected PCM across 29 short files.
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261123-caf-alac.json)
+records the new Bridge DLL with the same four FFmpeg DLLs. Its snapshot
+contains the source archive, inspection and import results, export-name check
+and Release CTest log. Twenty-one tests passed. Nine existing suites require
+separate external fixtures.
+
 ## Video track inventory, 2026-11-23
 
 The quick probe reports whether the bundled decoder found a video stream
