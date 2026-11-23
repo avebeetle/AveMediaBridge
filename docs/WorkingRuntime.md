@@ -1,5 +1,22 @@
 # Accepted runtime and development checkout
 
+## Selected Vorbis audio in Matroska and WebM video, 2026-11-23
+
+The bounded probe measures native Vorbis packet overlap for the initial waveform
+width in small mono/stereo videos. Six stereo fixtures with short and long video
+tracks produced the same respective audio extents of 44,736, 882,368 and 2,646,720
+frames. The writer reads all PCM through EOF. A selected-track duration tag may
+provide progress for larger files. Testing included a file with 44,608 audio
+frames whose tag implied more than 120 GB of output; both import APIs wrote
+the actual samples.
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261123-video-audio-extent.json)
+identifies the qualified Bridge DLL and the four previously qualified FFmpeg
+DLLs. The staging snapshot at `out/runtime-baselines/2026-11-23-video-audio-extent/`
+includes the exact source archive, six probe comparisons and the Release CTest
+log. Twenty tests passed. Nine historical tests skipped unavailable external
+fixtures. The previous runtime snapshot is preserved.
+
 ## Extended Ogg Vorbis length verification, 2026-11-23
 
 When the bounded check of an audio-only Vorbis file exhausts its budget, AveVoice
