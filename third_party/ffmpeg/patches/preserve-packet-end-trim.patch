@@ -1,0 +1,30 @@
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -1514,12 +1514,22 @@
+             sti->skip_samples = sti->start_skip_samples;
+         sti->skip_samples = FFMAX(0, sti->skip_samples);
+         if (sti->skip_samples || discard_padding) {
+-            uint8_t *p = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
++            size_t sd_size;
++            uint8_t *p = av_packet_get_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, &sd_size);
++            if (!p || sd_size < 10)
++                p = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+             if (p) {
+-                AV_WL32(p, sti->skip_samples);
+-                AV_WL32(p + 4, discard_padding);
++                /* A demuxer may have supplied the other end of this packet. */
++                if (sti->skip_samples) {
++                    AV_WL32(p, sti->skip_samples);
++                    p[8] = 0;
++                }
++                if (discard_padding) {
++                    AV_WL32(p + 4, discard_padding);
++                    p[9] = 0;
++                }
+                 av_log(s, AV_LOG_DEBUG, "demuxer injecting skip %u / discard %u\n",
+-                       (unsigned)sti->skip_samples, (unsigned)discard_padding);
++                       (unsigned)AV_RL32(p), (unsigned)AV_RL32(p + 4));
+             }
+             sti->skip_samples = 0;
+         }

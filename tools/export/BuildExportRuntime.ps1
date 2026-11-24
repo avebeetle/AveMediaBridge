@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$Archive,
     [Parameter(Mandatory)][string]$LabRoot,
     [Parameter(Mandatory)][string]$OutputRoot,
-    [switch]$ShortVorbis
+    [switch]$ShortVorbis,
+    [switch]$ShortPacketImports
 )
 $ErrorActionPreference = 'Stop'
 $archive = (Resolve-Path -LiteralPath $Archive).Path
@@ -35,7 +36,7 @@ if ($LASTEXITCODE) { throw '7z tar extraction failed' }
 if ($LASTEXITCODE) { throw 'Backport check failed' }
 & git -C $source apply --no-index --include=libavformat/matroskadec.c $patch
 if ($LASTEXITCODE) { throw 'Backport apply failed' }
-if ($ShortVorbis) {
+if ($ShortVorbis -or $ShortPacketImports) {
     $vorbisPatch = Join-Path $repo 'third_party\ffmpeg\patches\ogg-vorbis-single-audio-page.patch'
     $vorbisHash = (Get-FileHash -LiteralPath $vorbisPatch -Algorithm SHA256).Hash
     if ($vorbisHash -ne '77F1D438C0B4C94D54E4B7B7FAB0296A4B0DC75961F0327D88E248D36220A0BC') {
@@ -43,6 +44,21 @@ if ($ShortVorbis) {
     }
     & git -C $source apply --no-index $vorbisPatch
     if ($LASTEXITCODE) { throw 'Vorbis patch apply failed' }
+}
+if ($ShortPacketImports) {
+    $packetPatches = [ordered]@{
+        'preserve-packet-end-trim.patch' = 'BDBCD0B28760839F4B4E3CF543DD11C3074D4EB6D4C2F55EE88E3BCE1133B0CD'
+        'mov-alac-variable-packet-index.patch' = '77435E2FAA8841D52F0ED75B35F17FBB411BEDACC8EBDB78C0D5CF4AE1CBF65F'
+        'short-elementary-probe.patch' = 'FADE87D6954C7539F5385192FCE45315D4042B5EB3C04251D96CEA57FF66374D'
+    }
+    foreach ($entry in $packetPatches.GetEnumerator()) {
+        $file = Join-Path $repo "third_party\ffmpeg\patches\$($entry.Key)"
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Value) {
+            throw "Unexpected patch: $file"
+        }
+        & git -C $source apply --no-index $file
+        if ($LASTEXITCODE) { throw "Patch apply failed: $file" }
+    }
 }
 function To-Msys([string]$value) { return (($value.Replace('\','/') -replace '^([A-Za-z]):','/$1').ToLowerInvariant()) }
 $sourceMsys = To-Msys $source; $buildMsys = To-Msys $build; $installMsys = To-Msys $install
@@ -79,11 +95,17 @@ $manifest = [ordered]@{
     configureOptions = $options; compiler = (& cmd /c "`"$vcvars`" >nul && cl" 2>&1 | Select-Object -First 2 | Out-String).Trim()
     runtimeDlls = @(); importLibraries = @()
 }
-if ($ShortVorbis) {
+if ($ShortVorbis -or $ShortPacketImports) {
     $manifest.profile = 'wav-f32-native-v1-short-vorbis'
     $manifest.vorbisPatch = $vorbisPatch
     $manifest.vorbisPatchSha256 = $vorbisHash
     $manifest.patchedFiles += 'libavformat/oggparsevorbis.c'
+}
+if ($ShortPacketImports) {
+    $manifest.profile = 'wav-f32-native-v1-short-packet-imports'
+    $manifest.packetPatches = $packetPatches
+    $manifest.patchedFiles += 'libavformat/demux.c', 'libavformat/mov.c',
+        'libavformat/aacdec.c', 'libavformat/ac3dec.c'
 }
 foreach ($name in @('avcodec-61.dll','avformat-61.dll','avutil-59.dll','swresample-5.dll')) {
     $item = Join-Path $install "bin\$name"

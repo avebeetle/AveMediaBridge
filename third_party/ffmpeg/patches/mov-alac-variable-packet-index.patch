@@ -1,0 +1,18 @@
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -4613,9 +4613,12 @@
+             sc->start_pad = start_time;
+     }
+ 
+-    /* only use old uncompressed audio chunk demuxing when stts specifies it */
++    /* A one-tick ALAC packet can have the same STTS shape as old PCM
++     * chunks. Its byte size comes from STSZ, not the fixed chunk layout. */
+     if (!(st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
+-          sc->stts_count == 1 && sc->stts_data[0].duration == 1)) {
++          sc->stts_count == 1 && sc->stts_data[0].duration == 1) ||
++        (st->codecpar->codec_id == AV_CODEC_ID_ALAC && sc->samples_per_frame > 1 &&
++         !sc->bytes_per_frame && (sc->stsz_sample_size || sc->sample_sizes))) {
+         unsigned int current_sample = 0;
+         unsigned int stts_sample = 0;
+         unsigned int sample_size;
