@@ -9,6 +9,7 @@ CMakeLists.txt text eol=lf
 third_party/ffmpeg/patches/*.patch text eol=lf whitespace=-trailing-space
 third_party/xiph/*.patch text eol=lf whitespace=-trailing-space
 tools/runtime/accepted-runtime-20261124-import-boundaries.json text eol=lf
+tools/runtime/accepted-runtime-20261124-riff-pcm.json text eol=lf
 
 *.bat text eol=crlf
 

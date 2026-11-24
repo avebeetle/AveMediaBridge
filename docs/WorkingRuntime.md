@@ -1,5 +1,22 @@
 # Accepted runtime and development checkout
 
+## Fixed-width RIFF PCM budget, 2026-11-24
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261124-riff-pcm.json)
+contains the Bridge built from `49fd515717268581acb3a2d6242402b8aec2ec29` and
+the same four FFmpeg binaries as the preceding import-boundaries snapshot.
+During import a verified mono or stereo RIFF/WAVE payload can establish the
+PCM presentation budget from the first 4 KiB and the physical file size.
+
+The 240 combinations of sample format, channel count, length and layout
+matched every expected PCM byte. Nine additional layouts exercised fallback
+or refusal, including truncated data, conflicting lengths and RF64. Across
+897 short inputs the probe and import results matched the preceding release.
+The Release CTest suite passed 25 tests and skipped nine requiring historical
+external fixtures. The snapshot contains the exact source archive, all runtime
+dependencies, build logs, corpus results and CTest XML. Deployment to the
+editor is qualified separately.
+
 ## Import boundaries and verified loading scales, 2026-11-24
 
 The [five-file receipt](../tools/runtime/accepted-runtime-20261124-import-boundaries.json)
