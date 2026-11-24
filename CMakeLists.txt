@@ -120,7 +120,8 @@ endfunction()
 add_bridge_dll(AveMediaBridge)
 
 target_sources(AveMediaBridge PRIVATE
-    src/Dll/MatroskaInspectExport.cpp src/Dll/CafAlacInspectExport.cpp src/Probe/QueuedSourceSha256.cpp)
+    src/Dll/MatroskaInspectExport.cpp src/Dll/CafAlacInspectExport.cpp
+    src/Dll/VobAc3InspectExport.cpp src/Probe/QueuedSourceSha256.cpp)
 target_link_libraries(AveMediaBridge PRIVATE bcrypt)
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -128,6 +129,17 @@ find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
 if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
     add_test(NAME AveMediaBridgeTests.matroska_vorbis_track
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/MatroskaVorbisTrack.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    add_test(NAME AveMediaBridgeTests.short_packet_imports
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/ShortPacketImports.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    set_tests_properties(AveMediaBridgeTests.short_packet_imports PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME AveMediaBridgeTests.short_elementary_probe
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/ShortElementaryProbe.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    set_tests_properties(AveMediaBridgeTests.short_elementary_probe PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME AveMediaBridgeTests.video_packet_ruler
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/VideoPacketRuler.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     add_test(NAME AveMediaBridgeTests.combined_matroska_source
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/CombinedMatroskaSource.py"
