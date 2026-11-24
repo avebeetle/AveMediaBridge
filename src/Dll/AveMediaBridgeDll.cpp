@@ -4,6 +4,7 @@
 #include "ReaderImportHandle.hpp"
 #include "../Input/DemuxSession.hpp"
 #include "../Input/StableInputContract.hpp"
+#include "../Probe/RiffPcmExtent.hpp"
 
 #include "AveMediaBridge/AveMediaBridge.hpp"
 #include "../Diagnostics/FullScaleClipDiagnostics.hpp"
@@ -525,6 +526,8 @@ void resolveStreamingPresentationBudget(
     const int sampleRate = codecpar->sample_rate;
     result.totalPresentationEvidence =
         Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
+    if (Probe::matchesRiffPcmExtent(formatContext, audioStream, result.totalPresentationEvidence))
+        result.totalPresentationEvidence.validation = Probe::PresentationTotalValidation::SelfContainedMetadata;
     const bool strongerExactAuthority =
         result.totalPresentationEvidence.trust ==
             Probe::PresentationTotalTrust::SampleExact;

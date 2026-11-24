@@ -72,6 +72,7 @@ target_link_libraries(AveMediaBridgeCore
 )
 
 set(AVEMEDIABRIDGE_DLL_SOURCES
+    src/Probe/RiffPcmExtent.cpp
     src/Dll/ContainerProbeExports.cpp
     src/Probe/ContainerDependency.cpp
     src/Probe/MovSingleFilePolicy.cpp
@@ -125,6 +126,11 @@ target_sources(AveMediaBridge PRIVATE
 target_link_libraries(AveMediaBridge PRIVATE bcrypt)
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME AveMediaBridgeTests.riff_pcm_import
+        COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/RiffPcmImport.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}")
+endif()
 find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
 if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
     add_test(NAME AveMediaBridgeTests.matroska_vorbis_track

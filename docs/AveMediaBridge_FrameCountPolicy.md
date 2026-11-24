@@ -273,6 +273,20 @@ No policy should hardcode sample rate as a proxy for frame count. Frame count co
 
 Constants such as 1024, 1152, and 2048 are codec frame sizes. They are not assumptions that media is 44.1 kHz or 48 kHz.
 
+## RIFF PCM presentation budget
+
+During progressive import, ordinary RIFF/WAVE can establish the selected PCM
+stream's duration from the open input. The proof reads at most the first 4 KiB.
+It requires a matching RIFF file size, one final data chunk (including its
+alignment pad), the actual channel count and sample width, and a byte count
+that exactly matches the demuxer's native sample count. An optional fact count
+must agree. It covers mono and stereo unsigned 8-bit, signed 16/24/32-bit and
+IEEE 32/64-bit audio, including matching WAVEFORMATEXTENSIBLE subformats.
+A successful proof supplies the normal presentation budget before decoding.
+Other layouts, including RF64 and trailing chunks, keep the packet cross-check.
+The decoder still reads the entire audio. This proof concerns audio length;
+AveVoice controls the independent source fingerprint and its publication.
+
 ## Refactor Safety
 
 When extracting this policy into `src/Probe/FrameCountPolicy.hpp/.cpp`, keep the input/output value model explicit:
