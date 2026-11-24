@@ -37,6 +37,13 @@ AMBM_API int __cdecl AveMediaBridge_InspectCafAlacSourceV1(
     uint8_t* sha256_32, uint64_t* bytes, uint64_t* frames,
     int32_t* stream_index, int32_t* sample_rate, int32_t* channels);
 
+/* Same borrowed handle, output and cancellation contract as the CAF inspector.
+   Counts complete CRC-verified AC-3 frames in supported DVD program-stream packs. */
+AMBM_API int __cdecl AveMediaBridge_InspectVobAc3SourceV1(
+    const wchar_t* path, void* pinned_file, AMBM_Cancel cancel, void* context,
+    uint8_t* sha256_32, uint64_t* bytes, uint64_t* frames,
+    int32_t* stream_index, int32_t* sample_rate, int32_t* channels);
+
 #ifdef __cplusplus
 }
 #endif

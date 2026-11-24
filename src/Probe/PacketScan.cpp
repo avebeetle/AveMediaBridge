@@ -1,4 +1,5 @@
 #include "PacketScan.hpp"
+#include "MpegLayer3FrameHeader.hpp"
 
 #include "../Core/MediaBridgeError.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
@@ -11,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <utility>
+#include <string_view>
 
 namespace AveMediaBridge::Probe {
 namespace {
@@ -246,6 +248,10 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
         return result;
     }
 
+    bool verifyFlvMp3 = packetTiming && gapless && scanContext->iformat && scanContext->iformat->name &&
+        std::string_view(scanContext->iformat->name) == "flv" && codecpar->codec_id == AV_CODEC_ID_MP3 &&
+        codecpar->initial_padding == 0 && codecpar->trailing_padding == 0;
+    std::int64_t flvFrames = 0;
     // Packet timing and gapless metadata remain independent evidence
     // models, but share one physical demux traversal.
     while ((ret = av_read_frame(scanContext, packet.get())) >= 0) {
@@ -257,6 +263,20 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
                 "stable packet scan callback failed: " + ffErrorString(failure));
         }
         const bool selectedAudio = packet->stream_index == audioStreamIndex;
+        if (verifyFlvMp3 && selectedAudio) {
+            const auto header = parseMpegFrameHeader(packet->data, (std::max)(0, packet->size));
+            if (!header.valid || header.frameSizeBytes != static_cast<std::uint64_t>(packet->size) ||
+                header.sampleRate != sampleRate || header.channels != codecpar->ch_layout.nb_channels ||
+                (packet->flags & (AV_PKT_FLAG_CORRUPT | AV_PKT_FLAG_DISCARD)) ||
+                av_packet_get_side_data(packet.get(), AV_PKT_DATA_SKIP_SAMPLES, nullptr) ||
+                av_packet_get_side_data(packet.get(), AV_PKT_DATA_PARAM_CHANGE, nullptr) ||
+                av_packet_get_side_data(packet.get(), AV_PKT_DATA_NEW_EXTRADATA, nullptr) ||
+                flvFrames > (std::numeric_limits<std::int64_t>::max)() - static_cast<std::int64_t>(header.samplesPerFrame)) {
+                verifyFlvMp3 = false;
+            } else {
+                flvFrames += static_cast<std::int64_t>(header.samplesPerFrame);
+            }
+        }
         if (packetTiming) {
             // Count physical codec samples independently of a container's
             // possibly quantized packet presentation durations.
@@ -302,6 +322,8 @@ AudioPresentationEvidenceScan scanAudioPresentationEvidenceImpl(
             readError.empty() ? std::string{} : "packet frame-count scan read failed: " + readError);
         result.packetTiming.reachedEof = readError.empty();
         result.packetTiming.readError = !readError.empty();
+        if (verifyFlvMp3 && readError.empty() && !(scanContext->pb && scanContext->pb->error < 0))
+            result.packetTiming.verifiedFlvMp3Frames = flvFrames;
         result.packetTiming.codecFrameCountExact =
             result.packetTiming.reachedEof &&
             result.packetTiming.codecFrameCountKnown;

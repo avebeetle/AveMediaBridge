@@ -222,6 +222,9 @@ bool runPolicyTruthTable() {
     extentOnly.exactPacketTotal = extentOnly.streamTotal;
     extentOnly.packetDurationSumFrames = 63;
     ok &= check(!Probe::resolveStreamingPresentationBudget(extentOnly).accepted, "loading_extent_never_trims_pcm");
+    extentOnly.streamTotal.source = Probe::PresentationTotalSource::FlvMp3PacketPresentation;
+    extentOnly.exactPacketTotal = extentOnly.streamTotal;
+    ok &= check(!Probe::resolveStreamingPresentationBudget(extentOnly).accepted, "flv_packet_extent_never_trims_pcm");
     exactZero.streamTotal = exactTotal(0);
     const auto exactZeroDecision = Probe::resolveStreamingPresentationBudget(exactZero);
     ok &= check(
@@ -290,7 +293,7 @@ bool runPolicyTruthTable() {
         Probe::remainingPresentationInputFrames(100, acceptedInput) == 40,
         "input_output_accounting_independent");
 
-    return ok && expect(passed == 13, "policy_truth_table_count");
+    return ok && expect(passed == 14, "policy_truth_table_count");
 }
 
 struct ImportExpectation {

@@ -46,6 +46,7 @@ struct PacketFrameCountScan {
     std::int64_t sampleExactPacketDurationSumFrames = 0;
     std::int64_t packetsWithSampleExactDuration = 0;
     std::int64_t codecFrameCountFrames = 0;
+    std::int64_t verifiedFlvMp3Frames = 0;
     std::int64_t packetsWithCodecFrameCount = 0;
     std::int64_t aacFrameCountCandidateFrames = 0;
     std::int64_t mp3FrameCountCandidateFrames = 0;

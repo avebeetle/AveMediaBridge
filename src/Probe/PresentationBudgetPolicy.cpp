@@ -284,6 +284,8 @@ const char* presentationTotalSourceName(PresentationTotalSource source) noexcept
             return "ogg_eos_granule";
         case PresentationTotalSource::OggVorbisLinkPresentation:
             return "ogg_vorbis_link_presentation";
+        case PresentationTotalSource::FlvMp3PacketPresentation:
+            return "flv_mp3_packet_presentation";
         case PresentationTotalSource::MatroskaVorbisPacketPresentation:
             return "matroska_vorbis_packet_presentation";
         case PresentationTotalSource::FlacStreamInfoTotalSamples:

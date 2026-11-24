@@ -1217,6 +1217,24 @@ void applyFastFrameCountPolicies(
     }
 
     applyFrameCountPolicyState(result.document, policyState);
+    if (packetScan.verifiedFlvMp3Frames > 0 && policyState.decodedSampleFramesKind != "exact" &&
+        !result.totalPresentation.conflict && result.totalPresentation.trust != PresentationTotalTrust::SampleExact) {
+        auto& doc = result.document;
+        const auto frames = packetScan.verifiedFlvMp3Frames;
+        result.totalPresentation = {static_cast<std::uint64_t>(frames), PresentationTotalTrust::SampleExact,
+            PresentationTotalSource::FlvMp3PacketPresentation, PresentationSampleDomain::NativeStreamSamples,
+            codecpar->sample_rate, true, false, PresentationTotalValidation::LoadingExtentOnly};
+        doc.decodedSampleFramesBeforeCorrection = doc.decodedSampleFrames;
+        doc.decodedSampleFrames = frames;
+        doc.decodedSampleFramesKind = "exact";
+        doc.decodedSampleFramesTrust = "authoritative";
+        doc.decodedSampleFramesSource = presentationTotalSourceName(result.totalPresentation.source);
+        doc.durationEstimationMethod = "from_flv_mp3_packets";
+        doc.frameCountPolicyReason = "complete selected FLV Layer III frames with one validated audio domain";
+        doc.durationSec = static_cast<double>(frames) / codecpar->sample_rate;
+        doc.durationKind = "exact";
+        updateEstimatedDecodedBytes(doc);
+    }
     if (policyState.decodedSampleFramesKind == "exact" &&
         policyState.decodedSampleFramesSource == "exact_packet_presentation" &&
         policyState.decodedSampleFrames > 0) {
