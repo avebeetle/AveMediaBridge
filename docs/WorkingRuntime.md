@@ -1,5 +1,27 @@
 # Accepted runtime and development checkout
 
+## Import boundaries and verified loading scales, 2026-11-24
+
+The [five-file receipt](../tools/runtime/accepted-runtime-20261124-import-boundaries.json)
+pins the Bridge built from `86940232f771d74662d6fc97d331117a3a7871fa` and the
+FFmpeg 7.1.4 runtime. The new format DLL preserves both ends of a short Opus
+packet, reads one-tick ALAC in MOV and recognizes complete short elementary
+AAC and Dolby streams. Bridge checks weakly detected elementary audio for
+decode errors. It measures qualified DVD VOB/AC-3 and FLV/MP3 loading scales
+from the selected audio while decoding the stream through EOF.
+
+The snapshot under `out/runtime-baselines/2026-11-24-import-boundaries/` contains
+the exact Bridge Git archive and full corresponding FFmpeg sources for both builds.
+The new `avformat-61.dll` uses the five-patch `-ShortPacketImports` recipe.
+The original candidate-002 provides the codec, utility and resampling DLLs.
+The receipt maps each library to its source archive and build manifest. The
+snapshot includes the upstream Xiph archives, private patch, licenses and notices.
+
+All 897 short cases produced the expected import results. For 124 medium
+files the decoded PCM matched the saved hashes. The three new regression
+suites also passed against the five files in the snapshot. The Release CTest
+run passed 24 tests and skipped nine suites requiring external fixtures.
+
 ## Pinned CAF/ALAC sample counts, 2026-11-23
 
 The optional CAF export summed all ALAC packets in the 40-minute stereo corpus
