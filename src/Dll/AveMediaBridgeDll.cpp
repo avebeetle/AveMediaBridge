@@ -1408,6 +1408,7 @@ int receiveStreamingFrames(
             return 0;
         }
         if (ret < 0) {
+            if (Decode::rejectDamagedPacket(*decoder, ret, result.error)) return ret;
             addStreamingWarning(result, "avcodec_receive_frame skipped error: " + ffErrorString(ret));
             return 0;
         }
@@ -1442,6 +1443,7 @@ int sendStreamingPacketAndReceive(
     }
 
     if (ret < 0) {
+        if (Decode::rejectDamagedPacket(*decoder, ret, result.error)) return ret;
         ++result.decode.invalidPacketsSkipped;
         addStreamingWarning(result, "avcodec_send_packet skipped packet: " + ffErrorString(ret));
         return 0;
@@ -1688,6 +1690,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
         }
 
+        Decode::configureElementaryDecode(*formatContext, *decoderContext);
         ret = avcodec_open2(decoderContext, decoder, nullptr);
         if (ret < 0) {
             result.error = "avcodec_open2 failed: " + ffErrorString(ret);

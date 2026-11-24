@@ -107,6 +107,23 @@ def main(bridge, ffmpeg_dir, ffmpeg):
         second = ((aac[3] & 3) << 11) | (aac[4] << 3) | (aac[5] >> 5)
         aac[second + 2] ^= 0x04
         assert probe(bytes(aac)) != ("aac", 2)
+        # Both ADTS headers still agree when an entire payload is corrupt.
+        # Never commit just the half of the recording that happened to decode.
+        abi.AveMediaBridge_ImportAudioToSession.argtypes = [ct.c_wchar_p, ct.c_wchar_p]
+        for begin, end in ((7, second), (second + 7, len(aac))):
+            broken = bytearray(samples["aac"])
+            broken[begin:end] = bytes(end - begin)
+            damaged = root / "damaged.aac"
+            damaged.write_bytes(broken)
+            for guarded in (True, False):
+                with tempfile.TemporaryDirectory(dir=root) as temp:
+                    if guarded:
+                        opts = ImportOptions(ct.sizeof(ImportOptions), str(damaged), temp, None, None, None, None)
+                        rc = abi.AveMediaBridge_ImportAudioToSessionGuardedV1(ct.byref(opts))
+                    else:
+                        rc = abi.AveMediaBridge_ImportAudioToSession(str(damaged), temp)
+                    assert rc != 0, (begin, guarded, "partial import accepted")
+                    assert not (Path(temp) / "original_f32.bin").exists()
         # A whole probe read can end between the second and third frames of a larger file.
         # Score 2 must not pass libavformat's normal retry threshold (25).
         assert probe(samples["aac"]) == ("aac", 2)

@@ -260,6 +260,7 @@ int receiveFrames(AVCodecContext* decoder, AVFrame* frame, SwrState& swr, AudioI
             return 0;
         }
         if (ret < 0) {
+            if (Decode::rejectDamagedPacket(*decoder, ret, result.error)) return ret;
             addWarning(result.decode, "avcodec_receive_frame skipped error: " + ffErrorString(ret));
             return 0;
         }
@@ -284,6 +285,7 @@ int sendPacketAndReceive(AVCodecContext* decoder, AVPacket* packet, AVFrame* fra
     }
 
     if (ret < 0) {
+        if (Decode::rejectDamagedPacket(*decoder, ret, result.error)) return ret;
         ++result.decode.invalidPacketsSkipped;
         addWarning(result.decode, "avcodec_send_packet skipped packet: " + ffErrorString(ret));
         return 0;
@@ -379,6 +381,7 @@ AudioImportResult FfmpegAudioImporter::importFile(const std::string& path) {
         av_channel_layout_copy(&decoderContext->ch_layout, &codecpar->ch_layout);
     }
 
+    Decode::configureElementaryDecode(*formatContext, *decoderContext);
     ret = avcodec_open2(decoderContext, decoder, nullptr);
     if (ret < 0) {
         result.error = "avcodec_open2 failed: " + ffErrorString(ret);
