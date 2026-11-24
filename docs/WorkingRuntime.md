@@ -1,5 +1,28 @@
 # Accepted runtime and development checkout
 
+## Indexed AAC-LC import, 2026-11-24
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261124-aac-index.json)
+pins the Bridge built from `10a024a1395299e30aa4c09a9321e8707a435959` and the
+four FFmpeg DLLs from the RIFF PCM release. For a supported AAC-LC track in
+a classic MP4-family file, the Bridge verifies the sample tables and edit
+against the selected stream. A matching index supplies the presentation length
+without a packet prescan. Ambiguous edits keep the packet-based policy.
+
+A missing final packet can look like normal EOF to the decoder. If the
+selected AAC index points beyond the available bytes, the Bridge reports the
+missing audio or explains that its completeness could not be confirmed.
+The indexed fast path also checks the decoded frame count before end trimming.
+Closing a loading document removes its partial session.
+
+In the Windows GUI the two concurrent imports produced 70,286,304 and
+105,840,000 frames per channel, with the same PCM and timeline as the
+individual imports. Canceling one of two imports of the same source left the
+other session intact. The Bridge suite passed 28 tests and skipped nine that
+require the historical external corpus. The previous
+[RIFF PCM receipt](../tools/runtime/accepted-runtime-20261124-riff-pcm.json)
+remains available.
+
 ## Fixed-width RIFF PCM budget, 2026-11-24
 
 The [five-file receipt](../tools/runtime/accepted-runtime-20261124-riff-pcm.json)
