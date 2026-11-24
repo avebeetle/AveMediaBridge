@@ -32,7 +32,8 @@ enum class PresentationTotalSource {
     ExactPacketPresentation,
     OggVorbisLinkPresentation,
     MatroskaVorbisPacketPresentation,
-    FlvMp3PacketPresentation
+    FlvMp3PacketPresentation,
+    Mp4AacSampleEditTablePresentation
 };
 
 enum class PresentationSampleDomain {

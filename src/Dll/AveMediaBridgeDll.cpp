@@ -19,6 +19,7 @@
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
+#include "../Probe/Mp4AacSampleTable.hpp"
 #include "../Probe/Mp3HeaderPresentation.hpp"
 #include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
@@ -73,6 +74,7 @@ struct StreamingImportResult {
     AveMediaBridge::MediaProbeDetails probe;
     AveMediaBridge::SelectedAudioStreamInfo selectedAudio;
     AveMediaBridge::DecodeReport decode;
+    bool decoderSkippedFrame = false;
     AveMediaBridge::AudioStats stats;
     int sampleRate = 0;
     int channels = 0;
@@ -90,6 +92,7 @@ struct StreamingImportResult {
     Probe::TotalPresentationEvidence totalPresentationEvidence;
     bool presentationBudgetKnown = false;
     std::uint64_t presentationBudgetFrames = 0;
+    std::uint64_t indexedAacPhysicalFrames = 0;
     Probe::PresentationTotalSource presentationBudgetSource =
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
@@ -516,7 +519,8 @@ void resolveStreamingPresentationBudget(
     const std::filesystem::path& sessionDir,
     const AVFormatContext* formatContext,
     const AVStream* audioStream,
-    const Input::SelectedAudioBinding* expected) {
+    const Input::SelectedAudioBinding* expected,
+    const std::function<bool()>& canceled) {
     const auto& path = source.displayLabel();
     if ((!source.isStable() && path.empty()) || !audioStream || !audioStream->codecpar) {
         return;
@@ -528,6 +532,18 @@ void resolveStreamingPresentationBudget(
         Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
     if (Probe::matchesRiffPcmExtent(formatContext, audioStream, result.totalPresentationEvidence))
         result.totalPresentationEvidence.validation = Probe::PresentationTotalValidation::SelfContainedMetadata;
+    const auto aac = Probe::probeMp4AacSampleTable(source, formatContext, audioStream, canceled);
+    if (aac.frames > 0) {
+        const Probe::TotalPresentationEvidence exact{
+            aac.frames, Probe::PresentationTotalTrust::SampleExact,
+            Probe::PresentationTotalSource::Mp4AacSampleEditTablePresentation,
+            Probe::PresentationSampleDomain::NativeStreamSamples, sampleRate, true, false,
+            Probe::PresentationTotalValidation::SelfContainedMetadata};
+        result.totalPresentationEvidence =
+            Probe::reconcileTotalPresentationEvidence(exact, result.totalPresentationEvidence);
+        if (!result.totalPresentationEvidence.conflict)
+            result.indexedAacPhysicalFrames = aac.physicalFrames;
+    }
     const bool strongerExactAuthority =
         result.totalPresentationEvidence.trust ==
             Probe::PresentationTotalTrust::SampleExact;
@@ -1412,6 +1428,7 @@ int receiveStreamingFrames(
         }
         if (ret < 0) {
             if (Decode::rejectDamagedPacket(*decoder, ret, result.error)) return ret;
+            result.decoderSkippedFrame = true;
             addStreamingWarning(result, "avcodec_receive_frame skipped error: " + ffErrorString(ret));
             return 0;
         }
@@ -1641,7 +1658,12 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
                 result.preflightEstimatedBytes,
                 result.preflightEstimateKind);
         resolveStreamingPresentationBudget(
-            result, source, sessionDir, formatContext, audioStream, expected);
+            result, source, sessionDir, formatContext, audioStream, expected, [&]() {
+                if (pollImportCancel(callbacks, result)) return false;
+                if (!result.canceled)
+                    throw Input::ReaderInputError(Input::ReaderInputFailure::InputFailed, result.error);
+                return true;
+            });
     }
     checkInput();
 
@@ -1785,6 +1807,42 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
         return result;
     }
 
+    // A stream duration, including an Ogg end granule with a nonzero origin,
+    // may cap the decode without specifying how many PCM frames it must yield.
+    const bool exactShortfall = result.presentationBudgetKnown &&
+        (result.totalPresentationEvidence.validation == Probe::PresentationTotalValidation::SelfContainedMetadata ||
+         result.presentationBudgetSource == Probe::PresentationTotalSource::ExactPacketPresentation) &&
+        nonNegativeToUint64(result.framesWritten) < result.presentationBudgetFrames;
+    if (exactShortfall || result.decode.invalidPacketsSkipped > 0 || result.decoderSkippedFrame) {
+        if (pollImportCancel(callbacks, result)) {
+            std::ostringstream message;
+            message << "Incomplete audio import: ";
+            if (result.presentationBudgetKnown) {
+                message << "expected " << result.presentationBudgetFrames << ", ";
+            }
+            message << "decoded " << result.framesWritten << " samples per channel.";
+            if (result.decode.invalidPacketsSkipped > 0 || result.decoderSkippedFrame) {
+                message << " Part of the audio stream could not be decoded.";
+            }
+            result.error = message.str();
+        }
+        cleanup();
+        return result;
+    }
+
+    // The presentation cap could otherwise hide unexpected audio beyond the edit.
+    if (result.indexedAacPhysicalFrames != 0 &&
+        result.physicalInputFrames != result.indexedAacPhysicalFrames) {
+        if (pollImportCancel(callbacks, result)) {
+            std::ostringstream message;
+            message << "AAC index and decoded audio disagree before end trimming: expected "
+                    << result.indexedAacPhysicalFrames << ", decoded " << result.physicalInputFrames
+                    << " samples per channel.";
+            result.error = message.str();
+        }
+        cleanup();
+        return result;
+    }
     if (!flushDraftWaveform(callbacks, result, result.error)) {
         cleanup();
         return result;
@@ -2618,6 +2676,9 @@ static int importAudioToSession(const AveMediaBridgeImportOptions* options, bool
         artifactsCommitted = true;
         clearLastError();
         return 0;
+    } catch (const Input::ReaderInputError& error) {
+        setLastErrorText(error.what());
+        return error.failure() == Input::ReaderInputFailure::Canceled ? AVEMEDIABRIDGE_IMPORT_RESULT_CANCELED : 2;
     } catch (...) {
         setLastErrorText(L"unexpected exception in AveMediaBridge_ImportAudioToSessionEx");
         return 99;
