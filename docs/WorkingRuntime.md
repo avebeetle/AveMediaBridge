@@ -1,5 +1,24 @@
 # Accepted runtime and development checkout
 
+## Selected DVD AC-3 audio integrity, 2026-11-25
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261125-vob-ac3-integrity.json)
+pins Bridge `fde3ebb` and the four FFmpeg libraries from the
+[MOV PCM release](../tools/runtime/accepted-runtime-20261125-mov-pcm-index.json).
+The streaming importer checks AC-3 frame sizes and both checksums in the selected
+DVD audio track as it decodes. It also checks whether a readable packet header
+declares selected audio beyond the physical end of the final DVD sector.
+This catches an incomplete frame even when the decoder would conceal the loss
+by emitting all 1536 samples. The ordinary packet scan and the 27 exported
+functions retain their previous contracts.
+
+Qualification covered 64 VOB files, ten recordings with byte-swapped AC-3
+and four additional checksum cases. The correct selected audio opened even
+when only another track was damaged. In three warm Windows pairs on the same
+40-minute VOB and AveVoice executable, the median first visible waveform went
+from 0.593 to 0.599 seconds and median time to Ready went from 6.015 to 6.086.
+Release CTest passed 31 tests and skipped nine requiring historical media.
+
 ## Indexed PCM in MOV, 2026-11-25
 
 The [runtime receipt](../tools/runtime/accepted-runtime-20261125-mov-pcm-index.json)

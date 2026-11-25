@@ -13,6 +13,7 @@ tools/runtime/accepted-runtime-20261124-riff-pcm.json text eol=lf
 tools/runtime/accepted-runtime-20261124-aac-index.json text eol=lf
 tools/runtime/accepted-runtime-20261125-alac-index.json text eol=lf
 tools/runtime/accepted-runtime-20261125-mov-pcm-index.json text eol=lf
+tools/runtime/accepted-runtime-20261125-vob-ac3-integrity.json text eol=lf
 
 *.bat text eol=crlf
 
