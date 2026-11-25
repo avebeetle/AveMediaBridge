@@ -1,5 +1,23 @@
 # Accepted runtime and development checkout
 
+## Indexed PCM in MOV, 2026-11-25
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261125-mov-pcm-index.json)
+pins Bridge `8712f40` and the four FFmpeg libraries from the indexed ALAC release.
+A classic MOV with one supported mono or stereo fixed-width PCM track can
+establish its sample count from the local track tables. The importer verifies
+frame size, timing and physical coverage. For a single sample-accurate edit it
+reads the selected ranges from the same open source and sends them to the PCM
+decoder. This preserves an edit consisting only of the last sample, even when
+the demuxer groups it with discarded samples. Missing selected audio fails the
+import. Ambiguous edits and unsupported layouts retain the existing packet checks.
+
+Qualification covered 217 MOV cases and 897 short files across 69 format
+profiles. The independent PCM check for the 40-minute stereo MOV covered
+105,840,000 frames. Release CTest passed 31 tests and skipped nine that require
+external media. The [preceding release](../tools/runtime/accepted-runtime-20261125-alac-index.json)
+remains available.
+
 ## Indexed ALAC import, 2026-11-25
 
 The [runtime receipt](../tools/runtime/accepted-runtime-20261125-alac-index.json)
