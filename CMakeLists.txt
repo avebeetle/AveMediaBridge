@@ -134,6 +134,9 @@ if(Python3_Interpreter_FOUND)
 endif()
 find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
 if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
+    add_test(NAME AveMediaBridgeTests.mov_pcm_runtime_index
+        COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/MovPcmIndexImport.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     add_test(NAME AveMediaBridgeTests.mp4_alac_runtime_index
         COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AlacIndexImport.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")

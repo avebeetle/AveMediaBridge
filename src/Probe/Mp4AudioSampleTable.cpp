@@ -11,6 +11,7 @@ extern "C" {
 #include <cstring>
 #include <limits>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AveMediaBridge::Probe {
@@ -96,7 +97,7 @@ struct Movie {
 };
 
 Movie readMovie(const AMBI_SourceV1& input, U64& consumed, const std::function<bool()>& canceled,
-                bool metadataOnly = false) {
+                bool metadataOnly = false, bool allowShortMdat = false) {
     auto read = [&](U64 pos, std::uint8_t* buf, std::size_t n) {
         require(n <= readBudget - consumed, "read_budget");
         while (n) {
@@ -136,6 +137,10 @@ Movie readMovie(const AMBI_SourceV1& input, U64& consumed, const std::function<b
         } else if (!length) {
             length = input.byteSize - pos;
         }
+        // A complete edit can precede a physically truncated, unplayed tail.
+        // Only the bytes actually present may contribute to its proof.
+        if (mdat && allowShortMdat)
+            length = std::min(length, input.byteSize - pos);
         require(length >= header && length <= input.byteSize - pos, "top_level_layout");
         if (moov) {
             require(movie.metadata.empty() && length > header, "moov_count");
@@ -226,10 +231,65 @@ struct SampleDescription {
     unsigned blockLimit;
 };
 
+struct PcmFormat {
+    std::string_view tag;
+    unsigned bytes;
+    bool littleEndian = false;
+};
+
+PcmFormat pcmFormat(AVCodecID id) {
+    switch (id) {
+        case AV_CODEC_ID_PCM_U8:    return {"raw ", 1};
+        case AV_CODEC_ID_PCM_S16LE: return {"sowt", 2, true};
+        case AV_CODEC_ID_PCM_S16BE: return {"twos", 2};
+        case AV_CODEC_ID_PCM_S24LE: return {"in24", 3, true};
+        case AV_CODEC_ID_PCM_S32LE: return {"in32", 4, true};
+        case AV_CODEC_ID_PCM_F32LE: return {"fl32", 4, true};
+        case AV_CODEC_ID_PCM_F64LE: return {"fl64", 8, true};
+        default: return {};
+    }
+}
+
+void validatePcmDescription(View audio, const AVCodecParameters& codec, PcmFormat pcm) {
+    const unsigned channels = static_cast<unsigned>(codec.ch_layout.nb_channels);
+    const unsigned bits = pcm.bytes * 8, stride = pcm.bytes * channels;
+    const bool wide = pcm.bytes > 2;
+    require(audio.u16(8) == (wide ? 1 : 0) && audio.u16(16) == channels &&
+                audio.u16(18) == (wide ? 16 : bits) && audio.u32(20) == 0 &&
+                audio.u32(24) == (static_cast<unsigned>(codec.sample_rate) << 16) &&
+                codec.bits_per_coded_sample == bits && (!codec.block_align || codec.block_align == stride),
+            "pcm_sample_entry");
+    const Children extensions(audio.tail(wide ? 44 : 28));
+    for (const auto& box : extensions.all())
+        require(box.tag == "chan" || (wide && box.tag == "wave"), "pcm_sample_extension");
+    if (wide) {
+        // QuickTime v1 declares one PCM frame per sample. The conventional
+        // 16-bit size field above is superseded by these native byte widths.
+        require(audio.u32(28) == 1 && audio.u32(32) == pcm.bytes &&
+                    audio.u32(36) == stride && audio.u32(40) == 2,
+                "pcm_native_sizes");
+        const Children wave(extensions.one("wave"));
+        const auto endian = wave.one("enda");
+        require(wave.one("frma").equals(pcm.tag.data(), 4) && endian.size == 2 &&
+                    endian.u16(0) == (pcm.littleEndian ? 1u : 0u),
+                "pcm_byte_order");
+        for (const auto& box : wave.all())
+            require(box.tag == "frma" || box.tag == "enda" ||
+                        (box.tag == std::string_view("\0\0\0\0", 4) && box.contents.size == 0),
+                    "pcm_wave_extension");
+    }
+}
+
 SampleDescription validateDescription(View stsd, const AVCodecParameters& codec) {
     require(stsd.u32(0) == 0 && stsd.u32(4) == 1, "multiple_descriptions");
     const Children entries(stsd.tail(8));
     require(entries.all().size() == 1, "multiple_descriptions");
+    const auto pcm = pcmFormat(codec.codec_id);
+    if (pcm.bytes) {
+        const auto audio = entries.one(pcm.tag);
+        validatePcmDescription(audio, codec, pcm);
+        return {audio.u16(6), 1};
+    }
     const bool alac = codec.codec_id == AV_CODEC_ID_ALAC;
     const auto audio = entries.one(alac ? "alac" : "mp4a");
     const unsigned version = audio.u16(8), entryChannels = audio.u16(16);
@@ -265,7 +325,7 @@ struct Edit {
     U64 start;
     U64 frames;
 };
-Edit exactEdit(View edts, const TrackTime& media, const TrackTime& movie, View tkhd, bool alac) {
+Edit exactEdit(View edts, const TrackTime& media, const TrackTime& movie, View tkhd, AVCodecID codec) {
     if (!edts)
         return {0, media.duration};
     const auto elst = Children(edts).one("elst");
@@ -275,23 +335,30 @@ Edit exactEdit(View edts, const TrackTime& media, const TrackTime& movie, View t
             "complex_edit");
     const U64 duration = wide ? elst.u64(8) : elst.u32(8);
     const U64 start = wide ? elst.u64(16) : elst.u32(12);
-    // Only AAC may discard its one whole priming block. Every accepted ALAC
-    // edit covers the complete native media and starts at sample zero.
-    require((start == 0 || (!alac && start == 1024)) && start < media.duration && duration > 0 &&
+    // Only AAC has a priming block. ALAC accepts only complete native media.
+    const bool aac = codec == AV_CODEC_ID_AAC;
+    const bool pcm = pcmFormat(codec).bytes != 0;
+    require((start == 0 || (aac && start == 1024) || pcm) && start < media.duration && duration > 0 &&
                 duration <= std::numeric_limits<U64>::max() / media.scale,
             "edit_bounds");
     const auto scaled = duration * media.scale;
-    if (scaled % movie.scale == 0 && scaled / movie.scale == media.duration - start)
+    const U64 trackEnd = tkhd.byte(0) == 1 ? tkhd.u64(28) : tkhd.u32(20);
+    // Only a sample-accurate edit clock and matching track end prove an
+    // intentional PCM trim. A coarse edit may merely round an uncut track.
+    if (pcm && movie.scale >= media.scale && scaled % movie.scale == 0 &&
+        scaled / movie.scale <= media.duration - start &&
+        trackEnd == duration && movie.duration >= duration)
+        return {start, scaled / movie.scale};
+    if ((!pcm || start == 0) && scaled % movie.scale == 0 && scaled / movie.scale == media.duration - start)
         return {start, media.duration - start};
 
     // MOV can express an untrimmed track's end rounded up to a whole movie tick.
     // Keep native audio duration only for a matching track-header end, <1 ms
     // of overhang and the unique first movie tick covering all native samples.
-    require(alac && movie.scale >= 1000 && movie.scale < media.scale &&
+    require(!aac && start == 0 && movie.scale >= 1000 && movie.scale < media.scale &&
                 media.duration <= std::numeric_limits<U64>::max() / movie.scale,
             "ambiguous_edit_duration");
     const auto native = media.duration * movie.scale;
-    const U64 trackEnd = tkhd.byte(0) == 1 ? tkhd.u64(28) : tkhd.u32(20);
     require(scaled > native && scaled - native < media.scale && trackEnd == duration &&
                 movie.duration >= duration,
             "ambiguous_edit_duration");
@@ -322,7 +389,7 @@ void validateGroups(const Children& table, unsigned count) {
             "sample_groups");
 }
 
-bool indexReferencesMissingBytes(AVStream* stream, U64 fileBytes,
+bool indexReferencesOutside(AVStream* stream, U64 begin, U64 end,
                                  const std::function<bool()>& canceled) {
     const int entries = avformat_index_get_entries_count(stream);
     for (int i = entries - 1; i >= 0; --i) {
@@ -334,7 +401,7 @@ bool indexReferencesMissingBytes(AVStream* stream, U64 fileBytes,
         if (packet->flags & AVINDEX_DISCARD_FRAME)
             continue;
         const auto position = static_cast<U64>(packet->pos);
-        if (position > fileBytes || static_cast<unsigned>(packet->size) > fileBytes - position)
+        if (position < begin || position > end || static_cast<unsigned>(packet->size) > end - position)
             return true;
     }
     return false;
@@ -342,9 +409,7 @@ bool indexReferencesMissingBytes(AVStream* stream, U64 fileBytes,
 
 // A missing playable packet is conclusive only when its offsets refer to this
 // source. This check is independent of presentation timing and fast-path admission.
-bool isLocalAudioTrack(const AMBI_SourceV1& input, const AVStream& selected, U64& consumed,
-                       const std::function<bool()>& canceled) {
-    const auto movie = readMovie(input, consumed, canceled, true);
+bool isLocalAudioTrack(const Movie& movie, const AVStream& selected) {
     const Children atoms({movie.metadata.data(), movie.metadata.size()});
     require(!atoms.one("mvex", false) && !atoms.one("cmov", false), "fragmented_or_compressed_movie");
     bool found = false;
@@ -364,11 +429,102 @@ bool isLocalAudioTrack(const AMBI_SourceV1& input, const AVStream& selected, U64
         require(stsd.u32(0) == 0 && stsd.u32(4) == 1, "multiple_descriptions");
         const Children entries(stsd.tail(8));
         require(entries.all().size() == 1, "multiple_descriptions");
-        const auto kind = selected.codecpar->codec_id == AV_CODEC_ID_ALAC ? "alac" : "mp4a";
-        validateLocalReference(minf.one("dinf"), entries.one(kind).u16(6));
+        // All audio sample entries have the same data reference field, also
+        // for layouts outside the native-width fast path.
+        validateLocalReference(minf.one("dinf"), entries.all().front().contents.u16(6));
         found = true;
     }
     return found;
+}
+
+template<class Visitor>
+void visitChunks(const Children& table, Visitor visit) {
+    const auto chunks = fixedRows(table.one("stsc"), 12);
+    const auto small = table.one("stco", false), large = table.one("co64", false);
+    require(static_cast<bool>(small) != static_cast<bool>(large), "chunk_table");
+    const auto offsets = fixedRows(small ? small : large, small ? 4 : 8);
+    require(chunks.rows.u32(0) == 1, "chunk_first");
+
+    for (unsigned group = 0; group < chunks.count; ++group) {
+        const auto offset = static_cast<std::size_t>(group) * 12;
+        const unsigned first = chunks.rows.u32(offset), perChunk = chunks.rows.u32(offset + 4);
+        const unsigned next =
+            group + 1 < chunks.count ? chunks.rows.u32(offset + 12) : offsets.count + 1;
+        require(first >= 1 && first < next && next <= offsets.count + 1 && perChunk &&
+                    chunks.rows.u32(offset + 8) == 1,
+                "chunk_mapping");
+        for (unsigned chunk = first - 1; chunk < next - 1; ++chunk) {
+            const U64 position = small ? offsets.rows.u32(static_cast<std::size_t>(chunk) * 4)
+                                 : offsets.rows.u64(static_cast<std::size_t>(chunk) * 8);
+            visit(position, perChunk);
+        }
+    }
+}
+
+void verifyPcmInventory(const Children& table, AVStream* stream, const Movie& movie, const TrackTime& media,
+                        const Edit& edit, MovPcmEdit& selectedBytes, const std::function<bool()>& canceled) {
+    const auto sizes = table.one("stsz");
+    const unsigned stride = pcmFormat(stream->codecpar->codec_id).bytes *
+                            static_cast<unsigned>(stream->codecpar->ch_layout.nb_channels);
+    const unsigned frames = sizes.u32(8);
+    const auto times = fixedRows(table.one("stts"), 8);
+    require(sizes.size == 12 && sizes.u32(0) == 0 && sizes.u32(4) == stride && frames > 0 &&
+                frames == media.duration && frames == stream->nb_frames && times.count == 1 &&
+                times.rows.u32(0) == frames && times.rows.u32(4) == 1,
+            "pcm_sample_count");
+    require(!table.one("sbgp", false) && !table.one("sgpd", false), "pcm_sample_groups");
+
+    const bool trimmed = edit.start != 0 || edit.frames != frames;
+    int index = 0;
+    const int packets = avformat_index_get_entries_count(stream);
+    U64 chunkFrame = 0, previousEnd = movie.dataBegin, covered = 0;
+    visitChunks(table, [&](U64 pos, unsigned perChunk) {
+        pollCancel(canceled);
+        const U64 bytes = static_cast<U64>(perChunk) * stride;
+        require(perChunk <= frames - chunkFrame && pos >= previousEnd &&
+                    bytes <= std::numeric_limits<U64>::max() - pos, "pcm_chunk_extent");
+        previousEnd = pos + bytes;
+        const U64 first = std::max(chunkFrame, edit.start);
+        const U64 last = std::min(chunkFrame + perChunk, edit.start + edit.frames);
+        if (first < last) {
+            const U64 offset = pos + (first - chunkFrame) * stride;
+            if (offset > movie.dataEnd || (last - first) * stride > movie.dataEnd - offset)
+                throw Input::ReaderInputError(Input::ReaderInputFailure::InputFailed,
+                    "Incomplete audio import: the selected PCM edit references bytes outside the media payload.");
+            covered += last - first;
+            if (trimmed) {
+                // The standard MOV demuxer groups PCM frames into packets. An
+                // exact edit can retain one frame of a packet marked as discarded,
+                // or end before a missing, unplayed part of a packet.
+                auto& ranges = selectedBytes.ranges;
+                if (!ranges.empty() && ranges.back().offset + ranges.back().frames * stride == offset) {
+                    ranges.back().frames += last - first;
+                } else {
+                    require(ranges.size() < readBudget / sizeof(MovPcmRange), "pcm_edit_range_budget");
+                    ranges.push_back({offset, last - first});
+                }
+            }
+        }
+        if (!trimmed) {
+            U64 frame = chunkFrame;
+            while (pos < previousEnd) {
+                if ((index & 1023) == 0)
+                    pollCancel(canceled);
+                require(index < packets, "pcm_demux_entry_count");
+                const auto* packet = avformat_index_get_entry(stream, index++);
+                require(packet && !(packet->flags & AVINDEX_DISCARD_FRAME) &&
+                            packet->pos == static_cast<std::int64_t>(pos) && packet->size > 0 &&
+                            static_cast<unsigned>(packet->size) <= previousEnd - pos && packet->size % stride == 0 &&
+                            packet->timestamp == static_cast<std::int64_t>(frame), "pcm_demux_entry");
+                pos += packet->size;
+                frame += packet->size / stride;
+            }
+        }
+        chunkFrame += perChunk;
+    });
+    require(chunkFrame == frames && covered == edit.frames && (trimmed || index == packets), "pcm_table_totals");
+    if (trimmed)
+        selectedBytes.bytesPerFrame = stride;
 }
 
 void verifyInventory(const Children& table, AVStream* stream, const Movie& movie, const TrackTime& media,
@@ -390,72 +546,55 @@ void verifyInventory(const Children& table, AVStream* stream, const Movie& movie
         validateGroups(table, count);
     }
     const auto times = fixedRows(table.one("stts"), 8);
-    const auto chunks = fixedRows(table.one("stsc"), 12);
-    const auto small = table.one("stco", false), large = table.one("co64", false);
-    require(static_cast<bool>(small) != static_cast<bool>(large), "chunk_table");
-    const auto offsets = fixedRows(small ? small : large, small ? 4 : 8);
-    require(chunks.rows.u32(0) == 1, "chunk_first");
-
     unsigned sample = 0, timeRow = 0, runLeft = 0, delta = 0;
     U64 timestamp = 0, previousEnd = movie.dataBegin;
-    for (unsigned group = 0; group < chunks.count; ++group) {
-        const auto offset = static_cast<std::size_t>(group) * 12;
-        const unsigned first = chunks.rows.u32(offset), perChunk = chunks.rows.u32(offset + 4);
-        const unsigned next =
-            group + 1 < chunks.count ? chunks.rows.u32(offset + 12) : offsets.count + 1;
-        require(first >= 1 && first < next && next <= offsets.count + 1 && perChunk &&
-                    chunks.rows.u32(offset + 8) == 1,
-                "chunk_mapping");
-        for (unsigned chunk = first - 1; chunk < next - 1; ++chunk) {
-            U64 position = small ? offsets.rows.u32(static_cast<std::size_t>(chunk) * 4)
-                                 : offsets.rows.u64(static_cast<std::size_t>(chunk) * 8);
-            require(position >= previousEnd && position < movie.dataEnd && perChunk <= count - sample,
-                    "chunk_extent");
-            for (unsigned p = 0; p < perChunk; ++p, ++sample) {
-                if ((sample & 1023) == 0)
-                    pollCancel(canceled);
-                if (!runLeft) {
-                    require(timeRow < times.count, "stts_entries");
-                    const auto idx = static_cast<std::size_t>(timeRow++) * 8;
-                    runLeft = times.rows.u32(idx);
-                    delta = times.rows.u32(idx + 4);
-                    require(runLeft > 0 && delta > 0, "stts_entries");
-                    if (alac)
-                        require(delta <= blockLimit, "alac_packet_duration");
-                }
-                --runLeft;
-                const unsigned packetSize =
-                    size ? size : stsz.u32(12 + static_cast<std::size_t>(sample) * 4);
-                require(packetSize && packetSize <= movie.dataEnd - position, "sample_extent");
-                // A valid recorder can quantize adjacent packet times (e.g.
-                // 1008, 1056 at 48 kHz). Do not silently account for a whole
-                // missing/extra access unit as timestamp jitter.
-                if (!alac) {
-                    const U64 physicalStart = static_cast<U64>(sample) * blockLimit;
-                    require(timestamp < physicalStart + blockLimit && physicalStart < timestamp + blockLimit,
-                            "packet_clock_drift");
-                }
-                const auto* packet = avformat_index_get_entry(stream, static_cast<int>(sample));
-                const auto dts =
-                    static_cast<std::int64_t>(timestamp) - static_cast<std::int64_t>(edit.start);
-                require(
-                    packet && packet->size > 0 && static_cast<unsigned>(packet->size) == packetSize &&
-                        packet->pos == static_cast<std::int64_t>(position) && packet->timestamp == dts,
-                    "demux_index_mismatch");
-                // FFmpeg marks the one whole preroll block as discarded. A
-                // playable packet flagged for discard requires the generic path.
-                require(dts < 0 || !(packet->flags & AVINDEX_DISCARD_FRAME),
-                        "discarded_presentation_packet");
-                if (sample == 0 && edit.start)
-                    require(delta == 1024 && (packet->flags & AVINDEX_DISCARD_FRAME),
-                            "unproved_priming");
-                position += packetSize;
-                require(delta <= media.duration - timestamp, "stts_duration");
-                timestamp += delta;
+    visitChunks(table, [&](U64 position, unsigned perChunk) {
+        require(position >= previousEnd && position < movie.dataEnd && perChunk <= count - sample,
+                "chunk_extent");
+        for (unsigned p = 0; p < perChunk; ++p, ++sample) {
+            if ((sample & 1023) == 0)
+                pollCancel(canceled);
+            if (!runLeft) {
+                require(timeRow < times.count, "stts_entries");
+                const auto idx = static_cast<std::size_t>(timeRow++) * 8;
+                runLeft = times.rows.u32(idx);
+                delta = times.rows.u32(idx + 4);
+                require(runLeft > 0 && delta > 0, "stts_entries");
+                if (alac)
+                    require(delta <= blockLimit, "alac_packet_duration");
             }
-            previousEnd = position;
+            --runLeft;
+            const unsigned packetSize =
+                size ? size : stsz.u32(12 + static_cast<std::size_t>(sample) * 4);
+            require(packetSize && packetSize <= movie.dataEnd - position, "sample_extent");
+            // A valid recorder can quantize adjacent packet times (e.g.
+            // 1008, 1056 at 48 kHz). Do not silently account for a whole
+            // missing/extra access unit as timestamp jitter.
+            if (!alac) {
+                const U64 physicalStart = static_cast<U64>(sample) * blockLimit;
+                require(timestamp < physicalStart + blockLimit && physicalStart < timestamp + blockLimit,
+                        "packet_clock_drift");
+            }
+            const auto* packet = avformat_index_get_entry(stream, static_cast<int>(sample));
+            const auto dts =
+                static_cast<std::int64_t>(timestamp) - static_cast<std::int64_t>(edit.start);
+            require(
+                packet && packet->size > 0 && static_cast<unsigned>(packet->size) == packetSize &&
+                    packet->pos == static_cast<std::int64_t>(position) && packet->timestamp == dts,
+                "demux_index_mismatch");
+            // FFmpeg marks the one whole preroll block as discarded. A
+            // playable packet flagged for discard requires the generic path.
+            require(dts < 0 || !(packet->flags & AVINDEX_DISCARD_FRAME),
+                    "discarded_presentation_packet");
+            if (sample == 0 && edit.start)
+                require(delta == 1024 && (packet->flags & AVINDEX_DISCARD_FRAME),
+                        "unproved_priming");
+            position += packetSize;
+            require(delta <= media.duration - timestamp, "stts_duration");
+            timestamp += delta;
         }
-    }
+        previousEnd = position;
+    });
     require(sample == count && timeRow == times.count && !runLeft && timestamp == media.duration,
             "table_totals");
 }
@@ -469,7 +608,8 @@ bool localAudioCandidate(const AVFormatContext* format, const AVStream* audio) {
         return false;
     const auto& codec = *audio->codecpar;
     return codec.codec_type == AVMEDIA_TYPE_AUDIO &&
-           (codec.codec_id == AV_CODEC_ID_AAC || codec.codec_id == AV_CODEC_ID_ALAC);
+           (codec.codec_id == AV_CODEC_ID_AAC || codec.codec_id == AV_CODEC_ID_ALAC ||
+            pcmFormat(codec.codec_id).bytes);
 }
 
 bool eligibleForExactTiming(const AVFormatContext* format, const AVStream* audio) {
@@ -487,9 +627,8 @@ bool eligibleForExactTiming(const AVFormatContext* format, const AVStream* audio
     return audioTracks == 1;
 }
 
-U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVStream& selected,
-            U64& consumed, U64& physicalFrames, const std::function<bool()>& canceled) {
-    const auto movie = readMovie(input, consumed, canceled);
+U64 inspect(const Movie& movie, const AVFormatContext& format, const AVStream& selected,
+            U64& physicalFrames, MovPcmEdit& pcmEdit, const std::function<bool()>& canceled) {
     const View metadata{movie.metadata.data(), movie.metadata.size()};
     // MOV may consume the iTunes priming override without exposing its length
     // as AVCodecParameters::initial_padding. Defer any such file to FFmpeg.
@@ -523,8 +662,8 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
         const Children table(minf.one("stbl"));
         const auto description = validateDescription(table.one("stsd"), *selected.codecpar);
         validateLocalReference(minf.one("dinf"), description.reference);
-        const bool alac = selected.codecpar->codec_id == AV_CODEC_ID_ALAC;
-        const auto edit = exactEdit(track.one("edts", false), timing, movieTime, tkhd, alac);
+        const bool aac = selected.codecpar->codec_id == AV_CODEC_ID_AAC;
+        const auto edit = exactEdit(track.one("edts", false), timing, movieTime, tkhd, selected.codecpar->codec_id);
         require(edit.frames == static_cast<U64>(selected.duration), "selected_duration");
         // Unknown sample groups, edit offsets, encryption and alternate sample
         // descriptions can affect delivery. Only mapped tables qualify.
@@ -534,8 +673,13 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
                         tag == "co64" || tag == "sgpd" || tag == "sbgp",
                     "unsupported_sample_table");
         }
-        verifyInventory(table, format.streams[selected.index], movie, timing, edit, description.blockLimit, canceled);
-        physicalFrames = alac ? timing.duration : static_cast<U64>(selected.nb_frames) * 1024 - edit.start;
+        if (pcmFormat(selected.codecpar->codec_id).bytes) {
+            verifyPcmInventory(table, format.streams[selected.index], movie, timing, edit, pcmEdit, canceled);
+            physicalFrames = edit.frames;
+        } else {
+            verifyInventory(table, format.streams[selected.index], movie, timing, edit, description.blockLimit, canceled);
+            physicalFrames = aac ? static_cast<U64>(selected.nb_frames) * 1024 - edit.start : timing.duration;
+        }
         frames = edit.frames;
     }
     require(frames > 0, "selected_track_missing");
@@ -550,13 +694,46 @@ Mp4AudioIndexResult probeMp4AudioSampleTable(const Input::MediaInputSource& sour
     if (!localAudioCandidate(format, audio))
         return result;
     auto inspectSource = [&](const AMBI_SourceV1& pinned) {
-        if (indexReferencesMissingBytes(format->streams[audio->index], pinned.byteSize, canceled)) {
+        AVStream* stream = format->streams[audio->index];
+        const auto codec = audio->codecpar->codec_id;
+        const bool pcm = pcmFormat(codec).bytes != 0;
+        Movie movie;
+        try {
+            if (eligibleForExactTiming(format, audio)) {
+                movie = readMovie(pinned, result.bytesRead, canceled, false, pcm);
+                MovPcmEdit edit;
+                U64 physical = 0;
+                result.frames = inspect(movie, *format, *audio, physical, edit, canceled);
+                result.physicalFrames = physical;
+                result.pcmEdit = std::move(edit);
+                if (codec == AV_CODEC_ID_AAC) {
+                    result.source = PresentationTotalSource::Mp4AacSampleEditTablePresentation;
+                    result.reason = "validated_aac_sample_edit_tables";
+                } else if (codec == AV_CODEC_ID_ALAC) {
+                    result.source = PresentationTotalSource::Mp4AlacSampleTablePresentation;
+                    result.reason = "validated_alac_sample_tables";
+                } else {
+                    result.source = PresentationTotalSource::MovPcmSampleTablePresentation;
+                    result.reason = "validated_pcm_sample_tables";
+                }
+                return;
+            }
+            if (pcm)
+                movie = readMovie(pinned, result.bytesRead, canceled, false, true);
+        } catch (const Unsupported& skipped) {
+            result.reason = skipped.reason;
+        }
+
+        // A packet scan of a surviving prefix cannot prove the source complete.
+        // For a verified edit above, only the selected PCM bytes were required.
+        if (indexReferencesOutside(stream, 0, pinned.byteSize, canceled)) {
             bool local = false;
             try {
-                local = isLocalAudioTrack(pinned, *audio, result.bytesRead, canceled);
+                if (movie.metadata.empty())
+                    movie = readMovie(pinned, result.bytesRead, canceled, true);
+                local = isLocalAudioTrack(movie, *audio);
             } catch (const Unsupported&) {
-                // The index already points beyond EOF. A packet scan over the
-                // surviving prefix cannot resolve the source of those offsets.
+                // The demux index already references bytes beyond EOF.
             }
             throw Input::ReaderInputError(
                 Input::ReaderInputFailure::InputFailed,
@@ -564,18 +741,14 @@ Mp4AudioIndexResult probeMp4AudioSampleTable(const Input::MediaInputSource& sour
                       : "Possibly incomplete audio import: the selected audio index references unavailable bytes "
                         "and its data source could not be confirmed.");
         }
-        try {
-            if (!eligibleForExactTiming(format, audio))
-                return;
-            U64 physical = 0;
-            result.frames = inspect(pinned, *format, *audio, result.bytesRead, physical, canceled);
-            result.physicalFrames = physical;
-            const bool alac = audio->codecpar->codec_id == AV_CODEC_ID_ALAC;
-            result.source = alac ? PresentationTotalSource::Mp4AlacSampleTablePresentation
-                                 : PresentationTotalSource::Mp4AacSampleEditTablePresentation;
-            result.reason = alac ? "validated_alac_sample_tables" : "validated_aac_sample_edit_tables";
-        } catch (const Unsupported& skipped) {
-            result.reason = skipped.reason;
+        if (pcm && movie.dataEnd && indexReferencesOutside(stream, movie.dataBegin, movie.dataEnd, canceled)) {
+            try {
+                if (isLocalAudioTrack(movie, *audio))
+                    throw Input::ReaderInputError(Input::ReaderInputFailure::InputFailed,
+                        "Incomplete audio import: the selected PCM track references bytes outside the media payload.");
+            } catch (const Unsupported&) {
+                // There is no proof this source owns the referenced data.
+            }
         }
     };
     if (const auto* pinned = source.stableSource()) {

@@ -20,6 +20,7 @@
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
 #include "../Probe/Mp4AudioSampleTable.hpp"
+#include "../Decode/MovPcmEditReader.hpp"
 #include "../Probe/Mp3HeaderPresentation.hpp"
 #include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
@@ -93,6 +94,7 @@ struct StreamingImportResult {
     bool presentationBudgetKnown = false;
     std::uint64_t presentationBudgetFrames = 0;
     std::uint64_t indexedPhysicalFrames = 0;
+    Probe::MovPcmEdit pcmEdit;
     Probe::PresentationTotalSource presentationBudgetSource =
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
@@ -532,7 +534,7 @@ void resolveStreamingPresentationBudget(
         Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
     if (Probe::matchesRiffPcmExtent(formatContext, audioStream, result.totalPresentationEvidence))
         result.totalPresentationEvidence.validation = Probe::PresentationTotalValidation::SelfContainedMetadata;
-    const auto index = Probe::probeMp4AudioSampleTable(source, formatContext, audioStream, canceled);
+    auto index = Probe::probeMp4AudioSampleTable(source, formatContext, audioStream, canceled);
     if (index.frames > 0) {
         const Probe::TotalPresentationEvidence exact{
             index.frames, Probe::PresentationTotalTrust::SampleExact, index.source,
@@ -540,8 +542,10 @@ void resolveStreamingPresentationBudget(
             Probe::PresentationTotalValidation::SelfContainedMetadata};
         result.totalPresentationEvidence =
             Probe::reconcileTotalPresentationEvidence(exact, result.totalPresentationEvidence);
-        if (!result.totalPresentationEvidence.conflict)
+        if (!result.totalPresentationEvidence.conflict) {
             result.indexedPhysicalFrames = index.physicalFrames;
+            result.pcmEdit = std::move(index.pcmEdit);
+        }
     }
     const bool strongerExactAuthority =
         result.totalPresentationEvidence.trust ==
@@ -1229,15 +1233,16 @@ int writeConvertedStreamingSamples(
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
     FullScaleClipDiagnostic* diagnostic) {
-    if (result.presentationBudgetSource == Probe::PresentationTotalSource::Mp4AlacSampleTablePresentation) {
-        // This indexed subset has no trims, and PTS ticks are native samples.
+    if (result.presentationBudgetSource == Probe::PresentationTotalSource::Mp4AlacSampleTablePresentation ||
+        result.presentationBudgetSource == Probe::PresentationTotalSource::MovPcmSampleTablePresentation) {
+        // Both indexed inputs present consecutive native samples from PTS zero.
         // Checking each actual frame also catches two offsetting packet errors
         // whose final decoded sample count would appear correct.
         const auto decoded = result.physicalInputFrames;
         if (frame->pts < 0 || static_cast<std::uint64_t>(frame->pts) != decoded ||
             frame->nb_samples <= 0 || decoded > result.indexedPhysicalFrames ||
             static_cast<std::uint64_t>(frame->nb_samples) > result.indexedPhysicalFrames - decoded) {
-            result.error = "ALAC index and decoded audio disagree at sample " + std::to_string(decoded) + ".";
+            result.error = "Audio index and decoded audio disagree at sample " + std::to_string(decoded) + ".";
             return AVERROR_INVALIDDATA;
         }
     }
@@ -1748,7 +1753,12 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             return result;
         }
 
-        while ((ret = av_read_frame(formatContext, packet)) >= 0) {
+        Decode::MovPcmEditReader editReader(result.pcmEdit, audioStreamIndex);
+        auto readPacket = [&]() {
+            return result.pcmEdit.ranges.empty() ? av_read_frame(formatContext, packet)
+                                                 : editReader.read(formatContext->pb, packet);
+        };
+        while ((ret = readPacket()) >= 0) {
             checkInput();
             if (!pollImportCancel(callbacks, result)) {
                 av_packet_unref(packet);
@@ -1782,7 +1792,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
 
         checkInput();
         if (ret != AVERROR_EOF) {
-            result.error = "av_read_frame failed: " + ffErrorString(ret);
+            result.error = "Reading the media packet failed: " + ffErrorString(ret);
             cleanup();
             return result;
         }

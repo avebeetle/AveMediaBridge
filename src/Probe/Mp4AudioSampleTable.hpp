@@ -6,10 +6,22 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace AveMediaBridge::Probe {
 
+struct MovPcmRange {
+    std::uint64_t offset;
+    std::uint64_t frames;
+};
+
+struct MovPcmEdit {
+    unsigned bytesPerFrame = 0;
+    std::vector<MovPcmRange> ranges;
+};
+
 struct Mp4AudioIndexResult {
+    MovPcmEdit pcmEdit;
     std::uint64_t frames = 0;
     std::uint64_t physicalFrames = 0; // after priming, before presentation-tail trimming
     PresentationTotalSource source = PresentationTotalSource::None;

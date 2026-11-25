@@ -34,7 +34,8 @@ enum class PresentationTotalSource {
     MatroskaVorbisPacketPresentation,
     FlvMp3PacketPresentation,
     Mp4AacSampleEditTablePresentation,
-    Mp4AlacSampleTablePresentation
+    Mp4AlacSampleTablePresentation,
+    MovPcmSampleTablePresentation
 };
 
 enum class PresentationSampleDomain {
