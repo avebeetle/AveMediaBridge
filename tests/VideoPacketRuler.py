@@ -112,6 +112,7 @@ def main(dll_path, ffmpeg_dir, ffmpeg):
         data[offset + 20] ^= 1
         changed.write_bytes(data)
         packet_count(changed, 2)
+        assert import_pcm(str(changed), str(d / "damaged-crc")) != 0
         # Damage both independent AC-3 CRC regions while keeping the combined CRC zero.
         frame_bytes = 768  # 192 kb/s, 48 kHz, 1536 samples
         assert int.from_bytes(data[start + 4:start + 6], "big") + start + 6 >= offset + frame_bytes
@@ -127,6 +128,51 @@ def main(dll_path, ffmpeg_dir, ffmpeg):
         data[start + 7] |= 0x40  # DTS declared without adding its five bytes
         changed.write_bytes(data)
         packet_count(changed, 2)
+        # Remove selected audio inside the last private PES. FFmpeg can
+        # conceal an incomplete AC-3 syncframe and report full-length PCM.
+        raw = good.read_bytes()
+        last = raw.rfind(b"\x00\x00\x01\xbd")
+        assert last >= 0
+        audio_end = last + 6 + int.from_bytes(raw[last+4:last+6], "big")
+        for missing in (1, 24, 768):
+            clipped = d / f"missing-selected-{missing}.vob"
+            clipped.write_bytes(raw[:audio_end-missing])
+            session = d / f"incomplete-{missing}"
+            assert import_pcm(str(clipped), str(session)) != 0, clipped
+            assert not (session / "original_f32.bin").exists(), session
+        complete = d / "complete-selected.vob"
+        complete.write_bytes(raw[:audio_end])
+        session = d / "complete-selected-session"
+        assert import_pcm(str(complete), str(session)) == 0
+        assert (session / "original_f32.bin").read_bytes() == (d / "48017.vob.session" / "original_f32.bin").read_bytes()
+
+        # The AC-3 parser and decoder also accept little-endian syncframes.
+        # Convert the elementary stream across PES boundaries while retaining
+        # the original DVD headers, timestamps and packet sizes.
+        reverse = bytearray(raw)
+        payload = []
+        for sector in range(0, len(raw), 2048):
+            pos = sector + 14 + (raw[sector + 13] & 7)
+            while pos + 6 <= sector + 2048:
+                assert raw[pos:pos+3] == b"\x00\x00\x01"
+                end = pos + 6 + int.from_bytes(raw[pos+4:pos+6], "big")
+                if raw[pos+3] == 0xbd:
+                    sub = pos + 9 + raw[pos+8]
+                    assert raw[sub] == 0x80
+                    payload.extend(range(sub + 4, end))
+                pos = end
+        assert len(payload) % 2 == 0
+        for a, b in zip(payload[::2], payload[1::2]):
+            reverse[a], reverse[b] = reverse[b], reverse[a]
+        swapped = d / "swapped.vob"
+        swapped.write_bytes(reverse)
+        dest = d / "swapped-good"
+        assert import_pcm(str(swapped), str(dest)) == 0
+        assert (dest / "original_f32.bin").read_bytes() == (session / "original_f32.bin").read_bytes()
+        reverse[payload[30]] ^= 1
+        swapped.write_bytes(reverse)
+        assert import_pcm(str(swapped), str(d / "swapped-damaged")) != 0
+
         multi = d / "multi.vob"
         encode(multi, 48017, double=True)
         packet_count(multi, 2)

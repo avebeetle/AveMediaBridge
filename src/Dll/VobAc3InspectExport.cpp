@@ -1,5 +1,6 @@
 #include "AveMediaBridge/AveMediaBridgeSourceInspectApi.h"
 #include "Probe/QueuedSourceSha256.hpp"
+#include "Decode/DvdAc3Integrity.hpp"
 
 extern "C" {
 #include <libavcodec/ac3_parser.h>
@@ -45,7 +46,6 @@ struct DvdAudio {
     int rate = 0, channels = 0, streamIndex = -1, audioId = -1, videoId = -1;
     unsigned used = 0, needed = 7;
     std::array<Byte, 3840 + AV_INPUT_BUFFER_PADDING_SIZE> frame{};
-    const AVCRC* crc = av_crc_get_table(AV_CRC_16_ANSI);
 
     bool audioPes(const Byte* p, unsigned n) {
         if (!supportedAudioPesHeader(p, n)) return false;
@@ -85,9 +85,7 @@ struct DvdAudio {
                 channels = static_cast<int>(mode);
                 needed = bytes;
             } else {
-                const unsigned split = ((needed / 4) + (needed / 16)) * 2;
-                if (av_crc(crc, 0, frame.data() + 2, split - 2) != 0 ||
-                    av_crc(crc, 0, frame.data() + split, needed - split) != 0 || frames > UINT64_MAX - 1536)
+                if (!AveMediaBridge::Decode::ac3CrcValid(frame.data(), needed) || frames > UINT64_MAX - 1536)
                     return false;
                 frames += 1536;
                 used = 0;

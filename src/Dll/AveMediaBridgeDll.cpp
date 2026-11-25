@@ -11,6 +11,7 @@
 #include "../Core/MediaBridgeError.hpp"
 #include "../Decode/AudioDecodeHelpers.hpp"
 #include "../Decode/AudioPresentationSlice.hpp"
+#include "../Decode/DvdAc3Integrity.hpp"
 #include "../Decode/PcmFormat.hpp"
 #include "../Ffmpeg/FfmpegDeleters.hpp"
 #include "../Ffmpeg/FfmpegStreamSelection.hpp"
@@ -1634,6 +1635,7 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     const AVCodec* decoder = selection.decoder;
     AVStream* audioStream = formatContext->streams[audioStreamIndex];
     AVCodecParameters* codecpar = audioStream->codecpar;
+    const bool dvdAc3 = Decode::dvdAc3Track(formatContext, audioStream);
     if (!decoder) {
         decoder = avcodec_find_decoder(codecpar->codec_id);
     }
@@ -1769,6 +1771,10 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             ++result.decode.packetsRead;
             if (packet->stream_index == audioStreamIndex) {
                 ++result.decode.audioPackets;
+                if (dvdAc3 && !Decode::completeDvdAc3Packet(packet)) {
+                    result.error = "Incomplete or damaged AC-3 frame in the selected DVD audio track.";
+                    return result;
+                }
                 const int decodeRet =
                     sendStreamingPacketAndReceive(
                         decoderContext,
@@ -1797,6 +1803,10 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
             return result;
         }
 
+        if (dvdAc3 && Decode::selectedDvdPesTruncated(formatContext->pb, audioStream->id)) {
+            result.error = "The file ends inside the selected DVD audio packet.";
+            return result;
+        }
         ret = avcodec_send_packet(decoderContext, nullptr);
         if (ret < 0 && ret != AVERROR_EOF) {
             result.error = "decoder flush send failed: " + ffErrorString(ret);
