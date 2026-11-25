@@ -1,5 +1,30 @@
 # Accepted runtime and development checkout
 
+## Indexed ALAC import, 2026-11-25
+
+The [runtime receipt](../tools/runtime/accepted-runtime-20261125-alac-index.json)
+pins the Bridge built from `203b5aa`. One local mono or stereo ALAC track in a
+classic MP4, M4A or MOV can establish its exact native sample count from the
+track's sample tables before decoding. A single edit starting at zero can
+round up to the next movie tick if its headers agree and the overhang is
+under one millisecond. Each decoded block must start at the indexed sample
+and the final frame count must agree. Ambiguous timing uses the existing
+packet checks. Missing selected audio produces an import error.
+
+The qualified FFmpeg 7.1.4 decoder accepts verbatim 32-bit stereo ALAC
+blocks by applying the prediction-width check only to compressed blocks.
+The `-AlacVerbatim32` build of `tools/export/BuildExportRuntime.ps1` supplies
+`avcodec-61.dll`. The [previous runtime](../tools/runtime/accepted-runtime-20261124-aac-index.json)
+supplies the other three FFmpeg libraries. The snapshot maps each library
+to its corresponding full source archive and compiler configuration.
+
+The ordinary import regression covers full blocks, one-, two- and three-sample
+tails, mono and stereo, and rejection of incomplete data. Valid 32-bit
+verbatim samples matched their expected Float32 conversion. A separate matrix
+covers short ALAC recordings, edits, packet boundaries and fallback in all
+three containers. With the five pinned binaries, Release CTest passed 30
+tests and skipped nine that require external historical media.
+
 ## Indexed AAC-LC import, 2026-11-24
 
 The [runtime receipt](../tools/runtime/accepted-runtime-20261124-aac-index.json)
