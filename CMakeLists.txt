@@ -95,7 +95,7 @@ set(AVEMEDIABRIDGE_DLL_SOURCES
     src/Probe/MediaProbeService.cpp
     src/Probe/ReaderMediaFacts.cpp
     src/Probe/Mp4Mp3SampleEditTablePresentation.cpp
-    src/Probe/Mp4AacSampleTable.cpp
+    src/Probe/Mp4AudioSampleTable.cpp
     src/Probe/Mp3HeaderPresentation.cpp
     src/Probe/NutBoundedTailAuthority.cpp
     src/Probe/OggOpusSequentialPresentation.cpp
@@ -134,6 +134,9 @@ if(Python3_Interpreter_FOUND)
 endif()
 find_program(AVEMEDIABRIDGE_TEST_FFMPEG_CLI ffmpeg)
 if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
+    add_test(NAME AveMediaBridgeTests.mp4_alac_runtime_index
+        COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AlacIndexImport.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     add_test(NAME AveMediaBridgeTests.mp4_aac_runtime_index
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AacIndexImport.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")

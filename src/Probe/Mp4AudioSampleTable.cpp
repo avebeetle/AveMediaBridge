@@ -1,4 +1,4 @@
-#include "Mp4AacSampleTable.hpp"
+#include "Mp4AudioSampleTable.hpp"
 #include "../Input/DemuxByteSource.hpp"
 #include "../Input/ReaderInputError.hpp"
 #include "../Input/StableInputContract.hpp"
@@ -31,7 +31,7 @@ void require(bool condition, const char* reason) {
 void pollCancel(const std::function<bool()>& canceled) {
     if (canceled && canceled())
         throw Input::ReaderInputError(Input::ReaderInputFailure::Canceled,
-                                      "AAC index inspection canceled");
+                                      "MP4 audio index inspection canceled");
 }
 
 struct View {
@@ -106,10 +106,10 @@ Movie readMovie(const AMBI_SourceV1& input, U64& consumed, const std::function<b
             const auto status = Input::readSource(input, pos, buf, request, actual);
             if (status == AMBI_CANCELED)
                 throw Input::ReaderInputError(Input::ReaderInputFailure::Canceled,
-                                              "AAC index inspection canceled");
+                                              "MP4 audio index inspection canceled");
             if (status != AMBI_OK || actual != request)
                 throw Input::ReaderInputError(Input::ReaderInputFailure::InputFailed,
-                                              "cannot read AAC index");
+                                              "cannot read MP4 audio index");
             consumed += actual;
             pos += actual;
             buf += actual;
@@ -180,25 +180,7 @@ View descriptor(View bytes, unsigned kind) {
     throw Unsupported{"audio_descriptor_length"};
 }
 
-unsigned validateDescription(View stsd, const AVCodecParameters& codec) {
-    require(stsd.u32(0) == 0 && stsd.u32(4) == 1, "multiple_descriptions");
-    const Children entries(stsd.tail(8));
-    require(entries.all().size() == 1, "multiple_descriptions");
-    const auto audio = entries.one("mp4a");
-    const unsigned version = audio.u16(8);
-    // ISO audio sample entries may contain the conventional stereo default for
-    // a mono AAC stream. Below we require the ASC and decoder layout to agree.
-    const unsigned entryChannels = audio.u16(16);
-    require(version <= 1 &&
-                (entryChannels == 2 ||
-                 entryChannels == static_cast<unsigned>(codec.ch_layout.nb_channels)) &&
-                audio.u32(24) == (static_cast<unsigned>(codec.sample_rate) << 16),
-            "sample_entry_format");
-    const Children extensions(audio.tail(version == 0 ? 28 : 44));
-    const auto wave = extensions.one("wave", false);
-    const auto outer = extensions.one("esds", false);
-    require(static_cast<bool>(wave) != static_cast<bool>(outer), "esds_location");
-    const auto esds = wave ? Children(wave).one("esds") : outer;
+void validateAacConfig(View esds, const AVCodecParameters& codec) {
     require(esds.u32(0) == 0, "esds_version");
     const auto es = descriptor(esds.tail(4), 3);
     require(!(es.byte(2) & 0xe0), "es_descriptor_flags");
@@ -220,7 +202,52 @@ unsigned validateDescription(View stsd, const AVCodecParameters& codec) {
     // syncExtension with SBR disabled. HE-AAC and unknown extensions fall back.
     constexpr std::uint8_t noSbr[] = {0x56, 0xe5, 0x00};
     require(asc.size == 2 || asc.tail(2).equals(noSbr, sizeof noSbr), "aac_extensions");
-    return audio.u16(6);
+}
+
+unsigned alacBlockLimit(View config, const AVCodecParameters& codec) {
+    // The decoder receives the full 36-byte ALAC atom (size/tag followed by
+    // the four version bytes and the 24-byte ALACSpecificConfig).
+    require(codec.extradata && codec.extradata_size == 36 && config.size == 28 &&
+                AV_RB32(codec.extradata) == 36 && !std::memcmp(codec.extradata + 4, "alac", 4) &&
+                config.equals(codec.extradata + 8, 28),
+            "alac_decoder_config");
+    const unsigned block = config.u32(4), bits = config.byte(9);
+    require(config.u32(0) == 0 && config.byte(8) == 0 && block > 0 && block <= 65536 &&
+                (bits == 16 || bits == 20 || bits == 24 || bits == 32) &&
+                (!codec.bits_per_raw_sample || static_cast<unsigned>(codec.bits_per_raw_sample) == bits) &&
+                config.byte(13) == static_cast<unsigned>(codec.ch_layout.nb_channels) &&
+                config.u32(24) == static_cast<unsigned>(codec.sample_rate),
+            "alac_config_fields");
+    return block;
+}
+
+struct SampleDescription {
+    unsigned reference;
+    unsigned blockLimit;
+};
+
+SampleDescription validateDescription(View stsd, const AVCodecParameters& codec) {
+    require(stsd.u32(0) == 0 && stsd.u32(4) == 1, "multiple_descriptions");
+    const Children entries(stsd.tail(8));
+    require(entries.all().size() == 1, "multiple_descriptions");
+    const bool alac = codec.codec_id == AV_CODEC_ID_ALAC;
+    const auto audio = entries.one(alac ? "alac" : "mp4a");
+    const unsigned version = audio.u16(8), entryChannels = audio.u16(16);
+    // ISO sample entries can contain the conventional stereo default for mono.
+    // The codec-specific configuration must identify the actual channel count.
+    require(version <= 1 && (entryChannels == 2 || entryChannels == static_cast<unsigned>(codec.ch_layout.nb_channels)) &&
+                audio.u32(24) == (static_cast<unsigned>(codec.sample_rate) << 16),
+            "sample_entry_format");
+    const Children extensions(audio.tail(version == 0 ? 28 : 44));
+    const auto wave = extensions.one("wave", false);
+    const auto tag = alac ? "alac" : "esds";
+    const auto outer = extensions.one(tag, false);
+    require(static_cast<bool>(wave) != static_cast<bool>(outer), "codec_config_location");
+    const auto config = wave ? Children(wave).one(tag) : outer;
+    if (alac)
+        return {audio.u16(6), alacBlockLimit(config, codec)};
+    validateAacConfig(config, codec);
+    return {audio.u16(6), 1024};
 }
 
 void validateLocalReference(View dinf, unsigned referenceIndex) {
@@ -238,7 +265,7 @@ struct Edit {
     U64 start;
     U64 frames;
 };
-Edit exactEdit(View edts, const TrackTime& media, unsigned movieScale) {
+Edit exactEdit(View edts, const TrackTime& media, const TrackTime& movie, View tkhd, bool alac) {
     if (!edts)
         return {0, media.duration};
     const auto elst = Children(edts).one("elst");
@@ -248,15 +275,27 @@ Edit exactEdit(View edts, const TrackTime& media, unsigned movieScale) {
             "complex_edit");
     const U64 duration = wide ? elst.u64(8) : elst.u32(8);
     const U64 start = wide ? elst.u64(16) : elst.u32(12);
-    // Only start at the first AAC block or remove exactly one priming block.
-    // Cuts inside a block and multi-edit preroll need their packet evidence.
-    require((start == 0 || start == 1024) && start < media.duration && duration > 0 &&
+    // Only AAC may discard its one whole priming block. Every accepted ALAC
+    // edit covers the complete native media and starts at sample zero.
+    require((start == 0 || (!alac && start == 1024)) && start < media.duration && duration > 0 &&
                 duration <= std::numeric_limits<U64>::max() / media.scale,
             "edit_bounds");
     const auto scaled = duration * media.scale;
-    require(scaled % movieScale == 0 && scaled / movieScale == media.duration - start,
+    if (scaled % movie.scale == 0 && scaled / movie.scale == media.duration - start)
+        return {start, media.duration - start};
+
+    // MOV can express an untrimmed track's end rounded up to a whole movie tick.
+    // Keep native audio duration only for a matching track-header end, <1 ms
+    // of overhang and the unique first movie tick covering all native samples.
+    require(alac && movie.scale >= 1000 && movie.scale < media.scale &&
+                media.duration <= std::numeric_limits<U64>::max() / movie.scale,
             "ambiguous_edit_duration");
-    return {start, scaled / movieScale};
+    const auto native = media.duration * movie.scale;
+    const U64 trackEnd = tkhd.byte(0) == 1 ? tkhd.u64(28) : tkhd.u32(20);
+    require(scaled > native && scaled - native < media.scale && trackEnd == duration &&
+                movie.duration >= duration,
+            "ambiguous_edit_duration");
+    return {0, media.duration};
 }
 
 struct Table {
@@ -325,14 +364,15 @@ bool isLocalAudioTrack(const AMBI_SourceV1& input, const AVStream& selected, U64
         require(stsd.u32(0) == 0 && stsd.u32(4) == 1, "multiple_descriptions");
         const Children entries(stsd.tail(8));
         require(entries.all().size() == 1, "multiple_descriptions");
-        validateLocalReference(minf.one("dinf"), entries.one("mp4a").u16(6));
+        const auto kind = selected.codecpar->codec_id == AV_CODEC_ID_ALAC ? "alac" : "mp4a";
+        validateLocalReference(minf.one("dinf"), entries.one(kind).u16(6));
         found = true;
     }
     return found;
 }
 
 void verifyInventory(const Children& table, AVStream* stream, const Movie& movie, const TrackTime& media,
-                     const Edit& edit, const std::function<bool()>& canceled) {
+                     const Edit& edit, unsigned blockLimit, const std::function<bool()>& canceled) {
     const auto stsz = table.one("stsz");
     const unsigned size = stsz.u32(4), count = stsz.u32(8);
     require(stsz.u32(0) == 0 && count && count <= maxEntries &&
@@ -340,12 +380,15 @@ void verifyInventory(const Children& table, AVStream* stream, const Movie& movie
                 stream->nb_frames == count &&
                 avformat_index_get_entries_count(stream) == static_cast<int>(count),
             "sample_count");
-    // AAC LC decodes 1024 samples per access unit. This subset allows a
-    // partial final block, but no implicit loss of whole physical blocks.
-    require(media.duration <= static_cast<U64>(count) * 1024 &&
-                media.duration > static_cast<U64>(count - 1) * 1024,
-            "physical_extent");
-    validateGroups(table, count);
+    const bool alac = stream->codecpar->codec_id == AV_CODEC_ID_ALAC;
+    require(media.duration <= static_cast<U64>(count) * blockLimit, "physical_extent");
+    if (alac) {
+        require(!table.one("sbgp", false) && !table.one("sgpd", false), "alac_sample_groups");
+    } else {
+        // AAC LC has fixed blocks and can end with one partially presented block.
+        require(media.duration > static_cast<U64>(count - 1) * blockLimit, "physical_extent");
+        validateGroups(table, count);
+    }
     const auto times = fixedRows(table.one("stts"), 8);
     const auto chunks = fixedRows(table.one("stsc"), 12);
     const auto small = table.one("stco", false), large = table.one("co64", false);
@@ -377,6 +420,8 @@ void verifyInventory(const Children& table, AVStream* stream, const Movie& movie
                     runLeft = times.rows.u32(idx);
                     delta = times.rows.u32(idx + 4);
                     require(runLeft > 0 && delta > 0, "stts_entries");
+                    if (alac)
+                        require(delta <= blockLimit, "alac_packet_duration");
                 }
                 --runLeft;
                 const unsigned packetSize =
@@ -385,9 +430,11 @@ void verifyInventory(const Children& table, AVStream* stream, const Movie& movie
                 // A valid recorder can quantize adjacent packet times (e.g.
                 // 1008, 1056 at 48 kHz). Do not silently account for a whole
                 // missing/extra access unit as timestamp jitter.
-                const U64 physicalStart = static_cast<U64>(sample) * 1024;
-                require(timestamp < physicalStart + 1024 && physicalStart < timestamp + 1024,
-                        "packet_clock_drift");
+                if (!alac) {
+                    const U64 physicalStart = static_cast<U64>(sample) * blockLimit;
+                    require(timestamp < physicalStart + blockLimit && physicalStart < timestamp + blockLimit,
+                            "packet_clock_drift");
+                }
                 const auto* packet = avformat_index_get_entry(stream, static_cast<int>(sample));
                 const auto dts =
                     static_cast<std::int64_t>(timestamp) - static_cast<std::int64_t>(edit.start);
@@ -413,7 +460,7 @@ void verifyInventory(const Children& table, AVStream* stream, const Movie& movie
             "table_totals");
 }
 
-bool localAacCandidate(const AVFormatContext* format, const AVStream* audio) {
+bool localAudioCandidate(const AVFormatContext* format, const AVStream* audio) {
     if (!format || !format->iformat || !format->iformat->name ||
         std::string_view(format->iformat->name) != "mov,mp4,m4a,3gp,3g2,mj2" || !audio ||
         !audio->codecpar || audio->id <= 0 || audio->index < 0 ||
@@ -421,12 +468,14 @@ bool localAacCandidate(const AVFormatContext* format, const AVStream* audio) {
         format->streams[audio->index] != audio)
         return false;
     const auto& codec = *audio->codecpar;
-    return codec.codec_type == AVMEDIA_TYPE_AUDIO && codec.codec_id == AV_CODEC_ID_AAC;
+    return codec.codec_type == AVMEDIA_TYPE_AUDIO &&
+           (codec.codec_id == AV_CODEC_ID_AAC || codec.codec_id == AV_CODEC_ID_ALAC);
 }
 
 bool eligibleForExactTiming(const AVFormatContext* format, const AVStream* audio) {
     const auto& codec = *audio->codecpar;
-    if (codec.profile != AV_PROFILE_AAC_LOW || codec.sample_rate <= 0 || codec.sample_rate > 65535 ||
+    if ((codec.codec_id == AV_CODEC_ID_AAC && codec.profile != AV_PROFILE_AAC_LOW) ||
+        codec.sample_rate <= 0 || codec.sample_rate > 65535 ||
         (codec.ch_layout.nb_channels != 1 && codec.ch_layout.nb_channels != 2) ||
         codec.initial_padding || codec.trailing_padding || audio->start_time != 0 ||
         audio->duration <= 0 || audio->time_base.num != 1 || audio->time_base.den != codec.sample_rate)
@@ -450,7 +499,7 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
             "vendor_priming");
     const Children atoms(metadata);
     require(!atoms.one("mvex", false) && !atoms.one("cmov", false), "fragmented_or_compressed_movie");
-    const auto movieScale = timeHeader(atoms.one("mvhd")).scale;
+    const auto movieTime = timeHeader(atoms.one("mvhd"));
     std::vector<unsigned> trackIds;
     U64 frames = 0;
     for (const Box& box : atoms.all()) {
@@ -472,9 +521,10 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
                 "audio_timescale");
         const Children minf(media.one("minf"));
         const Children table(minf.one("stbl"));
-        const auto reference = validateDescription(table.one("stsd"), *selected.codecpar);
-        validateLocalReference(minf.one("dinf"), reference);
-        const auto edit = exactEdit(track.one("edts", false), timing, movieScale);
+        const auto description = validateDescription(table.one("stsd"), *selected.codecpar);
+        validateLocalReference(minf.one("dinf"), description.reference);
+        const bool alac = selected.codecpar->codec_id == AV_CODEC_ID_ALAC;
+        const auto edit = exactEdit(track.one("edts", false), timing, movieTime, tkhd, alac);
         require(edit.frames == static_cast<U64>(selected.duration), "selected_duration");
         // Unknown sample groups, edit offsets, encryption and alternate sample
         // descriptions can affect delivery. Only mapped tables qualify.
@@ -484,8 +534,8 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
                         tag == "co64" || tag == "sgpd" || tag == "sbgp",
                     "unsupported_sample_table");
         }
-        verifyInventory(table, format.streams[selected.index], movie, timing, edit, canceled);
-        physicalFrames = static_cast<U64>(selected.nb_frames) * 1024 - edit.start;
+        verifyInventory(table, format.streams[selected.index], movie, timing, edit, description.blockLimit, canceled);
+        physicalFrames = alac ? timing.duration : static_cast<U64>(selected.nb_frames) * 1024 - edit.start;
         frames = edit.frames;
     }
     require(frames > 0, "selected_track_missing");
@@ -493,11 +543,11 @@ U64 inspect(const AMBI_SourceV1& input, const AVFormatContext& format, const AVS
 }
 } // namespace
 
-Mp4AacIndexResult probeMp4AacSampleTable(const Input::MediaInputSource& source,
+Mp4AudioIndexResult probeMp4AudioSampleTable(const Input::MediaInputSource& source,
                                          const AVFormatContext* format, const AVStream* audio,
                                          const std::function<bool()>& canceled) {
-    Mp4AacIndexResult result;
-    if (!localAacCandidate(format, audio))
+    Mp4AudioIndexResult result;
+    if (!localAudioCandidate(format, audio))
         return result;
     auto inspectSource = [&](const AMBI_SourceV1& pinned) {
         if (indexReferencesMissingBytes(format->streams[audio->index], pinned.byteSize, canceled)) {
@@ -510,8 +560,8 @@ Mp4AacIndexResult probeMp4AacSampleTable(const Input::MediaInputSource& source,
             }
             throw Input::ReaderInputError(
                 Input::ReaderInputFailure::InputFailed,
-                local ? "Incomplete audio import: the selected AAC track references audio beyond the end of the file."
-                      : "Possibly incomplete audio import: the selected AAC index references unavailable bytes "
+                local ? "Incomplete audio import: the selected audio track references data beyond the end of the file."
+                      : "Possibly incomplete audio import: the selected audio index references unavailable bytes "
                         "and its data source could not be confirmed.");
         }
         try {
@@ -520,7 +570,10 @@ Mp4AacIndexResult probeMp4AacSampleTable(const Input::MediaInputSource& source,
             U64 physical = 0;
             result.frames = inspect(pinned, *format, *audio, result.bytesRead, physical, canceled);
             result.physicalFrames = physical;
-            result.reason = "validated_aac_sample_edit_tables";
+            const bool alac = audio->codecpar->codec_id == AV_CODEC_ID_ALAC;
+            result.source = alac ? PresentationTotalSource::Mp4AlacSampleTablePresentation
+                                 : PresentationTotalSource::Mp4AacSampleEditTablePresentation;
+            result.reason = alac ? "validated_alac_sample_tables" : "validated_aac_sample_edit_tables";
         } catch (const Unsupported& skipped) {
             result.reason = skipped.reason;
         }

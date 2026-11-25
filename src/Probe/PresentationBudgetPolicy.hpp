@@ -33,7 +33,8 @@ enum class PresentationTotalSource {
     OggVorbisLinkPresentation,
     MatroskaVorbisPacketPresentation,
     FlvMp3PacketPresentation,
-    Mp4AacSampleEditTablePresentation
+    Mp4AacSampleEditTablePresentation,
+    Mp4AlacSampleTablePresentation
 };
 
 enum class PresentationSampleDomain {

@@ -19,7 +19,7 @@
 #include "../Probe/FrameCountPolicy.hpp"
 #include "../Probe/MediaProbeService.hpp"
 #include "../Probe/Mp4Mp3SampleEditTablePresentation.hpp"
-#include "../Probe/Mp4AacSampleTable.hpp"
+#include "../Probe/Mp4AudioSampleTable.hpp"
 #include "../Probe/Mp3HeaderPresentation.hpp"
 #include "../Probe/OggOpusSequentialPresentation.hpp"
 #include "../Probe/PacketScan.hpp"
@@ -92,7 +92,7 @@ struct StreamingImportResult {
     Probe::TotalPresentationEvidence totalPresentationEvidence;
     bool presentationBudgetKnown = false;
     std::uint64_t presentationBudgetFrames = 0;
-    std::uint64_t indexedAacPhysicalFrames = 0;
+    std::uint64_t indexedPhysicalFrames = 0;
     Probe::PresentationTotalSource presentationBudgetSource =
         Probe::PresentationTotalSource::None;
     std::string presentationBudgetReason = "not_evaluated";
@@ -532,17 +532,16 @@ void resolveStreamingPresentationBudget(
         Probe::makeStreamTotalPresentationEvidence(formatContext, audioStream);
     if (Probe::matchesRiffPcmExtent(formatContext, audioStream, result.totalPresentationEvidence))
         result.totalPresentationEvidence.validation = Probe::PresentationTotalValidation::SelfContainedMetadata;
-    const auto aac = Probe::probeMp4AacSampleTable(source, formatContext, audioStream, canceled);
-    if (aac.frames > 0) {
+    const auto index = Probe::probeMp4AudioSampleTable(source, formatContext, audioStream, canceled);
+    if (index.frames > 0) {
         const Probe::TotalPresentationEvidence exact{
-            aac.frames, Probe::PresentationTotalTrust::SampleExact,
-            Probe::PresentationTotalSource::Mp4AacSampleEditTablePresentation,
+            index.frames, Probe::PresentationTotalTrust::SampleExact, index.source,
             Probe::PresentationSampleDomain::NativeStreamSamples, sampleRate, true, false,
             Probe::PresentationTotalValidation::SelfContainedMetadata};
         result.totalPresentationEvidence =
             Probe::reconcileTotalPresentationEvidence(exact, result.totalPresentationEvidence);
         if (!result.totalPresentationEvidence.conflict)
-            result.indexedAacPhysicalFrames = aac.physicalFrames;
+            result.indexedPhysicalFrames = index.physicalFrames;
     }
     const bool strongerExactAuthority =
         result.totalPresentationEvidence.trust ==
@@ -1230,6 +1229,18 @@ int writeConvertedStreamingSamples(
     StreamingImportResult& result,
     StreamingImportCallbacks* callbacks,
     FullScaleClipDiagnostic* diagnostic) {
+    if (result.presentationBudgetSource == Probe::PresentationTotalSource::Mp4AlacSampleTablePresentation) {
+        // This indexed subset has no trims, and PTS ticks are native samples.
+        // Checking each actual frame also catches two offsetting packet errors
+        // whose final decoded sample count would appear correct.
+        const auto decoded = result.physicalInputFrames;
+        if (frame->pts < 0 || static_cast<std::uint64_t>(frame->pts) != decoded ||
+            frame->nb_samples <= 0 || decoded > result.indexedPhysicalFrames ||
+            static_cast<std::uint64_t>(frame->nb_samples) > result.indexedPhysicalFrames - decoded) {
+            result.error = "ALAC index and decoded audio disagree at sample " + std::to_string(decoded) + ".";
+            return AVERROR_INVALIDDATA;
+        }
+    }
     int ret = ensureStreamingSwr(swr, frame, decoder, result);
     if (ret < 0) {
         return ret;
@@ -1831,12 +1842,12 @@ StreamingImportResult runStreamingSessionImportToLiveFile(
     }
 
     // The presentation cap could otherwise hide unexpected audio beyond the edit.
-    if (result.indexedAacPhysicalFrames != 0 &&
-        result.physicalInputFrames != result.indexedAacPhysicalFrames) {
+    if (result.indexedPhysicalFrames != 0 &&
+        result.physicalInputFrames != result.indexedPhysicalFrames) {
         if (pollImportCancel(callbacks, result)) {
             std::ostringstream message;
-            message << "AAC index and decoded audio disagree before end trimming: expected "
-                    << result.indexedAacPhysicalFrames << ", decoded " << result.physicalInputFrames
+            message << "MP4 audio index and decoded audio disagree before end trimming: expected "
+                    << result.indexedPhysicalFrames << ", decoded " << result.physicalInputFrames
                     << " samples per channel.";
             result.error = message.str();
         }
