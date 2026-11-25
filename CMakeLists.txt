@@ -137,6 +137,12 @@ if(Python3_Interpreter_FOUND AND AVEMEDIABRIDGE_TEST_FFMPEG_CLI)
     add_test(NAME AveMediaBridgeTests.mp4_alac_runtime_index
         COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AlacIndexImport.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    add_test(NAME AveMediaBridgeTests.mp4_alac_verbatim32
+        COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AlacVerbatim32.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
+    add_test(NAME AveMediaBridgeTests.mp4_alac_verbatim32
+        COMMAND "${Python3_EXECUTABLE}" -B "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AlacVerbatim32.py"
+            "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")
     add_test(NAME AveMediaBridgeTests.mp4_aac_runtime_index
         COMMAND "${Python3_EXECUTABLE}" "${AVEMEDIABRIDGE_ROOT}/tests/Mp4AacIndexImport.py"
             "$<TARGET_FILE:AveMediaBridge>" "${FFMPEG_BIN_DIR}" "${AVEMEDIABRIDGE_TEST_FFMPEG_CLI}")

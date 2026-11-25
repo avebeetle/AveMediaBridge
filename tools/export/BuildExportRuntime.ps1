@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$LabRoot,
     [Parameter(Mandatory)][string]$OutputRoot,
     [switch]$ShortVorbis,
-    [switch]$ShortPacketImports
+    [switch]$ShortPacketImports,
+    [switch]$AlacVerbatim32
 )
 $ErrorActionPreference = 'Stop'
 $archive = (Resolve-Path -LiteralPath $Archive).Path
@@ -60,6 +61,13 @@ if ($ShortPacketImports) {
         if ($LASTEXITCODE) { throw "Patch apply failed: $file" }
     }
 }
+if ($AlacVerbatim32) {
+    $alacPatch = Join-Path $repo 'third_party\ffmpeg\patches\alac-verbatim-32bit.patch'
+    $alacHash = (Get-FileHash -LiteralPath $alacPatch -Algorithm SHA256).Hash
+    if ($alacHash -ne '5A39E9B0B3C3F5752D873067ED11C047860BB5C887EDEB65134669A5D4B490AF') { throw 'Unexpected ALAC decoder patch' }
+    & git -C $source apply --no-index $alacPatch
+    if ($LASTEXITCODE) { throw 'ALAC decoder patch apply failed' }
+}
 function To-Msys([string]$value) { return (($value.Replace('\','/') -replace '^([A-Za-z]):','/$1').ToLowerInvariant()) }
 $sourceMsys = To-Msys $source; $buildMsys = To-Msys $build; $installMsys = To-Msys $install
 $lines = Get-Content -LiteralPath $recipe | Where-Object { $_ -match '^set "OPTS=' }
@@ -106,6 +114,12 @@ if ($ShortPacketImports) {
     $manifest.packetPatches = $packetPatches
     $manifest.patchedFiles += 'libavformat/demux.c', 'libavformat/mov.c',
         'libavformat/aacdec.c', 'libavformat/ac3dec.c'
+}
+if ($AlacVerbatim32) {
+    $manifest.profile += '-alac-verbatim-32bit'
+    $manifest.alacPatch = $alacPatch
+    $manifest.alacPatchSha256 = $alacHash
+    $manifest.patchedFiles += 'libavcodec/alac.c'
 }
 foreach ($name in @('avcodec-61.dll','avformat-61.dll','avutil-59.dll','swresample-5.dll')) {
     $item = Join-Path $install "bin\$name"
